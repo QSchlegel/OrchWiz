@@ -1,0 +1,483 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  githubId  String?  @unique
+  avatarUrl String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  sessions         Session[]
+  commandExecutions CommandExecution[]
+  guidanceRevisions GuidanceRevision[]
+  agentDeployments  AgentDeployment[]
+  applicationDeployments ApplicationDeployment[]
+  projects              Project[]
+}
+
+model Session {
+  id             String   @id @default(uuid())
+  title          String?
+  description    String?
+  prompt         String?
+  status         SessionStatus @default(planning)
+  mode           SessionMode @default(plan)
+  source         SessionSource @default(web)
+  projectName    String?
+  branch         String?
+  environment    String?
+  userId         String
+  parentSessionId String?
+  metadata       Json?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  completedAt    DateTime?
+
+  user              User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parentSession     Session?             @relation("SessionFork", fields: [parentSessionId], references: [id])
+  childSessions     Session[]            @relation("SessionFork")
+  interactions      SessionInteraction[]
+  commandExecutions CommandExecution[]
+  agentActions      AgentAction[]
+  hooks             HookExecution[]
+  tasks             Task[]
+  verificationRuns  VerificationRun[]
+}
+
+enum SessionStatus {
+  planning
+  executing
+  completed
+  paused
+  failed
+}
+
+enum SessionMode {
+  plan
+  auto_accept
+}
+
+enum SessionSource {
+  local
+  web
+  ios
+  terminal_handoff
+}
+
+model SessionInteraction {
+  id        String   @id @default(cuid())
+  sessionId String
+  type      InteractionType
+  content   String
+  metadata  Json?
+  timestamp DateTime @default(now())
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@index([timestamp])
+}
+
+enum InteractionType {
+  user_input
+  ai_response
+  tool_use
+  error
+}
+
+model Command {
+  id            String   @id @default(cuid())
+  name          String
+  description   String?
+  scriptContent String
+  path          String?
+  isShared      Boolean  @default(false)
+  teamId        String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  executions CommandExecution[]
+
+  @@unique([name, teamId])
+  @@index([teamId])
+}
+
+model CommandExecution {
+  id          String   @id @default(cuid())
+  commandId   String
+  sessionId   String?
+  userId      String
+  status      ExecutionStatus @default(running)
+  output      String?
+  error       String?
+  duration    Int?
+  startedAt   DateTime @default(now())
+  completedAt DateTime?
+
+  command Command @relation(fields: [commandId], references: [id], onDelete: Cascade)
+  session Session? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([commandId])
+  @@index([sessionId])
+  @@index([userId])
+}
+
+enum ExecutionStatus {
+  running
+  completed
+  failed
+}
+
+model Subagent {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  content     String
+  path        String?
+  isShared    Boolean  @default(false)
+  teamId      String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  deployments AgentDeployment[]
+
+  @@unique([name, teamId])
+  @@index([teamId])
+}
+
+model ClaudeDocument {
+  id          String   @id @default(cuid())
+  teamId      String?
+  title       String
+  content     String
+  version     Int      @default(1)
+  lastUpdated DateTime @default(now())
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  guidanceEntries GuidanceEntry[]
+
+  @@index([teamId])
+}
+
+model GuidanceEntry {
+  id          String            @id @default(cuid())
+  documentId  String
+  content     String
+  category    String?
+  status      GuidanceStatus   @default(active)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  document   ClaudeDocument    @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  revisions  GuidanceRevision[]
+
+  @@index([documentId])
+  @@index([status])
+}
+
+enum GuidanceStatus {
+  active
+  deprecated
+}
+
+model GuidanceRevision {
+  id              String   @id @default(cuid())
+  guidanceEntryId String
+  oldContent      String?
+  newContent      String?
+  diff            String?
+  triggeredBy     String?
+  commitHash      String?
+  prLink          String?
+  botResponse     String?
+  timestamp       DateTime @default(now())
+
+  guidanceEntry GuidanceEntry @relation(fields: [guidanceEntryId], references: [id], onDelete: Cascade)
+  user          User?         @relation(fields: [triggeredBy], references: [id], onDelete: SetNull)
+
+  @@index([guidanceEntryId])
+  @@index([timestamp])
+}
+
+model Permission {
+  id            String          @id @default(cuid())
+  commandPattern String
+  type         PermissionType
+  status       PermissionStatus
+  scope        PermissionScope
+  sourceFile   String?
+  isShared     Boolean         @default(false)
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+
+  @@index([commandPattern])
+  @@index([scope])
+}
+
+enum PermissionType {
+  bash_command
+  tool_command
+}
+
+enum PermissionStatus {
+  allow
+  ask
+  deny
+}
+
+enum PermissionScope {
+  global
+  workspace
+  user
+}
+
+model AgentAction {
+  id        String   @id @default(cuid())
+  sessionId String
+  type      ActionType
+  action    String
+  details   Json?
+  status    String?
+  result    Json?
+  timestamp DateTime @default(now())
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@index([type])
+  @@index([timestamp])
+}
+
+enum ActionType {
+  slack
+  bigquery
+  sentry
+  other
+}
+
+model Hook {
+  id        String   @id @default(cuid())
+  name      String
+  matcher   String
+  type      HookType
+  command   String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  executions HookExecution[]
+
+  @@index([isActive])
+}
+
+enum HookType {
+  command
+  script
+}
+
+model HookExecution {
+  id        String   @id @default(cuid())
+  hookId    String
+  sessionId String
+  toolUseId String?
+  status    String?
+  output    String?
+  error     String?
+  duration  Int?
+  timestamp DateTime @default(now())
+
+  hook    Hook    @relation(fields: [hookId], references: [id], onDelete: Cascade)
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([hookId])
+  @@index([sessionId])
+  @@index([timestamp])
+}
+
+model Task {
+  id            String      @id @default(cuid())
+  sessionId     String
+  name          String
+  status        TaskStatus  @default(running)
+  duration      Int?
+  tokenCount    Int?
+  strategy      TaskStrategy?
+  permissionMode String?
+  metadata      Json?
+  startedAt     DateTime    @default(now())
+  completedAt   DateTime?
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@index([status])
+}
+
+enum TaskStatus {
+  running
+  completed
+  failed
+  thinking
+}
+
+enum TaskStrategy {
+  background_agent
+  stop_hook
+  plugin
+}
+
+model VerificationRun {
+  id          String              @id @default(cuid())
+  sessionId   String
+  type        VerificationType
+  status      String?
+  result      Json?
+  iterations  Int?
+  feedback    String?
+  startedAt   DateTime            @default(now())
+  completedAt DateTime?
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@index([type])
+}
+
+enum VerificationType {
+  browser
+  bash
+  test_suite
+  app_test
+}
+
+model AgentDeployment {
+  id            String              @id @default(cuid())
+  name          String
+  description   String?
+  subagentId    String?
+  nodeId        String
+  nodeType      NodeType
+  nodeUrl       String?
+  status        DeploymentStatus    @default(pending)
+  config        Json?
+  metadata      Json?
+  deployedAt    DateTime?
+  lastHealthCheck DateTime?
+  healthStatus  String?
+  userId        String
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+
+  subagent      Subagent?           @relation(fields: [subagentId], references: [id], onDelete: SetNull)
+  user          User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([nodeId])
+  @@index([status])
+  @@index([userId])
+  @@index([subagentId])
+}
+
+enum NodeType {
+  local
+  cloud
+  hybrid
+}
+
+enum DeploymentStatus {
+  pending
+  deploying
+  active
+  inactive
+  failed
+  updating
+}
+
+model ApplicationDeployment {
+  id            String              @id @default(cuid())
+  name          String
+  description   String?
+  applicationType ApplicationType
+  image         String?
+  repository    String?
+  branch        String?
+  buildCommand  String?
+  startCommand  String?
+  port          Int?
+  environment   Json?
+  nodeId        String
+  nodeType      NodeType
+  nodeUrl       String?
+  status        DeploymentStatus    @default(pending)
+  config        Json?
+  metadata      Json?
+  deployedAt    DateTime?
+  lastHealthCheck DateTime?
+  healthStatus  String?
+  version       String?
+  userId        String
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+
+  user          User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([nodeId])
+  @@index([status])
+  @@index([userId])
+  @@index([applicationType])
+}
+
+enum ApplicationType {
+  docker
+  nodejs
+  python
+  static
+  custom
+}
+
+model Project {
+  id            String        @id @default(cuid())
+  name          String
+  description   String?
+  slug          String        @unique
+  isPublic      Boolean       @default(false)
+  tags          String[]
+  repository    String?
+  website       String?
+  readme        String?
+  thumbnail     String?
+  category      ProjectCategory?
+  stars         Int           @default(0)
+  views         Int           @default(0)
+  userId        String
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([isPublic])
+  @@index([slug])
+  @@index([category])
+}
+
+enum ProjectCategory {
+  ai_agent
+  automation
+  tool
+  library
+  application
+  other
+}

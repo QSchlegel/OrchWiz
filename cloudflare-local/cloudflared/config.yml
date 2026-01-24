@@ -1,0 +1,14 @@
+# Cloudflared tunnel configuration
+# When using TUNNEL_TOKEN, the tunnel ID is automatically detected
+# If using credentials file instead, uncomment and set:
+# tunnel: your-tunnel-id
+# credentials-file: /etc/cloudflared/credentials.json
+
+ingress:
+  # Route all HTTP traffic to Next.js application
+  # If you have a specific hostname, replace '*' with your hostname
+  - hostname: '*'
+    service: http://nextjs:3000
+  
+  # Catch-all rule (must be last)
+  - service: http_status:404

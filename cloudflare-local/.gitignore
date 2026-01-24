@@ -1,0 +1,8 @@
+# Environment variables
+.env
+
+# Cloudflare credentials
+cloudflared/credentials.json
+
+# Docker volumes data (if any local volumes)
+*.log

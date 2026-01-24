@@ -1,0 +1,21 @@
+{
+  "alwaysUpdateLinks": true,
+  "newFileLocation": "folder",
+  "newFileFolderPath": "00-Inbox",
+  "attachmentFolderPath": "05-Resources",
+  "useMarkdownLinks": true,
+  "defaultViewMode": "source",
+  "showLineNumber": true,
+  "spellcheck": true,
+  "spellcheckLanguages": [
+    "en-US"
+  ],
+  "strictLineBreaks": false,
+  "showIndentGuide": true,
+  "showFrontmatter": true,
+  "readableLineLength": true,
+  "foldHeading": true,
+  "foldIndent": true,
+  "showTabBar": true,
+  "rightToLeft": false
+}
