@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import {
   Package,
   Server,
@@ -32,6 +32,11 @@ import {
 import { OrchestrationSurface } from "@/components/orchestration/OrchestrationSurface"
 import { FlipCard } from "@/components/orchestration/FlipCard"
 import { NodeInfoCard, nodeTypeInfo, UseCaseBadge } from "@/components/orchestration/NodeInfoCard"
+import { FlowCanvas } from "@/components/flow/FlowCanvas"
+import { ApplicationNode, SystemNode } from "@/components/flow/nodes"
+import { layoutColumns } from "@/lib/flow/layout"
+import { buildEdgesToAnchors, mapAnchorsToNodes, mapApplicationsToNodes } from "@/lib/flow/mappers"
+import type { Node } from "reactflow"
 
 interface Application {
   id: string
@@ -153,6 +158,11 @@ const appTypeConfig = {
   },
 }
 
+const nodeTypes = {
+  applicationNode: ApplicationNode,
+  systemNode: SystemNode,
+}
+
 // Helper function to format uptime
 function formatUptime(deployedAt: Date): string {
   const now = new Date()
@@ -169,6 +179,7 @@ function formatUptime(deployedAt: Date): string {
 export default function ApplicationsPage() {
   const [applications, setApplications] = useState<Application[]>([])
   const [isLoading, setIsLoading] = useState(true)
+  const [selectedApplicationId, setSelectedApplicationId] = useState<string | null>(null)
   const [isCreating, setIsCreating] = useState(false)
   const [showCreateForm, setShowCreateForm] = useState(false)
   const [formData, setFormData] = useState({
@@ -285,6 +296,72 @@ export default function ApplicationsPage() {
     }
   }
 
+  const topologyNodes = useMemo(() => {
+    const appInputs = applications.map((app) => ({
+      id: app.id,
+      name: app.name,
+      status: app.status,
+      nodeType: app.nodeType,
+      applicationType: app.applicationType,
+    }))
+
+    const localInputs = appInputs.filter((item) => item.nodeType === "local")
+    const cloudInputs = appInputs.filter((item) => item.nodeType === "cloud")
+    const hybridInputs = appInputs.filter((item) => item.nodeType === "hybrid")
+
+    const anchorInputs = [
+      {
+        id: "anchor-local",
+        label: "Local Nodes",
+        status: "nominal" as const,
+        detail: `${localInputs.length} apps`,
+      },
+      {
+        id: "anchor-cloud",
+        label: "Cloud Nodes",
+        status: "nominal" as const,
+        detail: `${cloudInputs.length} apps`,
+      },
+      {
+        id: "anchor-hybrid",
+        label: "Hybrid Nodes",
+        status: "nominal" as const,
+        detail: `${hybridInputs.length} apps`,
+      },
+    ]
+
+    const [localAnchor, cloudAnchor, hybridAnchor] = mapAnchorsToNodes(anchorInputs)
+
+    const localNodes = mapApplicationsToNodes(localInputs, selectedApplicationId || undefined)
+    const cloudNodes = mapApplicationsToNodes(cloudInputs, selectedApplicationId || undefined)
+    const hybridNodes = mapApplicationsToNodes(hybridInputs, selectedApplicationId || undefined)
+
+    return layoutColumns(
+      [
+        { key: "local", nodes: [localAnchor, ...localNodes] },
+        { key: "cloud", nodes: [cloudAnchor, ...cloudNodes] },
+        { key: "hybrid", nodes: [hybridAnchor, ...hybridNodes] },
+      ],
+      260,
+      150
+    )
+  }, [applications, selectedApplicationId])
+
+  const topologyEdges = useMemo(() => {
+    const edgeItems = applications.map((app) => ({
+      id: app.id,
+      status: app.status,
+      anchorId: `anchor-${app.nodeType}`,
+    }))
+    return buildEdgesToAnchors(edgeItems)
+  }, [applications])
+
+  const handleTopologyNodeClick = (_: unknown, node: Node) => {
+    if (node.type === "applicationNode") {
+      setSelectedApplicationId(node.id)
+    }
+  }
+
   return (
     <div className="min-h-screen gradient-orb perspective p-8">
       <div className="max-w-7xl mx-auto">
@@ -305,6 +382,23 @@ export default function ApplicationsPage() {
             Deploy Application
           </button>
         </div>
+
+        <OrchestrationSurface level={4} className="mb-8 bg-white/5">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-semibold">Application Topology</h2>
+            <span className="text-xs text-gray-500 dark:text-gray-400">Interactive runtime map</span>
+          </div>
+          <div className="mt-4">
+            <FlowCanvas
+              nodes={topologyNodes}
+              edges={topologyEdges}
+              nodeTypes={nodeTypes}
+              onNodeClick={handleTopologyNodeClick}
+              showMiniMap
+              className="h-[360px]"
+            />
+          </div>
+        </OrchestrationSurface>
 
         {showCreateForm && (
           <OrchestrationSurface level={5} className="mb-8">
@@ -512,6 +606,7 @@ export default function ApplicationsPage() {
               const appTypeInfo = appTypeConfig[application.applicationType]
               const statusInfo = statusConfig[application.status]
               const stackLevel = ((index % 5) + 1) as 1 | 2 | 3 | 4 | 5
+              const isSelected = application.id === selectedApplicationId
 
               const frontContent = (
                 <div className="h-full flex flex-col">
@@ -784,7 +879,9 @@ export default function ApplicationsPage() {
                   front={frontContent}
                   back={backContent}
                   level={stackLevel}
-                  className="h-full min-h-[380px]"
+                  className={`h-full min-h-[380px] ${
+                    isSelected ? "ring-2 ring-cyan-400/60 shadow-[0_0_20px_rgba(34,211,238,0.25)]" : ""
+                  }`}
                 />
               )
             })}

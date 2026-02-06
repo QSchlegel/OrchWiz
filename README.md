@@ -16,10 +16,12 @@
 - [Overview](#overview)
 - [Architecture](#architecture)
 - [Features](#features)
+- [Agent Runtime & Observability](#agent-runtime--observability)
 - [Tech Stack](#tech-stack)
 - [Quick Start](#quick-start)
 - [Development](#development)
 - [Node Architecture](#node-architecture)
+- [Roadmap](#roadmap)
 - [Deployment](#deployment)
 - [Project Structure](#project-structure)
 - [Contributing](#contributing)
@@ -50,6 +52,11 @@ graph TB
         API[Next.js API Routes<br/>RESTful Endpoints]
         AUTH[Better Auth<br/>GitHub OAuth]
     end
+
+    subgraph "Agent Runtime Layer"
+        HARNESS[Harness Controls<br/>Tracing + Sampling]
+        OC[OpenClaw Runtime<br/>Pluggable]
+    end
     
     subgraph "Data Layer"
         PRISMA[Prisma ORM]
@@ -69,10 +76,13 @@ graph TB
     subgraph "External Services"
         GITHUB[GitHub API<br/>PR Tracking]
         HOOKS[PostToolUse Hooks<br/>Automation]
+        LANGFUSE[Langfuse<br/>Observability]
     end
     
     UI --> API
     API --> AUTH
+    API --> HARNESS
+    HARNESS --> OC
     API --> PRISMA
     PRISMA --> DB
     
@@ -81,12 +91,15 @@ graph TB
     
     API --> GITHUB
     API --> HOOKS
+    OC -.->|Telemetry| LANGFUSE
     
     style UI fill:#3b82f6,stroke:#1e40af,color:#fff
     style API fill:#10b981,stroke:#059669,color:#fff
     style DB fill:#8b5cf6,stroke:#6d28d9,color:#fff
     style N1 fill:#f59e0b,stroke:#d97706,color:#fff
     style N2 fill:#06b6d4,stroke:#0891b2,color:#fff
+    style OC fill:#ec4899,stroke:#be185d,color:#fff
+    style LANGFUSE fill:#0ea5e9,stroke:#0369a1,color:#fff
 ```
 
 ### Data Flow
@@ -159,8 +172,28 @@ graph LR
 - **🪝 PostToolUse Hooks**: Automate actions after tool usage with configurable triggers
 - **🔐 Permissions Management**: Control command execution permissions with fine-grained access
 - **📊 Agent Actions Tracking**: Monitor integrations with Slack, BigQuery, Sentry, and more
+- **🧠 Pluggable Agent Runtimes**: Run sessions via OpenClaw or other future runtimes
+- **🔭 Observability Harness**: Capture traces, tool calls, and metrics for runtime visibility
 - **⏳ Long-Running Tasks**: Track and monitor background tasks with status updates
 - **✅ Verification Workflows**: Track browser, bash, and test suite verification runs
+
+## 🧠 Agent Runtime & Observability
+
+OrchWiz treats the agent runtime as a pluggable execution layer. OpenClaw is the initial runtime, designed to execute agent sessions and tool calls without locking the platform to a single runtime implementation.
+
+### Harness Controls
+
+The runtime harness provides a control surface for observability and governance:
+- **Trace/span correlation** across session → agent run → tool calls
+- **Tool-call capture** with input/output metadata
+- **Sampling controls** (global and per-session)
+- **Redaction/masking** for secrets and PII
+- **Cost and latency metrics** per run/tool/model
+- **Run metadata tags** (mode, node, runtime version, model)
+
+### Langfuse Observability
+
+[Langfuse](https://langfuse.com/docs/tracing/overview) serves as the tracing and observability backend, recording runtime inputs/outputs, tool usage, latencies, and cost signals to make execution behavior inspectable over time.
 
 ### Node Features
 
@@ -232,6 +265,11 @@ graph LR
    # GitHub OAuth (get from https://github.com/settings/developers)
    GITHUB_CLIENT_ID="your_github_client_id"
    GITHUB_CLIENT_SECRET="your_github_client_secret"
+   NEXT_PUBLIC_GITHUB_AUTH_ENABLED="true" # show GitHub login in the UI
+
+   # Magic Link Email (Resend)
+   RESEND_API_KEY="your_resend_api_key"
+   RESEND_FROM_EMAIL="OrchWiz <login@yourdomain.com>"
    ```
 
 4. **Install dependencies:**
@@ -294,6 +332,10 @@ docker compose up -d
 cd ../node
 npx prisma db push
 ```
+
+### Maintenance Automation
+
+OrchWiz supports a scheduled dependency-upkeep agent that checks for npm updates in `node/`, refreshes `package-lock.json`, and updates setup/docs when requirements change. Major version updates are flagged for review instead of applied automatically.
 
 ### Project Structure
 
@@ -376,6 +418,16 @@ Nodes communicate via:
 - **WebSocket**: Real-time updates (planned)
 - **Message Queue**: Async data forwarding (planned)
 
+## 🧭 Roadmap
+
+Planned runtime integrations to keep OrchWiz adaptable:
+- **[OpenAI Agents SDK](https://platform.openai.com/docs/guides/agents-sdk)**: Agentic app SDK with tool use and tracing.
+- **[LangGraph](https://docs.langchain.com/oss/python/concepts/products)**: Runtime for long-running, stateful agent orchestration.
+- **[AutoGen](https://microsoft.github.io/autogen/0.7.2/user-guide/core-user-guide/framework/agent-and-agent-runtime.html)**: Multi-agent framework with explicit agent runtime concepts.
+- **[CrewAI](https://docs.crewai.com/en/concepts/agents)**: Multi-agent framework with agent and task abstractions.
+- **[Cursor CLI](https://cursor.com/cli)**: Terminal-first agent workflows via Cursor.
+- **[Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview)**: Terminal-based coding agent runtime from Anthropic.
+
 ## 🚢 Deployment
 
 ### Local Development
@@ -396,6 +448,9 @@ See [dev-local/README.md](dev-local/README.md) for detailed local setup instruct
    NEXT_PUBLIC_APP_URL="https://your-domain.com"
    GITHUB_CLIENT_ID="production-client-id"
    GITHUB_CLIENT_SECRET="production-client-secret"
+   NEXT_PUBLIC_GITHUB_AUTH_ENABLED="true"
+   RESEND_API_KEY="production-resend-api-key"
+   RESEND_FROM_EMAIL="OrchWiz <login@yourdomain.com>"
    ```
 
 3. **Build and deploy:**

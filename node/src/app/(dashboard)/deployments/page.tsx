@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import {
   Rocket,
   Server,
@@ -29,6 +29,11 @@ import {
 import { OrchestrationSurface, OrchestrationCard } from "@/components/orchestration/OrchestrationSurface"
 import { NodeInfoCard, nodeTypeInfo, UseCaseBadge } from "@/components/orchestration/NodeInfoCard"
 import { FlipCard } from "@/components/orchestration/FlipCard"
+import { FlowCanvas } from "@/components/flow/FlowCanvas"
+import { DeploymentNode, SystemNode } from "@/components/flow/nodes"
+import { layoutColumns } from "@/lib/flow/layout"
+import { buildEdgesToAnchors, mapAnchorsToNodes, mapDeploymentsToNodes } from "@/lib/flow/mappers"
+import type { Node } from "reactflow"
 
 interface Deployment {
   id: string
@@ -109,6 +114,11 @@ const nodeTypeConfig = {
   hybrid: { icon: Network, label: "Hybrid", color: "text-pink-400" },
 }
 
+const nodeTypes = {
+  deploymentNode: DeploymentNode,
+  systemNode: SystemNode,
+}
+
 // Helper function to format uptime
 function formatUptime(deployedAt: Date): string {
   const now = new Date()
@@ -125,6 +135,7 @@ function formatUptime(deployedAt: Date): string {
 export default function DeploymentsPage() {
   const [deployments, setDeployments] = useState<Deployment[]>([])
   const [isLoading, setIsLoading] = useState(true)
+  const [selectedDeploymentId, setSelectedDeploymentId] = useState<string | null>(null)
   const [isCreating, setIsCreating] = useState(false)
   const [showCreateForm, setShowCreateForm] = useState(false)
   const [subagents, setSubagents] = useState<any[]>([])
@@ -241,6 +252,72 @@ export default function DeploymentsPage() {
     }
   }
 
+  const fleetNodes = useMemo(() => {
+    const deploymentInputs = deployments.map((deployment) => ({
+      id: deployment.id,
+      name: deployment.name,
+      status: deployment.status,
+      nodeType: deployment.nodeType,
+      meta: deployment.subagent?.name || deployment.nodeId,
+    }))
+
+    const localInputs = deploymentInputs.filter((item) => item.nodeType === "local")
+    const cloudInputs = deploymentInputs.filter((item) => item.nodeType === "cloud")
+    const hybridInputs = deploymentInputs.filter((item) => item.nodeType === "hybrid")
+
+    const anchorInputs = [
+      {
+        id: "anchor-local",
+        label: "Local Nodes",
+        status: "nominal" as const,
+        detail: `${localInputs.length} deployments`,
+      },
+      {
+        id: "anchor-cloud",
+        label: "Cloud Nodes",
+        status: "nominal" as const,
+        detail: `${cloudInputs.length} deployments`,
+      },
+      {
+        id: "anchor-hybrid",
+        label: "Hybrid Nodes",
+        status: "nominal" as const,
+        detail: `${hybridInputs.length} deployments`,
+      },
+    ]
+
+    const [localAnchor, cloudAnchor, hybridAnchor] = mapAnchorsToNodes(anchorInputs)
+
+    const localNodes = mapDeploymentsToNodes(localInputs, selectedDeploymentId || undefined)
+    const cloudNodes = mapDeploymentsToNodes(cloudInputs, selectedDeploymentId || undefined)
+    const hybridNodes = mapDeploymentsToNodes(hybridInputs, selectedDeploymentId || undefined)
+
+    return layoutColumns(
+      [
+        { key: "local", nodes: [localAnchor, ...localNodes] },
+        { key: "cloud", nodes: [cloudAnchor, ...cloudNodes] },
+        { key: "hybrid", nodes: [hybridAnchor, ...hybridNodes] },
+      ],
+      260,
+      150
+    )
+  }, [deployments, selectedDeploymentId])
+
+  const fleetEdges = useMemo(() => {
+    const edgeItems = deployments.map((deployment) => ({
+      id: deployment.id,
+      status: deployment.status,
+      anchorId: `anchor-${deployment.nodeType}`,
+    }))
+    return buildEdgesToAnchors(edgeItems)
+  }, [deployments])
+
+  const handleFleetNodeClick = (_: unknown, node: Node) => {
+    if (node.type === "deploymentNode") {
+      setSelectedDeploymentId(node.id)
+    }
+  }
+
   return (
     <div className="min-h-screen gradient-orb perspective p-8">
       <div className="max-w-7xl mx-auto">
@@ -261,6 +338,23 @@ export default function DeploymentsPage() {
             Deploy Agent
           </button>
         </div>
+
+        <OrchestrationSurface level={4} className="mb-8 bg-white/5">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-semibold">Fleet Map</h2>
+            <span className="text-xs text-gray-500 dark:text-gray-400">Interactive deployment topology</span>
+          </div>
+          <div className="mt-4">
+            <FlowCanvas
+              nodes={fleetNodes}
+              edges={fleetEdges}
+              nodeTypes={nodeTypes}
+              onNodeClick={handleFleetNodeClick}
+              showMiniMap
+              className="h-[360px]"
+            />
+          </div>
+        </OrchestrationSurface>
 
         {showCreateForm && (
           <OrchestrationSurface level={5} className="mb-8">
@@ -395,6 +489,7 @@ export default function DeploymentsPage() {
               const stackLevel = ((index % 5) + 1) as 1 | 2 | 3 | 4 | 5
               const nodeInfo = nodeTypeInfo[deployment.nodeType]
               const statusInfo = statusConfig[deployment.status]
+              const isSelected = deployment.id === selectedDeploymentId
 
               const frontContent = (
                 <div className="h-full flex flex-col">
@@ -607,7 +702,9 @@ export default function DeploymentsPage() {
                   front={frontContent}
                   back={backContent}
                   level={stackLevel}
-                  className="h-full min-h-[340px]"
+                  className={`h-full min-h-[340px] ${
+                    isSelected ? "ring-2 ring-cyan-400/60 shadow-[0_0_20px_rgba(34,211,238,0.25)]" : ""
+                  }`}
                 />
               )
             })}

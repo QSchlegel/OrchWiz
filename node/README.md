@@ -12,8 +12,14 @@ A comprehensive Next.js application for orchestrating and visualizing AI coding 
 - **PostToolUse Hooks**: Automate actions after tool usage
 - **Permissions Management**: Control command execution permissions
 - **Agent Actions Tracking**: Monitor Slack, BigQuery, Sentry, and other integrations
+- **Pluggable Agent Runtime**: Execute sessions via OpenClaw and future runtimes
+- **Observability Harness**: Capture traces, tool calls, and metrics for runtime visibility
 - **Long-Running Tasks**: Track and monitor background tasks
 - **Verification Workflows**: Track browser, bash, and test suite verification runs
+
+## Agent Runtime & Observability
+
+OrchWiz supports a pluggable agent runtime layer. OpenClaw is the initial runtime for executing sessions and tool calls, while the harness exposes standard controls for trace correlation, tool-call capture, sampling, redaction, and cost/latency metrics. [Langfuse](https://langfuse.com/docs/tracing/overview) acts as the tracing backend for runtime observability.
 
 ## Tech Stack
 
@@ -98,6 +104,20 @@ orchwiz/
 │   └── types/                 # TypeScript types
 └── package.json
 ```
+
+## Roadmap
+
+Candidate runtime integrations:
+- **[OpenAI Agents SDK](https://platform.openai.com/docs/guides/agents-sdk)**: Agentic app SDK with tool use and tracing.
+- **[LangGraph](https://docs.langchain.com/oss/python/concepts/products)**: Runtime for stateful agent orchestration.
+- **[AutoGen](https://microsoft.github.io/autogen/0.7.2/user-guide/core-user-guide/framework/agent-and-agent-runtime.html)**: Multi-agent framework with explicit runtime concepts.
+- **[CrewAI](https://docs.crewai.com/en/concepts/agents)**: Multi-agent framework with agent/task abstractions.
+- **[Cursor CLI](https://cursor.com/cli)**: Terminal-first agent workflows via Cursor.
+- **[Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview)**: Terminal-based coding agent runtime from Anthropic.
+
+## Maintenance Automation
+
+A scheduled dependency-upkeep agent reviews npm updates in `node/`, refreshes lockfiles, and updates setup/docs if requirements change. Major version updates are flagged for review.
 
 ## Development
 

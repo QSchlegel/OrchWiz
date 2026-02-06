@@ -33,6 +33,9 @@ Nodes can forward relevant data to other nodes for:
 - **Centralized Monitoring**: Sending data to a central monitoring node
 - **Cross-Node Analysis**: Analyzing patterns across different deployments
 
+### Agent Runtime
+Each node can execute sessions through a pluggable agent runtime (OpenClaw initially). The runtime harness emits telemetry that can be sent to Langfuse for observability.
+
 ## Node Communication
 
 Nodes communicate through:

@@ -1,4 +1,5 @@
 @import 'tailwindcss';
+@import 'reactflow/dist/style.css';
 
 @layer utilities {
   :root {
@@ -73,6 +74,23 @@
                 radial-gradient(circle at 40% 20%, rgba(120, 219, 255, 0.3), transparent 50%);
   }
 
+  .bridge-grid {
+    background-image: linear-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255, 255, 255, 0.05) 1px, transparent 1px);
+    background-size: 56px 56px;
+  }
+
+  .bridge-scanlines {
+    background-image: repeating-linear-gradient(
+      to bottom,
+      rgba(255, 255, 255, 0.04),
+      rgba(255, 255, 255, 0.04) 1px,
+      transparent 1px,
+      transparent 5px
+    );
+    mix-blend-mode: screen;
+  }
+
   /* Animation delays */
   .delay-1000 {
     animation-delay: 1s;
@@ -132,6 +150,22 @@
 
   .status-pulse {
     animation: status-pulse 2s ease-in-out infinite;
+  }
+
+  /* Onboarding step transition */
+  @keyframes onboarding-fade {
+    0% {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+    100% {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  .onboarding-fade {
+    animation: onboarding-fade 0.35s ease-out;
   }
 
   /* Connection indicator */

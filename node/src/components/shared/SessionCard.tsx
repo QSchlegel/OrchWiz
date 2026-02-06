@@ -9,6 +9,9 @@ interface SessionCardProps {
       interactions: number
     }
   }
+  isSelected?: boolean
+  className?: string
+  anchorId?: string
 }
 
 const statusColors = {
@@ -24,11 +27,19 @@ const modeLabels = {
   auto_accept: "Auto-accept",
 }
 
-export function SessionCard({ session }: SessionCardProps) {
+export function SessionCard({
+  session,
+  isSelected = false,
+  className = "",
+  anchorId,
+}: SessionCardProps) {
   return (
     <Link
       href={`/sessions/${session.id}`}
-      className="block p-6 bg-white dark:bg-gray-800 rounded-lg shadow hover:shadow-lg transition-shadow border border-gray-200 dark:border-gray-700"
+      id={anchorId}
+      className={`block p-6 bg-white dark:bg-gray-800 rounded-lg shadow hover:shadow-lg transition-shadow border border-gray-200 dark:border-gray-700 ${
+        isSelected ? "ring-2 ring-cyan-400/60 shadow-[0_0_20px_rgba(34,211,238,0.25)]" : ""
+      } ${className}`}
     >
       <div className="flex items-start justify-between mb-2">
         <h3 className="text-lg font-semibold text-gray-900 dark:text-white">

@@ -18,6 +18,14 @@ Orchwiz follows a distributed node architecture where each node is a self-contai
 - Database access via Prisma ORM
 - GitHub integration for PR tracking
 
+### Agent Runtime (OpenClaw)
+- Pluggable execution layer for agent sessions and tool calls
+- Isolated from UI and storage concerns to allow runtime swaps
+
+### Observability (Langfuse)
+- Tracing and observability backend for runtime telemetry
+- Captures inputs/outputs, tool usage, latency, and cost signals
+
 ### Database (PostgreSQL)
 - User management
 - Session tracking
@@ -45,6 +53,16 @@ When nodes forward data:
 2. Data is formatted and sent via HTTP/WebSocket
 3. Target node receives and aggregates data
 4. Aggregate visualization is updated
+
+## Runtime & Observability Flow
+
+```mermaid
+graph LR
+    UI[OrchWiz Node] --> H[Runtime Harness]
+    H --> OC[OpenClaw Runtime]
+    H -.->|Telemetry| LF[Langfuse]
+    UI --> DB[(PostgreSQL)]
+```
 
 ## Related Notes
 
