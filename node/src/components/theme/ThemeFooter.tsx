@@ -23,7 +23,11 @@ const options: { mode: ThemeMode; label: string; icon: ElementType }[] = [
 export function ThemeFooter() {
   const { mode, resolvedTheme, setMode } = useTheme()
   const pathname = usePathname()
-  const hiddenForPath = pathname === "/bridge-chat" || pathname?.startsWith("/bridge-chat/")
+  const hiddenForPath =
+    pathname === "/bridge-chat" ||
+    pathname?.startsWith("/bridge-chat/") ||
+    pathname === "/bridge-call" ||
+    pathname?.startsWith("/bridge-call/")
   const [dockItems, setDockItems] = useState<DockWindowItem[]>([])
   const dockScope = useMemo<DockScope | null>(() => {
     return pathname?.startsWith("/uss-k8s") ? "uss-k8s" : null

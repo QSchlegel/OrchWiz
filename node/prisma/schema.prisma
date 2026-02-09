@@ -31,6 +31,8 @@ model User {
   forwardingConfigs     ForwardingConfig[]
   shipTopologies        ShipTopology[]
   bridgeThreads         BridgeThread[]       @relation("BridgeThreadUser")
+  bridgeCallRounds      BridgeCallRound[]
+  observabilityTraces   ObservabilityTrace[]
 }
 
 model AuthSession {
@@ -127,6 +129,7 @@ model Session {
   verificationRuns  VerificationRun[]
   bridgeThread      BridgeThread?            @relation("BridgeThreadSession")
   bridgeMirrorJobs  BridgeMirrorJob[]        @relation("BridgeMirrorJobSession")
+  observabilityTraces ObservabilityTrace[]
 }
 
 enum SessionStatus {
@@ -266,6 +269,74 @@ model BridgeMirrorJob {
   @@index([createdAt])
 }
 
+enum BridgeCallRoundSource {
+  operator
+  system
+}
+
+enum BridgeCallRoundStatus {
+  pending
+  running
+  completed
+  partial
+  failed
+}
+
+enum BridgeCallOfficerResultStatus {
+  success
+  offline
+  failed
+}
+
+model BridgeCallRound {
+  id               String                        @id @default(cuid())
+  userId           String
+  shipDeploymentId String?
+  directive        String
+  source           BridgeCallRoundSource         @default(operator)
+  status           BridgeCallRoundStatus         @default(pending)
+  leadStationKey   BridgeCrewRole?
+  summary          String?
+  metadata         Json?
+  createdAt        DateTime                      @default(now())
+  completedAt      DateTime?
+
+  user             User                          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  shipDeployment   AgentDeployment?              @relation("BridgeCallRoundShip", fields: [shipDeploymentId], references: [id], onDelete: SetNull)
+  officerResults   BridgeCallOfficerResult[]
+
+  @@index([userId, createdAt])
+  @@index([userId, shipDeploymentId, createdAt])
+  @@index([shipDeploymentId])
+}
+
+model BridgeCallOfficerResult {
+  id                String                       @id @default(cuid())
+  roundId           String
+  stationKey        BridgeCrewRole
+  callsign          String
+  status            BridgeCallOfficerResultStatus
+  wasRetried        Boolean                      @default(false)
+  attemptCount      Int                          @default(1)
+  error             String?
+  summary           String?
+  threadId          String?
+  sessionId         String?
+  userInteractionId String?
+  aiInteractionId   String?
+  provider          String?
+  fallbackUsed      Boolean?
+  latencyMs         Int?
+  createdAt         DateTime                     @default(now())
+
+  round             BridgeCallRound              @relation(fields: [roundId], references: [id], onDelete: Cascade)
+
+  @@unique([roundId, stationKey])
+  @@index([roundId])
+  @@index([stationKey])
+  @@index([status])
+}
+
 model Command {
   id            String   @id @default(cuid())
   name          String
@@ -327,6 +398,7 @@ model Subagent {
 
   deployments AgentDeployment[]
   permissions Permission[]
+  permissionPolicies SubagentPermissionPolicy[]
   commandExecutions CommandExecution[]
 
   @@unique([name, teamId])
@@ -405,6 +477,52 @@ model Permission {
   @@index([commandPattern])
   @@index([scope])
   @@index([subagentId])
+}
+
+model PermissionPolicy {
+  id          String                  @id @default(cuid())
+  slug        String                  @unique
+  name        String
+  description String?
+  isSystem    Boolean                 @default(false)
+  createdAt   DateTime                @default(now())
+  updatedAt   DateTime                @updatedAt
+
+  rules       PermissionPolicyRule[]
+  assignments SubagentPermissionPolicy[]
+}
+
+model PermissionPolicyRule {
+  id             String            @id @default(cuid())
+  policyId       String
+  commandPattern String
+  type           PermissionType
+  status         PermissionStatus
+  sortOrder      Int               @default(0)
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  policy PermissionPolicy @relation(fields: [policyId], references: [id], onDelete: Cascade)
+
+  @@index([policyId])
+  @@index([policyId, sortOrder])
+}
+
+model SubagentPermissionPolicy {
+  id         String   @id @default(cuid())
+  subagentId String
+  policyId   String
+  priority   Int      @default(100)
+  enabled    Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  subagent Subagent         @relation(fields: [subagentId], references: [id], onDelete: Cascade)
+  policy   PermissionPolicy @relation(fields: [policyId], references: [id], onDelete: Cascade)
+
+  @@unique([subagentId, policyId])
+  @@index([subagentId, priority])
+  @@index([policyId])
 }
 
 enum PermissionType {
@@ -569,6 +687,9 @@ model AgentDeployment {
   user          User                @relation(fields: [userId], references: [id], onDelete: Cascade)
   bridgeCrew    BridgeCrew[]
   applications  ApplicationDeployment[]
+  bridgeCallRounds BridgeCallRound[] @relation("BridgeCallRoundShip")
+  bridgeConnections BridgeConnection[]
+  bridgeDispatchDeliveries BridgeDispatchDelivery[]
 
   @@index([nodeId])
   @@index([status])
@@ -576,6 +697,58 @@ model AgentDeployment {
   @@index([subagentId])
   @@index([deploymentType])
   @@index([deploymentProfile])
+}
+
+model BridgeConnection {
+  id                 String                   @id @default(cuid())
+  deploymentId       String
+  provider           BridgeConnectionProvider
+  name               String
+  destination        String
+  enabled            Boolean                  @default(true)
+  autoRelay          Boolean                  @default(true)
+  config             Json?
+  credentials        Json
+  lastDeliveryAt     DateTime?
+  lastDeliveryStatus BridgeDispatchStatus?
+  lastError          String?
+  createdAt          DateTime                 @default(now())
+  updatedAt          DateTime                 @updatedAt
+
+  deployment         AgentDeployment          @relation(fields: [deploymentId], references: [id], onDelete: Cascade)
+  deliveries         BridgeDispatchDelivery[]
+
+  @@index([deploymentId])
+  @@index([deploymentId, enabled])
+  @@index([provider])
+  @@index([updatedAt])
+}
+
+model BridgeDispatchDelivery {
+  id                String               @id @default(cuid())
+  deploymentId      String
+  connectionId      String
+  source            BridgeDispatchSource
+  status            BridgeDispatchStatus @default(pending)
+  dedupeKey         String               @unique
+  message           String
+  payload           Json?
+  attempts          Int                  @default(0)
+  nextAttemptAt     DateTime?
+  providerMessageId String?
+  result            Json?
+  lastError         String?
+  deliveredAt       DateTime?
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+
+  deployment        AgentDeployment      @relation(fields: [deploymentId], references: [id], onDelete: Cascade)
+  connection        BridgeConnection     @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@index([deploymentId, createdAt])
+  @@index([connectionId, createdAt])
+  @@index([status, nextAttemptAt])
+  @@index([source, createdAt])
 }
 
 enum DeploymentType {
@@ -646,6 +819,25 @@ enum BridgeCrewRole {
 enum BridgeCrewStatus {
   active
   inactive
+}
+
+enum BridgeConnectionProvider {
+  telegram
+  discord
+  whatsapp
+}
+
+enum BridgeDispatchSource {
+  cou_auto
+  manual
+  test
+}
+
+enum BridgeDispatchStatus {
+  pending
+  processing
+  completed
+  failed
 }
 
 model ApplicationDeployment {
@@ -797,6 +989,40 @@ model ForwardingConfig {
 
   @@index([userId])
   @@index([enabled])
+}
+
+model ObservabilityTrace {
+  id        String   @id @default(cuid())
+  traceId   String   @unique
+  userId    String?
+  sessionId String?
+  source    String?
+  status    String?
+  payload   Json
+  metadata  Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user          User?                            @relation(fields: [userId], references: [id], onDelete: SetNull)
+  session       Session?                         @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  decryptAudits ObservabilityTraceDecryptAudit[]
+
+  @@index([userId, createdAt])
+  @@index([sessionId, createdAt])
+  @@index([createdAt])
+}
+
+model ObservabilityTraceDecryptAudit {
+  id        String   @id @default(cuid())
+  traceId   String
+  actorType String
+  actorId   String
+  actorEmail String?
+  createdAt DateTime @default(now())
+
+  trace     ObservabilityTrace @relation(fields: [traceId], references: [id], onDelete: Cascade)
+  @@index([traceId, createdAt])
+  @@index([actorType, createdAt])
 }
 
 enum ForwardingEventType {

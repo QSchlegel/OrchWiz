@@ -27,6 +27,8 @@ interface FlowCanvasProps {
   onNodeDragStop?: NodeDragHandler
   className?: string
   showMiniMap?: boolean
+  miniMapWidth?: number
+  miniMapHeight?: number
   nodesDraggable?: boolean
   nodesConnectable?: boolean
   onConnect?: OnConnect
@@ -46,6 +48,8 @@ export function FlowCanvas({
   onNodeDragStop,
   className = "",
   showMiniMap = false,
+  miniMapWidth = 180,
+  miniMapHeight = 120,
   nodesDraggable = true,
   nodesConnectable = false,
   onConnect,
@@ -86,6 +90,7 @@ export function FlowCanvas({
             className="flow-theme-minimap"
             maskColor="var(--flow-minimap-mask)"
             nodeColor={() => "var(--flow-minimap-node)"}
+            style={{ width: miniMapWidth, height: miniMapHeight }}
           />
         )}
       </ReactFlow>

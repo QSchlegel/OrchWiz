@@ -20,7 +20,8 @@ export async function POST(
     const { id } = await params
     const body = await request.json()
     const sessionId = typeof body?.sessionId === "string" && body.sessionId.trim() ? body.sessionId.trim() : null
-    const subagentId = typeof body?.subagentId === "string" && body.subagentId.trim() ? body.subagentId.trim() : null
+    const requestedSubagentId =
+      typeof body?.subagentId === "string" && body.subagentId.trim() ? body.subagentId.trim() : null
 
     const command = await prisma.command.findUnique({
       where: { id },
@@ -30,19 +31,31 @@ export async function POST(
       return NextResponse.json({ error: "Command not found" }, { status: 404 })
     }
 
+    let effectiveSubagentId: string | null = null
+    if (requestedSubagentId) {
+      const subagent = await prisma.subagent.findUnique({
+        where: { id: requestedSubagentId },
+        select: { id: true },
+      })
+      if (!subagent) {
+        return NextResponse.json({ error: "subagentId does not exist" }, { status: 400 })
+      }
+      effectiveSubagentId = subagent.id
+    }
+
     const startedAt = new Date()
     const execution = await prisma.commandExecution.create({
       data: {
         commandId: id,
         sessionId,
-        subagentId,
+        subagentId: effectiveSubagentId,
         userId: session.user.id,
         status: "running",
         startedAt,
       },
     })
 
-    const result = await executeCommandWithPolicy(command, { subagentId })
+    const result = await executeCommandWithPolicy(command, { subagentId: effectiveSubagentId })
     const completedAt = new Date()
     const duration = Math.max(result.durationMs, completedAt.getTime() - startedAt.getTime())
 
@@ -67,7 +80,7 @@ export async function POST(
         executionId: updatedExecution.id,
         commandId: id,
         sessionId,
-        subagentId,
+        subagentId: effectiveSubagentId,
         status: updatedExecution.status,
       },
     })
@@ -75,6 +88,7 @@ export async function POST(
     return NextResponse.json({
       ...updatedExecution,
       policy: result.permission,
+      effectiveSubagentId,
       blocked: result.status === "blocked",
       metadata: result.metadata,
     })

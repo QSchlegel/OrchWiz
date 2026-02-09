@@ -11,6 +11,8 @@ export type RealtimeEventType =
   | "webhook.received"
   | "docs.updated"
   | "bridge.updated"
+  | "bridge.comms.updated"
+  | "bridge-call.round.updated"
 
 export interface RealtimeEvent<T = unknown> {
   id: string

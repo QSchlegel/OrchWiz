@@ -76,8 +76,10 @@ export function ContextFlowNode({ data, selected }: NodeProps<ContextFlowNodeDat
         )}
       </div>
       {data.meta && <p className="mt-2 text-[10px] uppercase tracking-[0.12em] text-slate-400">{data.meta}</p>}
-      <Handle type="target" position={Position.Left} style={{ opacity: 0 }} />
-      <Handle type="source" position={Position.Right} style={{ opacity: 0 }} />
+      <Handle id="target-left" type="target" position={Position.Left} style={{ opacity: 0 }} />
+      <Handle id="target-right" type="target" position={Position.Right} style={{ opacity: 0 }} />
+      <Handle id="source-right" type="source" position={Position.Right} style={{ opacity: 0 }} />
+      <Handle id="source-left" type="source" position={Position.Left} style={{ opacity: 0 }} />
     </div>
   )
 }

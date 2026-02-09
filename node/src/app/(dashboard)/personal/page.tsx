@@ -7,7 +7,7 @@ import { EmptyState, InlineNotice, PageLayout, SurfaceCard } from "@/components/
 import { buildInitialBridgeCrewSubagents } from "@/lib/subagents/bridge-crew-bootstrap"
 
 type PersonalTab = "personal" | "shared"
-type AgentDetailTab = "context" | "orchestration" | "permissions" | "workspace" | "memory" | "guidelines" | "graph"
+type AgentDetailTab = "context" | "orchestration" | "permissions" | "workspace" | "memory" | "guidelines"
 type EditableSettingsSection = "orchestration" | "workspace" | "memory" | "guidelines"
 
 interface SubagentSettings {
@@ -75,6 +75,39 @@ interface AgentPermission {
   createdAt: string
 }
 
+interface PermissionPolicyRule {
+  id?: string
+  commandPattern: string
+  type: "bash_command" | "tool_command"
+  status: "allow" | "ask" | "deny"
+  sortOrder: number
+}
+
+interface PermissionPolicy {
+  id: string
+  slug: string
+  name: string
+  description: string | null
+  isSystem: boolean
+  rules: PermissionPolicyRule[]
+  _count?: {
+    assignments: number
+  }
+}
+
+interface PolicyAssignment {
+  policyId: string
+  priority: number
+  enabled: boolean
+}
+
+interface PolicyEditorState {
+  id: string | null
+  name: string
+  description: string
+  rules: PermissionPolicyRule[]
+}
+
 const DETAIL_TABS: Array<{ id: AgentDetailTab; label: string }> = [
   { id: "context", label: "Context" },
   { id: "orchestration", label: "Orchestration" },
@@ -82,7 +115,6 @@ const DETAIL_TABS: Array<{ id: AgentDetailTab; label: string }> = [
   { id: "workspace", label: "Workspace" },
   { id: "memory", label: "Memory" },
   { id: "guidelines", label: "Guidelines" },
-  { id: "graph", label: "Graph" },
 ]
 
 const BRIDGE_AGENT_ORDER = ["XO-CB01", "OPS-ARX", "ENG-GEO", "SEC-KOR", "MED-BEV", "COU-DEA"]
@@ -93,6 +125,8 @@ const EMPTY_FORM: SubagentFormState = {
   content: "",
   path: "",
 }
+
+const QUICK_PRESET_SLUGS = ["safe-core", "balanced-devops", "power-operator"]
 
 const DEFAULT_SUBAGENT_SETTINGS: SubagentSettings = {
   orchestration: {
@@ -286,6 +320,41 @@ function selectDefaultAgentId(subagents: Subagent[]): string | null {
   return alphabetical[0]?.id || null
 }
 
+function serializePolicyAssignments(assignments: PolicyAssignment[]): string {
+  return JSON.stringify(
+    [...assignments]
+      .map((assignment) => ({
+        policyId: assignment.policyId,
+        priority: Number.isFinite(assignment.priority) ? Math.trunc(assignment.priority) : 100,
+        enabled: Boolean(assignment.enabled),
+      }))
+      .sort((left, right) => {
+        if (left.priority !== right.priority) {
+          return left.priority - right.priority
+        }
+        return left.policyId.localeCompare(right.policyId)
+      }),
+  )
+}
+
+function emptyPolicyEditorState(): PolicyEditorState {
+  return {
+    id: null,
+    name: "",
+    description: "",
+    rules: [{ commandPattern: "", type: "bash_command", status: "allow", sortOrder: 10 }],
+  }
+}
+
+function sortPolicyRules(rules: PermissionPolicyRule[]): PermissionPolicyRule[] {
+  return [...rules].sort((left, right) => {
+    if (left.sortOrder !== right.sortOrder) {
+      return left.sortOrder - right.sortOrder
+    }
+    return left.commandPattern.localeCompare(right.commandPattern)
+  })
+}
+
 async function readApiError(response: Response): Promise<string> {
   try {
     const payload = await response.json()
@@ -343,6 +412,14 @@ export default function PersonalPage() {
     status: "allow" as "allow" | "ask" | "deny",
     sourceFile: "",
   })
+  const [policyLibrary, setPolicyLibrary] = useState<PermissionPolicy[]>([])
+  const [isPolicyLibraryLoading, setIsPolicyLibraryLoading] = useState(false)
+  const [isPolicyEditorSaving, setIsPolicyEditorSaving] = useState(false)
+  const [isPolicyAssignmentSaving, setIsPolicyAssignmentSaving] = useState(false)
+  const [policyAssignments, setPolicyAssignments] = useState<PolicyAssignment[]>([])
+  const [policyAssignmentsSnapshot, setPolicyAssignmentsSnapshot] = useState("[]")
+  const [policyToAttachId, setPolicyToAttachId] = useState("")
+  const [policyEditor, setPolicyEditor] = useState<PolicyEditorState>(emptyPolicyEditorState())
   const autoBootstrapAttemptedRef = useRef(false)
 
   const activeTab = parseTab(searchParams.get("tab"))
@@ -451,9 +528,94 @@ export default function PersonalPage() {
     }
   }, [])
 
+  const loadPolicyLibrary = useCallback(async () => {
+    setIsPolicyLibraryLoading(true)
+    try {
+      const response = await fetch("/api/permission-policies")
+      if (!response.ok) {
+        setMessage({ type: "error", text: await readApiError(response) })
+        return
+      }
+
+      const payload = await response.json()
+      const library = Array.isArray(payload)
+        ? payload
+            .filter((entry: any) => entry && typeof entry.id === "string")
+            .map((entry: any) => ({
+              id: entry.id,
+              slug: typeof entry.slug === "string" ? entry.slug : "",
+              name: typeof entry.name === "string" ? entry.name : "",
+              description: typeof entry.description === "string" ? entry.description : null,
+              isSystem: Boolean(entry.isSystem),
+              rules: sortPolicyRules(
+                Array.isArray(entry.rules)
+                  ? entry.rules
+                      .filter((rule: any) => rule && typeof rule.commandPattern === "string")
+                      .map((rule: any, index: number) => ({
+                        id: typeof rule.id === "string" ? rule.id : undefined,
+                        commandPattern: rule.commandPattern,
+                        type: rule.type === "tool_command" ? "tool_command" : "bash_command",
+                        status: rule.status === "deny" || rule.status === "ask" ? rule.status : "allow",
+                        sortOrder: Number.isFinite(rule.sortOrder) ? Number(rule.sortOrder) : (index + 1) * 10,
+                      }))
+                  : [],
+              ),
+              _count: {
+                assignments: Number(entry?._count?.assignments) || 0,
+              },
+            }))
+            .sort((left: PermissionPolicy, right: PermissionPolicy) => {
+              if (left.isSystem !== right.isSystem) {
+                return left.isSystem ? -1 : 1
+              }
+              return left.name.localeCompare(right.name)
+            })
+        : []
+
+      setPolicyLibrary(library)
+    } catch (error) {
+      console.error("Failed to load permission policy library:", error)
+      setMessage({ type: "error", text: "Unable to load policy library" })
+    } finally {
+      setIsPolicyLibraryLoading(false)
+    }
+  }, [])
+
+  const loadPolicyAssignments = useCallback(async (subagentId: string) => {
+    try {
+      const response = await fetch(`/api/subagents/${subagentId}/permission-policies`)
+      if (!response.ok) {
+        setMessage({ type: "error", text: await readApiError(response) })
+        return
+      }
+
+      const payload = await response.json()
+      const assignments = Array.isArray(payload)
+        ? payload
+            .filter((entry: any) => entry && typeof entry.policyId === "string")
+            .map((entry: any) => ({
+              policyId: entry.policyId,
+              priority: Number.isFinite(entry.priority) ? Number(entry.priority) : 100,
+              enabled: Boolean(entry.enabled),
+            }))
+        : []
+
+      const snapshot = serializePolicyAssignments(assignments)
+      setPolicyAssignments(assignments)
+      setPolicyAssignmentsSnapshot(snapshot)
+    } catch (error) {
+      console.error("Failed to load policy assignments:", error)
+      setMessage({ type: "error", text: "Unable to load policy assignments" })
+    }
+  }, [])
+
   useEffect(() => {
     void fetchSubagents()
   }, [fetchSubagents])
+
+  useEffect(() => {
+    void loadPolicyLibrary()
+  }, [loadPolicyLibrary])
 
   useEffect(() => {
     if (activeTab === "shared") {
@@ -482,10 +644,14 @@ export default function PersonalPage() {
       setContextTotals({ wordCount: 0, estimatedTokens: 0 })
       setContextRootPath(null)
       setAgentPermissions([])
+      setPolicyAssignments([])
+      setPolicyAssignmentsSnapshot("[]")
+      setPolicyToAttachId("")
       return
     }
 
     setSettingsDraft(normalizeSettings(selectedSubagent.settings))
+    setPolicyEditor(emptyPolicyEditorState())
     setDirtySettingsSections({
       orchestration: false,
       workspace: false,
@@ -495,7 +661,8 @@ export default function PersonalPage() {
 
     void loadContextFiles(selectedSubagent.id)
     void loadPermissions(selectedSubagent.id)
-  }, [selectedSubagent, loadContextFiles, loadPermissions])
+    void loadPolicyAssignments(selectedSubagent.id)
+  }, [selectedSubagent, loadContextFiles, loadPermissions, loadPolicyAssignments])
 
   const setActiveTab = (tab: PersonalTab) => {
     const params = new URLSearchParams(searchParams.toString())
@@ -901,7 +1068,287 @@ export default function PersonalPage() {
     }
   }
 
+  const savePolicyAssignments = async (nextAssignments: PolicyAssignment[], successText: string) => {
+    if (!selectedSubagent) return
+    if (selectedSubagent.isShared) {
+      setMessage({ type: "error", text: "Shared agents are read-only on this page." })
+      return
+    }
+
+    setIsPolicyAssignmentSaving(true)
+    setMessage(null)
+
+    try {
+      const response = await fetch(`/api/subagents/${selectedSubagent.id}/permission-policies`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          assignments: nextAssignments.map((assignment) => ({
+            policyId: assignment.policyId,
+            priority: Math.trunc(assignment.priority),
+            enabled: Boolean(assignment.enabled),
+          })),
+        }),
+      })
+
+      if (!response.ok) {
+        setMessage({ type: "error", text: await readApiError(response) })
+        return
+      }
+
+      const payload = await response.json()
+      const normalized = Array.isArray(payload)
+        ? payload
+            .filter((entry: any) => entry && typeof entry.policyId === "string")
+            .map((entry: any) => ({
+              policyId: entry.policyId,
+              priority: Number.isFinite(entry.priority) ? Number(entry.priority) : 100,
+              enabled: Boolean(entry.enabled),
+            }))
+        : []
+
+      const snapshot = serializePolicyAssignments(normalized)
+      setPolicyAssignments(normalized)
+      setPolicyAssignmentsSnapshot(snapshot)
+      setMessage({ type: "success", text: successText })
+    } catch (error) {
+      console.error("Failed to save policy assignments:", error)
+      setMessage({ type: "error", text: "Unable to save policy assignments" })
+    } finally {
+      setIsPolicyAssignmentSaving(false)
+    }
+  }
+
+  const attachPolicyToAgent = (policyId: string) => {
+    if (!policyId) return
+
+    setPolicyAssignments((current) => {
+      if (current.some((assignment) => assignment.policyId === policyId)) {
+        return current
+      }
+      return [
+        ...current,
+        {
+          policyId,
+          priority: 100,
+          enabled: true,
+        },
+      ]
+    })
+    setPolicyToAttachId("")
+  }
+
+  const removePolicyAssignment = (policyId: string) => {
+    setPolicyAssignments((current) => current.filter((assignment) => assignment.policyId !== policyId))
+  }
+
+  const updatePolicyAssignment = (policyId: string, patch: Partial<PolicyAssignment>) => {
+    setPolicyAssignments((current) =>
+      current.map((assignment) =>
+        assignment.policyId === policyId
+          ? {
+              ...assignment,
+              ...patch,
+            }
+          : assignment,
+      ),
+    )
+  }
+
+  const assignQuickPreset = async (slug: string) => {
+    if (!selectedSubagent) return
+    const preset = policyLibrary.find((policy) => policy.slug === slug)
+    if (!preset) {
+      setMessage({ type: "error", text: "Preset policy not found in library." })
+      return
+    }
+
+    await savePolicyAssignments(
+      [{ policyId: preset.id, priority: 100, enabled: true }],
+      `Assigned ${preset.name} preset`,
+    )
+  }
+
+  const addPolicyEditorRule = () => {
+    setPolicyEditor((current) => ({
+      ...current,
+      rules: [
+        ...current.rules,
+        {
+          commandPattern: "",
+          type: "bash_command",
+          status: "allow",
+          sortOrder: (current.rules.length + 1) * 10,
+        },
+      ],
+    }))
+  }
+
+  const updatePolicyEditorRule = (index: number, patch: Partial<PermissionPolicyRule>) => {
+    setPolicyEditor((current) => ({
+      ...current,
+      rules: current.rules.map((rule, ruleIndex) =>
+        ruleIndex === index
+          ? {
+              ...rule,
+              ...patch,
+            }
+          : rule,
+      ),
+    }))
+  }
+
+  const removePolicyEditorRule = (index: number) => {
+    setPolicyEditor((current) => ({
+      ...current,
+      rules: current.rules.filter((_, ruleIndex) => ruleIndex !== index),
+    }))
+  }
+
+  const editPolicyFromLibrary = (policy: PermissionPolicy) => {
+    if (policy.isSystem) {
+      setMessage({ type: "info", text: "System policy profiles are immutable." })
+      return
+    }
+
+    setPolicyEditor({
+      id: policy.id,
+      name: policy.name,
+      description: policy.description || "",
+      rules: sortPolicyRules(policy.rules).map((rule, index) => ({
+        id: rule.id,
+        commandPattern: rule.commandPattern,
+        type: rule.type,
+        status: rule.status,
+        sortOrder: Number.isFinite(rule.sortOrder) ? Number(rule.sortOrder) : (index + 1) * 10,
+      })),
+    })
+  }
+
+  const resetPolicyEditor = () => {
+    setPolicyEditor(emptyPolicyEditorState())
+  }
+
+  const savePolicyEditor = async (event: React.FormEvent) => {
+    event.preventDefault()
+
+    const trimmedName = policyEditor.name.trim()
+    if (!trimmedName) {
+      setMessage({ type: "error", text: "Policy name is required." })
+      return
+    }
+
+    const preparedRules = sortPolicyRules(policyEditor.rules)
+      .map((rule, index) => ({
+        commandPattern: rule.commandPattern.trim(),
+        type: rule.type,
+        status: rule.status,
+        sortOrder: Number.isFinite(rule.sortOrder) ? Number(rule.sortOrder) : (index + 1) * 10,
+      }))
+      .filter((rule) => rule.commandPattern.length > 0)
+
+    if (preparedRules.length === 0) {
+      setMessage({ type: "error", text: "Add at least one non-empty policy rule." })
+      return
+    }
+
+    setIsPolicyEditorSaving(true)
+    setMessage(null)
+
+    try {
+      const method = policyEditor.id ? "PUT" : "POST"
+      const url = policyEditor.id ? `/api/permission-policies/${policyEditor.id}` : "/api/permission-policies"
+      const response = await fetch(url, {
+        method,
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          name: trimmedName,
+          description: policyEditor.description.trim() || null,
+          rules: preparedRules,
+        }),
+      })
+
+      if (!response.ok) {
+        setMessage({ type: "error", text: await readApiError(response) })
+        return
+      }
+
+      await loadPolicyLibrary()
+      if (selectedSubagent) {
+        await loadPolicyAssignments(selectedSubagent.id)
+      }
+      resetPolicyEditor()
+      setMessage({ type: "success", text: "Policy profile saved" })
+    } catch (error) {
+      console.error("Error saving policy profile:", error)
+      setMessage({ type: "error", text: "Unable to save policy profile" })
+    } finally {
+      setIsPolicyEditorSaving(false)
+    }
+  }
+
+  const deletePolicyProfile = async (policyId: string) => {
+    if (!confirm("Delete this policy profile?")) return
+
+    try {
+      const response = await fetch(`/api/permission-policies/${policyId}`, {
+        method: "DELETE",
+      })
+      if (!response.ok) {
+        setMessage({ type: "error", text: await readApiError(response) })
+        return
+      }
+
+      await loadPolicyLibrary()
+      if (selectedSubagent) {
+        await loadPolicyAssignments(selectedSubagent.id)
+      }
+      if (policyEditor.id === policyId) {
+        resetPolicyEditor()
+      }
+      setMessage({ type: "success", text: "Policy profile deleted" })
+    } catch (error) {
+      console.error("Error deleting policy profile:", error)
+      setMessage({ type: "error", text: "Unable to delete policy profile" })
+    }
+  }
+
+  const policyById = useMemo(
+    () => new Map(policyLibrary.map((policy) => [policy.id, policy])),
+    [policyLibrary],
+  )
+
+  const quickPresetPolicies = useMemo(
+    () => QUICK_PRESET_SLUGS
+      .map((slug) => policyLibrary.find((policy) => policy.slug === slug))
+      .filter((policy): policy is PermissionPolicy => Boolean(policy)),
+    [policyLibrary],
+  )
+
+  const assignedPolicyIds = useMemo(
+    () => new Set(policyAssignments.map((assignment) => assignment.policyId)),
+    [policyAssignments],
+  )
+
+  const attachablePolicies = useMemo(
+    () => policyLibrary.filter((policy) => !assignedPolicyIds.has(policy.id)),
+    [assignedPolicyIds, policyLibrary],
+  )
+
+  const policyAssignmentsDirty = useMemo(
+    () => serializePolicyAssignments(policyAssignments) !== policyAssignmentsSnapshot,
+    [policyAssignments, policyAssignmentsSnapshot],
+  )
+
   const selectedSummary = selectedSubagent ? trimSummary(selectedSubagent.content) : ""
+  const selectedContextSize = selectedSubagent
+    ? (contextFiles.length > 0 || contextTotals.wordCount > 0 ? contextTotals : toContextSize(selectedSubagent.content))
+    : { wordCount: 0, estimatedTokens: 0 }
+  const activeDetailTabLabel = DETAIL_TABS.find((tab) => tab.id === detailTab)?.label || "Context"
 
   return (
     <PageLayout
@@ -1001,49 +1448,51 @@ export default function PersonalPage() {
             <EmptyState title="No shared agents found" description="Shared agents will appear here automatically." />
           )
         ) : (
-          <div className="grid grid-cols-1 gap-4 xl:grid-cols-[340px_minmax(0,1fr)]">
-            <SurfaceCard className="space-y-2">
-              <div className="mb-2 flex items-center justify-between">
+          <div className="space-y-4">
+            <SurfaceCard className="space-y-3">
+              <div className="flex items-center justify-between">
                 <h2 className="text-sm font-semibold uppercase tracking-[0.14em] text-slate-500">Available agents</h2>
                 <span className="text-xs text-slate-500 dark:text-slate-400">{activeSubagents.length}</span>
               </div>
 
-              <div className="space-y-2">
-                {activeSubagents.map((subagent) => {
-                  const isSelected = subagent.id === selectedAgentId
-                  const size = toContextSize(subagent.content)
+              <div className="overflow-x-auto pb-1">
+                <div className="flex min-w-max gap-2">
+                  {activeSubagents.map((subagent) => {
+                    const isSelected = subagent.id === selectedAgentId
+                    const size = toContextSize(subagent.content)
 
-                  return (
-                    <button
-                      key={subagent.id}
-                      type="button"
-                      onClick={() => setSelectedAgentId(subagent.id)}
-                      className={`w-full rounded-xl border px-3 py-3 text-left transition ${
-                        isSelected
-                          ? "border-cyan-500/45 bg-cyan-500/10"
-                          : "border-slate-300/70 bg-white/80 hover:bg-slate-50 dark:border-white/10 dark:bg-white/[0.03] dark:hover:bg-white/[0.06]"
-                      }`}
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        <div>
-                          <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{subagent.name}</p>
-                          <p className="mt-1 text-xs text-slate-600 dark:text-slate-400">
-                            {subagent.description || "No description"}
-                          </p>
+                    return (
+                      <button
+                        key={subagent.id}
+                        type="button"
+                        onClick={() => setSelectedAgentId(subagent.id)}
+                        className={`min-w-[260px] max-w-[320px] rounded-xl border px-3 py-3 text-left transition ${
+                          isSelected
+                            ? "border-cyan-500/45 bg-cyan-500/10"
+                            : "border-slate-300/70 bg-white/80 hover:bg-slate-50 dark:border-white/10 dark:bg-white/[0.03] dark:hover:bg-white/[0.06]"
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{subagent.name}</p>
+                            <p className="mt-1 line-clamp-2 text-xs text-slate-600 dark:text-slate-400">
+                              {subagent.description || "No description"}
+                            </p>
+                          </div>
+                          {subagent.isShared && (
+                            <span className="rounded-full border border-blue-500/30 bg-blue-500/10 px-2 py-0.5 text-[10px] font-medium text-blue-700 dark:text-blue-300">
+                              Shared
+                            </span>
+                          )}
                         </div>
-                        {subagent.isShared && (
-                          <span className="rounded-full border border-blue-500/30 bg-blue-500/10 px-2 py-0.5 text-[10px] font-medium text-blue-700 dark:text-blue-300">
-                            Shared
-                          </span>
-                        )}
-                      </div>
-                      <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-slate-600 dark:text-slate-400">
-                        <span>{size.wordCount} words</span>
-                        <span>~{size.estimatedTokens} tokens</span>
-                      </div>
-                    </button>
-                  )
-                })}
+                        <div className="mt-2 flex items-center gap-3 text-xs text-slate-600 dark:text-slate-400">
+                          <span>{size.wordCount} words</span>
+                          <span>~{size.estimatedTokens} tokens</span>
+                        </div>
+                      </button>
+                    )
+                  })}
+                </div>
               </div>
             </SurfaceCard>
 
@@ -1057,6 +1506,9 @@ export default function PersonalPage() {
                       <h2 className="text-xl font-semibold text-slate-900 dark:text-slate-100">{selectedSubagent.name}</h2>
                       <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">{selectedSummary}</p>
                       <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{selectedSubagent.path || "No path configured"}</p>
+                      <p className="mt-1 text-xs font-medium text-slate-500 dark:text-slate-400">
+                        Total context size: {selectedContextSize.wordCount} words (~{selectedContextSize.estimatedTokens} tokens)
+                      </p>
                     </div>
 
                     {activeTab === "personal" && !selectedSubagent.isShared && (
@@ -1098,6 +1550,20 @@ export default function PersonalPage() {
                         {tab.label}
                       </button>
                     ))}
+                  </div>
+
+                  <div className="rounded-lg border border-slate-200/80 bg-slate-50/70 p-3 text-xs text-slate-600 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-300">
+                    <p className="uppercase tracking-[0.14em] text-[10px] text-slate-500">Editing Focus</p>
+                    <p className="mt-1 text-sm font-medium text-slate-800 dark:text-slate-200">
+                      {selectedSubagent.name} / {activeDetailTabLabel}
+                    </p>
+                    <p className="mt-1">
+                      Context source: {contextSource === "filesystem" ? "Filesystem" : "Content fallback"}
+                      {contextRootPath ? ` / ${contextRootPath}` : ""}
+                    </p>
+                    <p className="mt-1">
+                      Total context size: {selectedContextSize.wordCount} words (~{selectedContextSize.estimatedTokens} tokens)
+                    </p>
                   </div>
 
                   {detailTab === "context" && (
@@ -1268,94 +1734,396 @@ export default function PersonalPage() {
 
                   {detailTab === "permissions" && (
                     <div className="space-y-4">
-                      <form onSubmit={createPermission} className="grid grid-cols-1 gap-3 rounded-lg border border-slate-200/80 bg-white/80 p-3 dark:border-white/10 dark:bg-white/[0.03] md:grid-cols-4">
-                        <input
-                          type="text"
-                          value={permissionDraft.commandPattern}
-                          onChange={(event) => setPermissionDraft((current) => ({ ...current, commandPattern: event.target.value }))}
-                          placeholder="bun run build:*"
-                          required
-                          disabled={selectedSubagent.isShared}
-                          className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 md:col-span-2 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
-                        />
-                        <select
-                          value={permissionDraft.status}
-                          onChange={(event) =>
-                            setPermissionDraft((current) => ({ ...current, status: event.target.value as "allow" | "ask" | "deny" }))
-                          }
-                          disabled={selectedSubagent.isShared}
-                          className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
-                        >
-                          <option value="allow">allow</option>
-                          <option value="ask">ask</option>
-                          <option value="deny">deny</option>
-                        </select>
-                        <select
-                          value={permissionDraft.type}
-                          onChange={(event) =>
-                            setPermissionDraft((current) => ({ ...current, type: event.target.value as "bash_command" | "tool_command" }))
-                          }
-                          disabled={selectedSubagent.isShared}
-                          className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
-                        >
-                          <option value="bash_command">bash_command</option>
-                          <option value="tool_command">tool_command</option>
-                        </select>
-                        <input
-                          type="text"
-                          value={permissionDraft.sourceFile}
-                          onChange={(event) => setPermissionDraft((current) => ({ ...current, sourceFile: event.target.value }))}
-                          placeholder="source file (optional)"
-                          disabled={selectedSubagent.isShared}
-                          className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 md:col-span-3 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
-                        />
-                        <button
-                          type="submit"
-                          disabled={selectedSubagent.isShared || isCreatingPermission || !permissionDraft.commandPattern.trim()}
-                          className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-black disabled:opacity-50 dark:bg-white dark:text-slate-900"
-                        >
-                          {isCreatingPermission ? "Adding..." : "Add Rule"}
-                        </button>
-                      </form>
+                      <div className="rounded-lg border border-slate-200/80 bg-white/80 p-3 dark:border-white/10 dark:bg-white/[0.03]">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Assigned Profiles</h4>
+                            <p className="text-xs text-slate-500 dark:text-slate-400">
+                              Assign reusable policy profiles to this agent. Direct overrides still take precedence.
+                            </p>
+                          </div>
+                          {selectedSubagent.isShared && (
+                            <span className="rounded-full border border-slate-300 px-2 py-0.5 text-xs text-slate-500 dark:border-white/15 dark:text-slate-400">
+                              Read-only (shared agent)
+                            </span>
+                          )}
+                        </div>
 
-                      {isPermissionsLoading ? (
-                        <SurfaceCard>Loading permission rules...</SurfaceCard>
-                      ) : agentPermissions.length === 0 ? (
-                        <EmptyState
-                          title="No agent-scoped permissions"
-                          description="Add allow/ask/deny command patterns for this agent."
-                        />
-                      ) : (
-                        <div className="space-y-2">
-                          {agentPermissions.map((permission) => (
-                            <div
-                              key={permission.id}
-                              className="rounded-lg border border-slate-200/80 bg-white/80 p-3 dark:border-white/10 dark:bg-white/[0.03]"
+                        <div className="mt-3 flex flex-wrap items-center gap-2">
+                          {quickPresetPolicies.map((preset) => (
+                            <button
+                              key={preset.id}
+                              type="button"
+                              onClick={() => void assignQuickPreset(preset.slug)}
+                              disabled={selectedSubagent.isShared || isPolicyAssignmentSaving}
+                              className="rounded-lg border border-cyan-500/35 px-3 py-1.5 text-xs text-cyan-700 hover:bg-cyan-500/10 disabled:opacity-50 dark:text-cyan-300"
                             >
-                              <div className="flex flex-wrap items-center justify-between gap-2">
-                                <div>
-                                  <p className="font-mono text-sm text-slate-900 dark:text-slate-100">{permission.commandPattern}</p>
-                                  <p className="text-xs text-slate-500 dark:text-slate-400">
-                                    {permission.status} · {permission.type} · {permission.scope}
-                                  </p>
-                                </div>
-                                {!selectedSubagent.isShared && (
-                                  <button
-                                    type="button"
-                                    onClick={() => void deletePermission(permission.id)}
-                                    className="rounded-lg border border-rose-500/35 px-3 py-1.5 text-xs text-rose-700 hover:bg-rose-500/10 dark:text-rose-300"
-                                  >
-                                    Delete
-                                  </button>
-                                )}
-                              </div>
-                              {permission.sourceFile && (
-                                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Source: {permission.sourceFile}</p>
-                              )}
-                            </div>
+                              Quick preset: {preset.name}
+                            </button>
                           ))}
                         </div>
-                      )}
+
+                        <div className="mt-3 flex flex-wrap items-center gap-2">
+                          <select
+                            value={policyToAttachId}
+                            onChange={(event) => setPolicyToAttachId(event.target.value)}
+                            disabled={selectedSubagent.isShared || attachablePolicies.length === 0}
+                            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
+                          >
+                            <option value="">Attach profile...</option>
+                            {attachablePolicies.map((policy) => (
+                              <option key={policy.id} value={policy.id}>
+                                {policy.name}
+                              </option>
+                            ))}
+                          </select>
+                          <button
+                            type="button"
+                            onClick={() => attachPolicyToAgent(policyToAttachId)}
+                            disabled={selectedSubagent.isShared || !policyToAttachId}
+                            className="rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 hover:bg-slate-100 disabled:opacity-50 dark:border-white/15 dark:text-slate-300 dark:hover:bg-white/[0.08]"
+                          >
+                            Attach
+                          </button>
+                        </div>
+
+                        {policyAssignments.length === 0 ? (
+                          <p className="mt-3 text-sm text-slate-500 dark:text-slate-400">No profiles assigned.</p>
+                        ) : (
+                          <div className="mt-3 space-y-2">
+                            {policyAssignments
+                              .slice()
+                              .sort((left, right) => left.priority - right.priority)
+                              .map((assignment) => {
+                                const policy = policyById.get(assignment.policyId)
+                                if (!policy) {
+                                  return null
+                                }
+
+                                return (
+                                  <div
+                                    key={assignment.policyId}
+                                    className="rounded-lg border border-slate-200/80 bg-white/80 p-3 dark:border-white/10 dark:bg-white/[0.03]"
+                                  >
+                                    <div className="flex flex-wrap items-center justify-between gap-2">
+                                      <div>
+                                        <p className="text-sm font-medium text-slate-900 dark:text-slate-100">{policy.name}</p>
+                                        <p className="text-xs text-slate-500 dark:text-slate-400">
+                                          {policy.slug} · {policy.rules.length} rule{policy.rules.length === 1 ? "" : "s"}
+                                        </p>
+                                      </div>
+                                      <button
+                                        type="button"
+                                        onClick={() => removePolicyAssignment(assignment.policyId)}
+                                        disabled={selectedSubagent.isShared}
+                                        className="rounded-lg border border-rose-500/35 px-2 py-1 text-xs text-rose-700 hover:bg-rose-500/10 disabled:opacity-50 dark:text-rose-300"
+                                      >
+                                        Remove
+                                      </button>
+                                    </div>
+
+                                    <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2">
+                                      <label className="text-xs text-slate-600 dark:text-slate-300">
+                                        Priority (lower runs first)
+                                        <input
+                                          type="number"
+                                          value={assignment.priority}
+                                          disabled={selectedSubagent.isShared}
+                                          onChange={(event) =>
+                                            updatePolicyAssignment(assignment.policyId, {
+                                              priority: Number(event.target.value) || 0,
+                                            })
+                                          }
+                                          className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
+                                        />
+                                      </label>
+                                      <label className="inline-flex items-center justify-between rounded-lg border border-slate-200/80 bg-white/80 px-3 py-2 text-sm text-slate-700 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-200">
+                                        Enabled
+                                        <input
+                                          type="checkbox"
+                                          checked={assignment.enabled}
+                                          disabled={selectedSubagent.isShared}
+                                          onChange={(event) =>
+                                            updatePolicyAssignment(assignment.policyId, {
+                                              enabled: event.target.checked,
+                                            })
+                                          }
+                                        />
+                                      </label>
+                                    </div>
+                                  </div>
+                                )
+                              })}
+                          </div>
+                        )}
+
+                        <div className="mt-3">
+                          <button
+                            type="button"
+                            onClick={() => void savePolicyAssignments(policyAssignments, "Policy assignments saved")}
+                            disabled={selectedSubagent.isShared || isPolicyAssignmentSaving || !policyAssignmentsDirty}
+                            className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-black disabled:opacity-50 dark:bg-white dark:text-slate-900"
+                          >
+                            {isPolicyAssignmentSaving ? "Saving..." : "Save Assigned Profiles"}
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="rounded-lg border border-slate-200/80 bg-white/80 p-3 dark:border-white/10 dark:bg-white/[0.03]">
+                        <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Policy Library</h4>
+                        <p className="text-xs text-slate-500 dark:text-slate-400">
+                          Create and maintain reusable profile bundles. System profiles are immutable.
+                        </p>
+
+                        <form onSubmit={savePolicyEditor} className="mt-3 space-y-2 rounded-lg border border-slate-200/80 bg-white/80 p-3 dark:border-white/10 dark:bg-white/[0.03]">
+                          <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                            <input
+                              type="text"
+                              value={policyEditor.name}
+                              onChange={(event) => setPolicyEditor((current) => ({ ...current, name: event.target.value }))}
+                              placeholder="Profile name"
+                              required
+                              className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
+                            />
+                            <input
+                              type="text"
+                              value={policyEditor.description}
+                              onChange={(event) => setPolicyEditor((current) => ({ ...current, description: event.target.value }))}
+                              placeholder="Description (optional)"
+                              className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
+                            />
+                          </div>
+
+                          <div className="space-y-2">
+                            {policyEditor.rules.map((rule, index) => (
+                              <div key={`${rule.id || "draft"}-${index}`} className="grid grid-cols-1 gap-2 md:grid-cols-12">
+                                <input
+                                  type="text"
+                                  value={rule.commandPattern}
+                                  onChange={(event) => updatePolicyEditorRule(index, { commandPattern: event.target.value })}
+                                  placeholder="command pattern"
+                                  className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 md:col-span-6 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
+                                />
+                                <select
+                                  value={rule.status}
+                                  onChange={(event) =>
+                                    updatePolicyEditorRule(index, { status: event.target.value as "allow" | "ask" | "deny" })
+                                  }
+                                  className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 md:col-span-2 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
+                                >
+                                  <option value="allow">allow</option>
+                                  <option value="ask">ask</option>
+                                  <option value="deny">deny</option>
+                                </select>
+                                <select
+                                  value={rule.type}
+                                  onChange={(event) =>
+                                    updatePolicyEditorRule(index, { type: event.target.value as "bash_command" | "tool_command" })
+                                  }
+                                  className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 md:col-span-2 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
+                                >
+                                  <option value="bash_command">bash_command</option>
+                                  <option value="tool_command">tool_command</option>
+                                </select>
+                                <div className="flex gap-2 md:col-span-2">
+                                  <input
+                                    type="number"
+                                    value={rule.sortOrder}
+                                    onChange={(event) =>
+                                      updatePolicyEditorRule(index, { sortOrder: Number(event.target.value) || 0 })
+                                    }
+                                    className="w-full rounded-lg border border-slate-300 bg-white px-2 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() => removePolicyEditorRule(index)}
+                                    disabled={policyEditor.rules.length <= 1}
+                                    className="rounded-lg border border-rose-500/35 px-2 py-2 text-xs text-rose-700 hover:bg-rose-500/10 disabled:opacity-50 dark:text-rose-300"
+                                  >
+                                    X
+                                  </button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+
+                          <div className="flex flex-wrap items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={addPolicyEditorRule}
+                              className="rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 hover:bg-slate-100 dark:border-white/15 dark:text-slate-300 dark:hover:bg-white/[0.08]"
+                            >
+                              Add Rule
+                            </button>
+                            <button
+                              type="submit"
+                              disabled={isPolicyEditorSaving}
+                              className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-black disabled:opacity-50 dark:bg-white dark:text-slate-900"
+                            >
+                              {isPolicyEditorSaving ? "Saving..." : policyEditor.id ? "Update Profile" : "Create Profile"}
+                            </button>
+                            {policyEditor.id && (
+                              <button
+                                type="button"
+                                onClick={resetPolicyEditor}
+                                className="rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 hover:bg-slate-100 dark:border-white/15 dark:text-slate-300 dark:hover:bg-white/[0.08]"
+                              >
+                                Cancel Edit
+                              </button>
+                            )}
+                          </div>
+                        </form>
+
+                        {isPolicyLibraryLoading ? (
+                          <p className="mt-3 text-sm text-slate-500 dark:text-slate-400">Loading policy library...</p>
+                        ) : policyLibrary.length === 0 ? (
+                          <p className="mt-3 text-sm text-slate-500 dark:text-slate-400">No profiles available.</p>
+                        ) : (
+                          <div className="mt-3 space-y-2">
+                            {policyLibrary.map((policy) => (
+                              <div
+                                key={policy.id}
+                                className="rounded-lg border border-slate-200/80 bg-white/80 p-3 dark:border-white/10 dark:bg-white/[0.03]"
+                              >
+                                <div className="flex flex-wrap items-start justify-between gap-2">
+                                  <div>
+                                    <p className="text-sm font-medium text-slate-900 dark:text-slate-100">
+                                      {policy.name}
+                                      {policy.isSystem && (
+                                        <span className="ml-2 rounded-full border border-indigo-500/30 bg-indigo-500/10 px-2 py-0.5 text-[11px] text-indigo-700 dark:text-indigo-300">
+                                          system
+                                        </span>
+                                      )}
+                                    </p>
+                                    <p className="text-xs text-slate-500 dark:text-slate-400">
+                                      {policy.slug} · {policy._count?.assignments || 0} assignment{(policy._count?.assignments || 0) === 1 ? "" : "s"}
+                                    </p>
+                                    {policy.description && (
+                                      <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">{policy.description}</p>
+                                    )}
+                                  </div>
+                                  {!policy.isSystem && (
+                                    <div className="flex gap-2">
+                                      <button
+                                        type="button"
+                                        onClick={() => editPolicyFromLibrary(policy)}
+                                        className="rounded-lg border border-slate-300 px-2 py-1 text-xs text-slate-700 hover:bg-slate-100 dark:border-white/15 dark:text-slate-300 dark:hover:bg-white/[0.08]"
+                                      >
+                                        Edit
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => void deletePolicyProfile(policy.id)}
+                                        className="rounded-lg border border-rose-500/35 px-2 py-1 text-xs text-rose-700 hover:bg-rose-500/10 dark:text-rose-300"
+                                      >
+                                        Delete
+                                      </button>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="rounded-lg border border-slate-200/80 bg-white/80 p-3 dark:border-white/10 dark:bg-white/[0.03]">
+                        <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Agent Overrides</h4>
+                        <p className="text-xs text-slate-500 dark:text-slate-400">
+                          Direct rules that override assigned profiles for this agent.
+                        </p>
+
+                        <form onSubmit={createPermission} className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-4">
+                          <input
+                            type="text"
+                            value={permissionDraft.commandPattern}
+                            onChange={(event) => setPermissionDraft((current) => ({ ...current, commandPattern: event.target.value }))}
+                            placeholder="bun run build:*"
+                            required
+                            disabled={selectedSubagent.isShared}
+                            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 md:col-span-2 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
+                          />
+                          <select
+                            value={permissionDraft.status}
+                            onChange={(event) =>
+                              setPermissionDraft((current) => ({ ...current, status: event.target.value as "allow" | "ask" | "deny" }))
+                            }
+                            disabled={selectedSubagent.isShared}
+                            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
+                          >
+                            <option value="allow">allow</option>
+                            <option value="ask">ask</option>
+                            <option value="deny">deny</option>
+                          </select>
+                          <select
+                            value={permissionDraft.type}
+                            onChange={(event) =>
+                              setPermissionDraft((current) => ({ ...current, type: event.target.value as "bash_command" | "tool_command" }))
+                            }
+                            disabled={selectedSubagent.isShared}
+                            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
+                          >
+                            <option value="bash_command">bash_command</option>
+                            <option value="tool_command">tool_command</option>
+                          </select>
+                          <input
+                            type="text"
+                            value={permissionDraft.sourceFile}
+                            onChange={(event) => setPermissionDraft((current) => ({ ...current, sourceFile: event.target.value }))}
+                            placeholder="source file (optional)"
+                            disabled={selectedSubagent.isShared}
+                            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 md:col-span-3 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
+                          />
+                          <button
+                            type="submit"
+                            disabled={selectedSubagent.isShared || isCreatingPermission || !permissionDraft.commandPattern.trim()}
+                            className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-black disabled:opacity-50 dark:bg-white dark:text-slate-900"
+                          >
+                            {isCreatingPermission ? "Adding..." : "Add Override Rule"}
+                          </button>
+                        </form>
+
+                        {isPermissionsLoading ? (
+                          <SurfaceCard className="mt-3">Loading override rules...</SurfaceCard>
+                        ) : agentPermissions.length === 0 ? (
+                          <div className="mt-3">
+                            <EmptyState
+                              title="No agent overrides"
+                              description="Add allow/ask/deny command patterns for direct agent precedence."
+                            />
+                          </div>
+                        ) : (
+                          <div className="mt-3 space-y-2">
+                            {agentPermissions.map((permission) => (
+                              <div
+                                key={permission.id}
+                                className="rounded-lg border border-slate-200/80 bg-white/80 p-3 dark:border-white/10 dark:bg-white/[0.03]"
+                              >
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                  <div>
+                                    <p className="font-mono text-sm text-slate-900 dark:text-slate-100">{permission.commandPattern}</p>
+                                    <p className="text-xs text-slate-500 dark:text-slate-400">
+                                      {permission.status} · {permission.type} · {permission.scope}
+                                    </p>
+                                  </div>
+                                  {!selectedSubagent.isShared && (
+                                    <button
+                                      type="button"
+                                      onClick={() => void deletePermission(permission.id)}
+                                      className="rounded-lg border border-rose-500/35 px-3 py-1.5 text-xs text-rose-700 hover:bg-rose-500/10 dark:text-rose-300"
+                                    >
+                                      Delete
+                                    </button>
+                                  )}
+                                </div>
+                                {permission.sourceFile && (
+                                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Source: {permission.sourceFile}</p>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
                     </div>
                   )}
 
@@ -1570,13 +2338,20 @@ export default function PersonalPage() {
                     </div>
                   )}
 
-                  {detailTab === "graph" && (
+                  <div className="space-y-2 border-t border-slate-200/80 pt-3 dark:border-white/10">
+                    <div>
+                      <h3 className="text-sm font-semibold uppercase tracking-[0.14em] text-slate-500">Orchestration Graph</h3>
+                      <p className="text-xs text-slate-500 dark:text-slate-400">
+                        Showing {selectedSubagent.name} while editing {activeDetailTabLabel.toLowerCase()}.
+                      </p>
+                    </div>
                     <ContextOrchestrationBoard
-                      subagents={[selectedSubagent]}
+                      subagents={activeSubagents}
                       selectedAgentId={selectedSubagent.id}
+                      onSelectedAgentIdChange={setSelectedAgentId}
                       hideAgentSelector
                     />
-                  )}
+                  </div>
                 </div>
               )}
             </SurfaceCard>

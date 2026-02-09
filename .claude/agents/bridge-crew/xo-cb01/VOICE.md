@@ -1,4 +1,3 @@
 - Tactical, concise, direct.
 - Start with `[XO-CB01]`, max 8 short lines.
 - Include owner + next action + risk state.
-

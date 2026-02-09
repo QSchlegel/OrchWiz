@@ -26,12 +26,29 @@ interface CommandDetail {
   executions: CommandExecution[]
 }
 
+interface PersonalSubagent {
+  id: string
+  name: string
+  isShared: boolean
+}
+
+interface ExecutionPolicyDecision {
+  matchedSource: "subagent-rule" | "policy-profile" | "fallback-rule" | "none"
+  matchedPolicyName?: string
+  matchedPattern?: string
+  reason: string
+  status: "allow" | "ask" | "deny" | "none"
+}
+
 export default function CommandDetailPage() {
   const params = useParams<{ id: string }>()
   const [command, setCommand] = useState<CommandDetail | null>(null)
+  const [personalSubagents, setPersonalSubagents] = useState<PersonalSubagent[]>([])
+  const [selectedSubagentId, setSelectedSubagentId] = useState("")
   const [isLoading, setIsLoading] = useState(true)
   const [isExecuting, setIsExecuting] = useState(false)
   const [message, setMessage] = useState<{ type: "success" | "error" | "info"; text: string } | null>(null)
+  const [lastPolicyDecision, setLastPolicyDecision] = useState<ExecutionPolicyDecision | null>(null)
 
   const loadCommand = useCallback(async () => {
     setIsLoading(true)
@@ -58,6 +75,34 @@ export default function CommandDetailPage() {
     loadCommand()
   }, [loadCommand])
 
+  const loadPersonalSubagents = useCallback(async () => {
+    try {
+      const response = await fetch("/api/subagents")
+      if (!response.ok) {
+        return
+      }
+      const payload = await response.json()
+      const options = Array.isArray(payload)
+        ? payload
+            .filter((entry: any) => entry && entry.isShared !== true)
+            .map((entry: any) => ({
+              id: typeof entry.id === "string" ? entry.id : "",
+              name: typeof entry.name === "string" ? entry.name : "",
+              isShared: Boolean(entry.isShared),
+            }))
+            .filter((entry: PersonalSubagent) => entry.id && entry.name && !entry.isShared)
+            .sort((left: PersonalSubagent, right: PersonalSubagent) => left.name.localeCompare(right.name))
+        : []
+      setPersonalSubagents(options)
+    } catch (error) {
+      console.error("Failed to load personal agents:", error)
+    }
+  }, [])
+
+  useEffect(() => {
+    loadPersonalSubagents()
+  }, [loadPersonalSubagents])
+
   const runCommand = async () => {
     if (!command) {
       return
@@ -71,7 +116,9 @@ export default function CommandDetailPage() {
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({}),
+        body: JSON.stringify({
+          subagentId: selectedSubagentId || undefined,
+        }),
       })
 
       const payload = await response.json()
@@ -79,6 +126,8 @@ export default function CommandDetailPage() {
         setMessage({ type: "error", text: payload?.error || "Execution failed" })
         return
       }
+
+      setLastPolicyDecision(payload?.policy || null)
 
       if (payload.blocked) {
         setMessage({ type: "info", text: payload?.error || "Execution blocked by policy" })
@@ -119,6 +168,52 @@ export default function CommandDetailPage() {
 
         {command && (
           <>
+            <SurfaceCard>
+              <div className="grid gap-4 md:grid-cols-2">
+                <div>
+                  <p className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">Run as personal agent</p>
+                  <select
+                    value={selectedSubagentId}
+                    onChange={(event) => setSelectedSubagentId(event.target.value)}
+                    className="mt-2 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
+                  >
+                    <option value="">None (fallback rules only)</option>
+                    {personalSubagents.map((subagent) => (
+                      <option key={subagent.id} value={subagent.id}>
+                        {subagent.name}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                    Agent selection activates direct agent rules and assigned policy profiles.
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">Last policy decision</p>
+                  {lastPolicyDecision ? (
+                    <div className="mt-2 rounded-lg border border-slate-200/80 bg-white/90 p-3 text-sm dark:border-white/10 dark:bg-white/[0.02]">
+                      <p className="text-slate-800 dark:text-slate-200">
+                        Source: <span className="font-medium">{lastPolicyDecision.matchedSource}</span>
+                      </p>
+                      {lastPolicyDecision.matchedPolicyName && (
+                        <p className="text-slate-800 dark:text-slate-200">
+                          Profile: <span className="font-medium">{lastPolicyDecision.matchedPolicyName}</span>
+                        </p>
+                      )}
+                      {lastPolicyDecision.matchedPattern && (
+                        <p className="text-slate-800 dark:text-slate-200">
+                          Pattern: <code>{lastPolicyDecision.matchedPattern}</code>
+                        </p>
+                      )}
+                      <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{lastPolicyDecision.reason}</p>
+                    </div>
+                  ) : (
+                    <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">No execution yet.</p>
+                  )}
+                </div>
+              </div>
+            </SurfaceCard>
+
             <SurfaceCard>
               <div className="grid gap-4 md:grid-cols-2">
                 <div>

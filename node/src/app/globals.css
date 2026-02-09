@@ -703,126 +703,33 @@
     animation-duration: 3.4s;
   }
 
-  /* Bridge page cel-shaded language */
+  /* Bridge + Bridge Call visual language (reduced-noise tactical style) */
   .bridge-page {
-    --bridge-panel-bg-start: rgba(255, 255, 255, 0.58);
-    --bridge-panel-bg-end: rgba(226, 232, 240, 0.42);
-    --bridge-panel-border: rgba(15, 23, 42, 0.26);
-    --bridge-panel-highlight: rgba(255, 255, 255, 0.82);
-    --bridge-panel-shadow: rgba(15, 23, 42, 0.32);
-    --bridge-panel-line: rgba(15, 23, 42, 0.18);
-    --bridge-outline-color: rgba(30, 41, 59, 0.28);
-    --bridge-halftone-dot: rgba(15, 23, 42, 0.14);
-    --bridge-band-soft: rgba(56, 189, 248, 0.11);
-    --bridge-band-mid: rgba(14, 116, 144, 0.13);
-    --bridge-band-edge: rgba(15, 23, 42, 0.28);
-    --bridge-grid-major: rgba(15, 23, 42, 0.16);
-    --bridge-grid-minor: rgba(15, 23, 42, 0.08);
-    --bridge-sweep-soft: rgba(34, 211, 238, 0.02);
-    --bridge-sweep-strong: rgba(34, 211, 238, 0.14);
-    --bridge-console-border: rgba(6, 182, 212, 0.34);
-    --bridge-console-inset: rgba(6, 182, 212, 0.12);
-    --bridge-console-shadow: rgba(15, 23, 42, 0.24);
-    --bridge-scene-scrim-top: rgba(248, 250, 252, 0.06);
-    --bridge-scene-scrim-bottom: rgba(148, 163, 184, 0.38);
-    --bridge-vignette-center: rgba(125, 211, 252, 0.08);
-    --bridge-vignette-edge: rgba(15, 23, 42, 0.56);
+    --bridge-panel-bg-start: rgba(255, 255, 255, 0.7);
+    --bridge-panel-bg-end: rgba(241, 245, 249, 0.62);
+    --bridge-panel-border: rgba(15, 23, 42, 0.2);
+    --bridge-panel-highlight: rgba(255, 255, 255, 0.9);
+    --bridge-panel-shadow: rgba(15, 23, 42, 0.18);
+    --bridge-outline-color: rgba(15, 23, 42, 0.18);
   }
 
   .dark .bridge-page {
-    --bridge-panel-bg-start: rgba(15, 23, 42, 0.48);
-    --bridge-panel-bg-end: rgba(2, 6, 23, 0.36);
-    --bridge-panel-border: rgba(148, 163, 184, 0.3);
-    --bridge-panel-highlight: rgba(255, 255, 255, 0.1);
-    --bridge-panel-shadow: rgba(2, 6, 23, 0.52);
-    --bridge-panel-line: rgba(148, 163, 184, 0.24);
-    --bridge-outline-color: rgba(148, 163, 184, 0.24);
-    --bridge-halftone-dot: rgba(148, 163, 184, 0.12);
-    --bridge-band-soft: rgba(56, 189, 248, 0.12);
-    --bridge-band-mid: rgba(14, 116, 144, 0.18);
-    --bridge-band-edge: rgba(2, 6, 23, 0.64);
-    --bridge-grid-major: rgba(148, 163, 184, 0.18);
-    --bridge-grid-minor: rgba(148, 163, 184, 0.08);
-    --bridge-sweep-soft: rgba(34, 211, 238, 0.04);
-    --bridge-sweep-strong: rgba(34, 211, 238, 0.2);
-    --bridge-console-border: rgba(34, 211, 238, 0.32);
-    --bridge-console-inset: rgba(34, 211, 238, 0.14);
-    --bridge-console-shadow: rgba(2, 6, 23, 0.56);
-    --bridge-scene-scrim-top: rgba(2, 6, 23, 0.06);
-    --bridge-scene-scrim-bottom: rgba(2, 6, 23, 0.46);
-    --bridge-vignette-center: rgba(34, 211, 238, 0.06);
-    --bridge-vignette-edge: rgba(2, 6, 23, 0.76);
-  }
-
-  .bridge-page .bridge-scene-background {
-    overflow: hidden;
-    isolation: isolate;
-  }
-
-  .bridge-page .bridge-scene-scrim {
-    pointer-events: none;
-    background:
-      linear-gradient(180deg, var(--bridge-scene-scrim-top), var(--bridge-scene-scrim-bottom)),
-      radial-gradient(ellipse 94% 68% at 50% 74%, rgba(2, 6, 23, 0) 36%, rgba(2, 6, 23, 0.3) 100%);
-  }
-
-  .bridge-page .bridge-cel-bands {
-    pointer-events: none;
-    opacity: 0.78;
-    mix-blend-mode: multiply;
-    background:
-      radial-gradient(circle at 14% 20%, var(--bridge-band-soft), transparent 50%),
-      radial-gradient(circle at 84% 24%, var(--bridge-band-mid), transparent 54%),
-      radial-gradient(circle at 50% 86%, var(--bridge-band-edge), transparent 60%),
-      repeating-linear-gradient(
-        -26deg,
-        transparent 0,
-        transparent 62px,
-        rgba(15, 23, 42, 0.08) 62px,
-        rgba(15, 23, 42, 0.08) 96px,
-        transparent 96px,
-        transparent 154px
-      );
-  }
-
-  .dark .bridge-page .bridge-cel-bands {
-    mix-blend-mode: screen;
-    opacity: 0.32;
-  }
-
-  .bridge-page .bridge-tactical-grid {
-    pointer-events: none;
-    background-image:
-      linear-gradient(var(--bridge-grid-major) 1px, transparent 1px),
-      linear-gradient(90deg, var(--bridge-grid-major) 1px, transparent 1px),
-      linear-gradient(var(--bridge-grid-minor) 1px, transparent 1px),
-      linear-gradient(90deg, var(--bridge-grid-minor) 1px, transparent 1px);
-    background-size: 140px 140px, 140px 140px, 28px 28px, 28px 28px;
-    opacity: 0.56;
+    --bridge-panel-bg-start: rgba(15, 23, 42, 0.56);
+    --bridge-panel-bg-end: rgba(2, 6, 23, 0.42);
+    --bridge-panel-border: rgba(148, 163, 184, 0.28);
+    --bridge-panel-highlight: rgba(255, 255, 255, 0.08);
+    --bridge-panel-shadow: rgba(2, 6, 23, 0.42);
+    --bridge-outline-color: rgba(148, 163, 184, 0.2);
   }
 
   .bridge-page .bridge-cel-panel {
     background: linear-gradient(180deg, var(--bridge-panel-bg-start), var(--bridge-panel-bg-end));
     border: 1px solid var(--bridge-panel-border);
-    backdrop-filter: blur(8px) saturate(1.08);
-    -webkit-backdrop-filter: blur(8px) saturate(1.08);
+    backdrop-filter: blur(6px) saturate(1.05);
+    -webkit-backdrop-filter: blur(6px) saturate(1.05);
     box-shadow:
       inset 0 1px 0 var(--bridge-panel-highlight),
-      inset 0 -1px 0 rgba(255, 255, 255, 0.08),
-      0 14px 28px var(--bridge-panel-shadow);
-  }
-
-  .bridge-page .bridge-panel {
-    position: relative;
-  }
-
-  .bridge-page .bridge-panel::after {
-    content: "";
-    position: absolute;
-    inset: 10px 10px auto 10px;
-    border-top: 1px solid var(--bridge-panel-line);
-    pointer-events: none;
-    opacity: 0.55;
+      0 8px 16px var(--bridge-panel-shadow);
   }
 
   .bridge-page .bridge-cel-outline {
@@ -830,58 +737,42 @@
     outline-offset: -1px;
   }
 
-  .bridge-page .bridge-halftone {
-    pointer-events: none;
-    background-image:
-      radial-gradient(circle at 1px 1px, var(--bridge-halftone-dot) 1.1px, transparent 0);
-    background-size: 12px 12px;
-    opacity: 0.42;
-  }
-
-  .bridge-page .bridge-vignette-mask {
-    pointer-events: none;
+  .bridge-call-page {
     background:
-      radial-gradient(circle at 50% 48%, var(--bridge-vignette-center), transparent 44%),
-      radial-gradient(circle at 50% 58%, transparent 24%, var(--bridge-vignette-edge) 100%);
+      radial-gradient(circle at 12% 18%, rgba(34, 211, 238, 0.08), transparent 34%),
+      radial-gradient(circle at 88% 14%, rgba(59, 130, 246, 0.1), transparent 36%),
+      linear-gradient(180deg, #030712 0%, #020617 48%, #02040c 100%);
   }
 
-  @keyframes bridge-hud-sweep {
+  @keyframes bridge-call-scan {
     0% {
       transform: translateX(-120%);
-      opacity: 0;
-    }
-    20% {
-      opacity: 0.08;
-    }
-    60% {
-      opacity: 0.2;
     }
     100% {
-      transform: translateX(130%);
-      opacity: 0;
+      transform: translateX(120%);
     }
   }
 
-  .bridge-page .bridge-hud-sweep::before {
+  .bridge-call-video-noise {
+    background-image:
+      repeating-linear-gradient(
+        to bottom,
+        rgba(226, 232, 240, 0.06),
+        rgba(226, 232, 240, 0.06) 1px,
+        transparent 1px,
+        transparent 3px
+      );
+    opacity: 0.45;
+    mix-blend-mode: screen;
+  }
+
+  .bridge-call-video-noise::before {
     content: "";
     position: absolute;
     inset: 0;
-    background: linear-gradient(
-      100deg,
-      transparent 0%,
-      var(--bridge-sweep-soft) 45%,
-      var(--bridge-sweep-strong) 50%,
-      var(--bridge-sweep-soft) 55%,
-      transparent 100%
-    );
-    animation: bridge-hud-sweep 7.8s linear infinite;
-  }
-
-  .bridge-page .bridge-console-frame {
-    border-color: var(--bridge-console-border);
-    box-shadow:
-      inset 0 0 0 1px var(--bridge-console-inset),
-      0 12px 28px var(--bridge-console-shadow);
+    background: linear-gradient(100deg, transparent 42%, rgba(255, 255, 255, 0.16) 50%, transparent 58%);
+    animation: bridge-call-scan 5.8s linear infinite;
+    pointer-events: none;
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -895,16 +786,16 @@
       animation: none !important;
     }
 
-    .bridge-page .bridge-hud-sweep::before {
-      animation: none !important;
-    }
-
     .uss-k8s-page .glass,
     .uss-k8s-page button,
     .uss-k8s-page input,
     .bridge-page button,
     .bridge-page textarea {
       transition: none !important;
+    }
+
+    .bridge-call-video-noise::before {
+      animation: none !important;
     }
   }
 }

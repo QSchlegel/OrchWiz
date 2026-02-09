@@ -36,11 +36,13 @@ Copy `node/.env.example`. Key groups:
 - Core auth/db: `DATABASE_URL`, `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`, `NEXT_PUBLIC_APP_URL`
 - GitHub auth/webhooks: `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_WEBHOOK_SECRET`, `ENABLE_GITHUB_WEBHOOK_COMMENTS`, `GITHUB_TOKEN`
 - Command execution policy: `ENABLE_LOCAL_COMMAND_EXECUTION`, `LOCAL_COMMAND_TIMEOUT_MS`, `COMMAND_EXECUTION_SHELL`, `ENABLE_LOCAL_INFRA_AUTO_INSTALL`, `LOCAL_INFRA_COMMAND_TIMEOUT_MS`
-- Runtime provider: `OPENCLAW_*`, `ENABLE_OPENAI_RUNTIME_FALLBACK`, `OPENAI_API_KEY`, `OPENAI_RUNTIME_FALLBACK_MODEL`
+- Runtime provider: `OPENCLAW_*`, `OPENCLAW_DISPATCH_PATH`, `OPENCLAW_DISPATCH_TIMEOUT_MS`, `ENABLE_OPENAI_RUNTIME_FALLBACK`, `OPENAI_API_KEY`, `OPENAI_RUNTIME_FALLBACK_MODEL`
 - Bridge chat compatibility auth: `BRIDGE_ADMIN_TOKEN`
 - Wallet enclave: `WALLET_ENCLAVE_ENABLED`, `WALLET_ENCLAVE_URL`, `WALLET_ENCLAVE_TIMEOUT_MS`, `WALLET_ENCLAVE_REQUIRE_BRIDGE_SIGNATURES`, `WALLET_ENCLAVE_REQUIRE_PRIVATE_MEMORY_ENCRYPTION`, `WALLET_ENCLAVE_SHARED_SECRET`
+- Encrypted Langfuse traces: `TRACE_ENCRYPT_ENABLED`, `TRACE_ENCRYPT_REQUIRED`, `TRACE_ENCRYPT_FIELDS`, `LANGFUSE_BASE_URL`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `OBSERVABILITY_DECRYPT_ADMIN_TOKEN`
 - Deployment connector: `DEPLOYMENT_CONNECTOR_URL`, `DEPLOYMENT_CONNECTOR_API_KEY`, `DEPLOYMENT_AGENT_PATH`, `DEPLOYMENT_APPLICATION_PATH`
 - Forwarding ingest/source defaults: `ENABLE_FORWARDING_INGEST`, `FORWARDING_RATE_LIMIT`, `FORWARDING_RATE_WINDOW_MS`, `DEFAULT_FORWARDING_API_KEY`, `DEFAULT_SOURCE_NODE_ID`, `DEFAULT_SOURCE_NODE_NAME`, `FORWARD_TARGET_URL`, `FORWARD_API_KEY`, `FORWARDING_FEATURE_ENABLED`
+- Bridge dispatch queue: `BRIDGE_DISPATCH_RETRY_BASE_MS`, `BRIDGE_DISPATCH_MAX_ATTEMPTS`, `BRIDGE_DISPATCH_RETAIN_COUNT`
 - Realtime toggle: `ENABLE_SSE_EVENTS`
 
 Optional magic-link email config used by auth in non-local environments:
@@ -83,12 +85,14 @@ Profile behavior:
 ## Key APIs
 
 - Core: `/api/sessions`, `/api/commands`, `/api/subagents`, `/api/tasks`, `/api/verification`, `/api/actions`
+- Bridge connections: `/api/bridge/connections`, `/api/bridge/connections/:id`, `/api/bridge/connections/:id/test`, `/api/bridge/connections/dispatch`
 - Bridge chat compatibility: `/api/threads`, `/api/threads/:threadId/messages`
 - Deployments: `/api/deployments`, `/api/applications`
 - Docs: `/api/docs/claude`, `/api/docs/guidance`
 - GitHub: `/api/github/prs`, `/api/github/webhook`
 - Forwarding: `/api/forwarding/config`, `/api/forwarding/events`, `/api/forwarding/test`
 - Realtime: `/api/events/stream`
+- Observability decrypt: `/api/observability/traces/:traceId/decrypt` (session owner or bearer admin token)
 
 Forwarded aggregate list endpoints support:
 
@@ -99,6 +103,11 @@ Bridge chat mobile utility:
 
 - `/bridge-chat` is a mobile-first utility route with station tabs, sticky composer, and quick directives.
 - `GET /api/threads?view=station` lazily ensures canonical station threads are available and linked to bridge sessions.
+
+Bridge Ops external connections:
+
+- `/bridge-connections` manages Telegram/Discord/WhatsApp outbound patch-through per ship deployment.
+- COU station responses can auto-relay to enabled `autoRelay` connectors when session metadata includes bridge ship/deployment context.
 
 ## Scripts
 

@@ -30,7 +30,96 @@ test("evaluateCommandPermissionFromRules prioritizes subagent scope over global"
 
   assert.equal(decision.allowed, true)
   assert.equal(decision.status, "allow")
+  assert.equal(decision.matchedSource, "subagent-rule")
   assert.equal(decision.matchedScope, "subagent")
+})
+
+test("evaluateCommandPermissionFromRules evaluates policy profiles after direct subagent rules", () => {
+  const decision = evaluateCommandPermissionFromRules(
+    ["terraform apply"],
+    [
+      {
+        commandPattern: "terraform *",
+        status: "deny",
+        scope: "global",
+        subagentId: null,
+      },
+    ],
+    {
+      subagentId: "agent-xo",
+      profileRules: [
+        {
+          commandPattern: "terraform *",
+          status: "allow",
+          policyId: "policy-balanced",
+          policyName: "Balanced DevOps",
+        },
+      ],
+    },
+  )
+
+  assert.equal(decision.allowed, true)
+  assert.equal(decision.status, "allow")
+  assert.equal(decision.matchedSource, "policy-profile")
+  assert.equal(decision.matchedPolicyId, "policy-balanced")
+  assert.equal(decision.matchedPolicyName, "Balanced DevOps")
+})
+
+test("evaluateCommandPermissionFromRules keeps direct subagent override ahead of policy profiles", () => {
+  const decision = evaluateCommandPermissionFromRules(
+    ["kubectl apply -f deploy.yaml"],
+    [
+      {
+        commandPattern: "kubectl *",
+        status: "allow",
+        scope: "subagent",
+        subagentId: "agent-ops",
+      },
+    ],
+    {
+      subagentId: "agent-ops",
+      profileRules: [
+        {
+          commandPattern: "kubectl *",
+          status: "deny",
+          policyId: "policy-safe",
+          policyName: "Safe Core",
+        },
+      ],
+    },
+  )
+
+  assert.equal(decision.allowed, true)
+  assert.equal(decision.matchedSource, "subagent-rule")
+})
+
+test("evaluateCommandPermissionFromRules respects profile rule ordering", () => {
+  const decision = evaluateCommandPermissionFromRules(
+    ["docker push registry.local/app"],
+    [],
+    {
+      subagentId: "agent-eng",
+      profileRules: [
+        {
+          commandPattern: "docker *",
+          status: "ask",
+          policyId: "policy-safe",
+          policyName: "Safe Core",
+        },
+        {
+          commandPattern: "docker push *",
+          status: "allow",
+          policyId: "policy-balanced",
+          policyName: "Balanced DevOps",
+        },
+      ],
+    },
+  )
+
+  assert.equal(decision.allowed, false)
+  assert.equal(decision.status, "ask")
+  assert.equal(decision.matchedSource, "policy-profile")
+  assert.equal(decision.matchedPolicyId, "policy-safe")
 })
 
 test("evaluateCommandPermissionFromRules falls back to non-subagent scopes", () => {
@@ -55,6 +144,7 @@ test("evaluateCommandPermissionFromRules falls back to non-subagent scopes", () 
 
   assert.equal(decision.allowed, true)
   assert.equal(decision.status, "allow")
+  assert.equal(decision.matchedSource, "fallback-rule")
   assert.equal(decision.matchedScope, "global")
 })
 
@@ -73,6 +163,7 @@ test("evaluateCommandPermissionFromRules preserves ask/deny semantics", () => {
 
   assert.equal(askDecision.allowed, false)
   assert.equal(askDecision.status, "ask")
+  assert.equal(askDecision.matchedSource, "fallback-rule")
 
   const denyDecision = evaluateCommandPermissionFromRules(
     ["rm -rf /tmp/test"],
@@ -88,4 +179,5 @@ test("evaluateCommandPermissionFromRules preserves ask/deny semantics", () => {
 
   assert.equal(denyDecision.allowed, false)
   assert.equal(denyDecision.status, "deny")
+  assert.equal(denyDecision.matchedSource, "fallback-rule")
 })

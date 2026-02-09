@@ -21,6 +21,7 @@ import {
   BookOpen,
   FolderKanban,
   Database,
+  Video,
 } from "lucide-react"
 // Github is imported from lucide-react as "Github"
 import { Github } from "lucide-react"
@@ -66,7 +67,9 @@ export const sidebarNav: NavGroup[] = [
     icon: Radio,
     items: [
       { href: "/bridge", label: "Bridge", icon: Network },
+      { href: "/bridge-call", label: "Bridge Call", icon: Video },
       { href: "/bridge-chat", label: "Bridge Chat", icon: Radio },
+      { href: "/bridge-connections", label: "Connections", icon: Webhook },
       { href: "/uss-k8s", label: "USS-K8S", icon: Ship },
       { href: "/vault", label: "Vault", icon: Database },
     ],

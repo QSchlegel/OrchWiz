@@ -1,9 +1,9 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
-import type { Edge, Node, NodeMouseHandler, NodeTypes } from "reactflow"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import type { Edge, Node, NodeMouseHandler, NodeTypes, ReactFlowInstance } from "reactflow"
 import { MarkerType } from "reactflow"
-import { Activity, AlertTriangle, ArrowRightLeft, Focus } from "lucide-react"
+import { Activity, AlertTriangle, ArrowRightLeft, ChevronLeft, ChevronRight, Focus, Maximize2, Minimize2 } from "lucide-react"
 import { FlowCanvas } from "@/components/flow/FlowCanvas"
 import { ContextFlowNode, type ContextFlowNodeData, type ContextNodeTone } from "./ContextFlowNode"
 import { analyzeSubagentContexts, type SubagentContextAnalysis } from "@/lib/subagents/context-analysis"
@@ -31,6 +31,8 @@ interface NodeDetailEntry {
   title: string
   subtitle?: string
   body?: string
+  agentId?: string
+  editable?: boolean
   stats: Array<{ label: string; value: string }>
 }
 
@@ -108,6 +110,31 @@ function toAgentMeta(analysis: SubagentContextAnalysis): string {
   return `${analysis.sections.length} layers · ${analysis.wordCount} words`
 }
 
+function countWords(text: string): number {
+  return text
+    .trim()
+    .split(/\s+/u)
+    .filter(Boolean).length
+}
+
+function resolveContextWindowTokens(): number {
+  const raw = process.env.NEXT_PUBLIC_CONTEXT_WINDOW_TOKENS
+  const parsed = Number.parseInt(raw || "258000", 10)
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return 258000
+  }
+  return parsed
+}
+
+function formatCompactTokens(value: number): string {
+  if (value >= 1000) {
+    const compact = value / 1000
+    const decimals = compact >= 100 ? 0 : 1
+    return `${compact.toFixed(decimals)}k`
+  }
+  return String(value)
+}
+
 export function ContextOrchestrationBoard({
   subagents,
   className = "",
@@ -120,11 +147,92 @@ export function ContextOrchestrationBoard({
     () => new Map(analyses.map((analysis) => [analysis.subagentId, analysis])),
     [analyses]
   )
+  const aggregateWarningCount = useMemo(
+    () => analyses.reduce((sum, analysis) => sum + analysis.risks.filter((risk) => risk.level === "warning").length, 0),
+    [analyses],
+  )
+  const [payloadOverrides, setPayloadOverrides] = useState<Record<string, string>>({})
+  const effectiveAgentWordCountById = useMemo(() => {
+    const base = new Map<string, number>()
+    analyses.forEach((analysis) => {
+      base.set(analysis.subagentId, analysis.wordCount)
+    })
+
+    Object.entries(payloadOverrides).forEach(([nodeId, overrideText]) => {
+      if (!nodeId.startsWith("section-")) {
+        return
+      }
+
+      const matchingSubagent = subagents.find((subagent) => nodeId.startsWith(`section-${subagent.id}-`))
+      if (!matchingSubagent) {
+        return
+      }
+
+      const analysis = analysisById.get(matchingSubagent.id)
+      if (!analysis) {
+        return
+      }
+
+      const section = analysis.sections.find((candidate) => `section-${matchingSubagent.id}-${candidate.id}` === nodeId)
+      if (!section) {
+        return
+      }
+
+      const previousWords = section.wordCount
+      const overrideWords = countWords(overrideText)
+      const currentTotal = base.get(matchingSubagent.id) || 0
+      base.set(matchingSubagent.id, Math.max(currentTotal - previousWords + overrideWords, 0))
+    })
+
+    return base
+  }, [analyses, analysisById, payloadOverrides, subagents])
+  const aggregateWordCount = useMemo(
+    () => Array.from(effectiveAgentWordCountById.values()).reduce((sum, words) => sum + words, 0),
+    [effectiveAgentWordCountById],
+  )
+  const aggregateTokenCount = useMemo(
+    () => Math.ceil(aggregateWordCount * 1.3),
+    [aggregateWordCount],
+  )
+  const contextWindowTokens = useMemo(() => resolveContextWindowTokens(), [])
+  const contextUsedRatio = useMemo(
+    () => Math.min(aggregateTokenCount / contextWindowTokens, 1),
+    [aggregateTokenCount, contextWindowTokens],
+  )
+  const contextUsedPercent = useMemo(
+    () => Math.round(contextUsedRatio * 100),
+    [contextUsedRatio],
+  )
+  const contextLeftPercent = useMemo(
+    () => Math.max(0, 100 - contextUsedPercent),
+    [contextUsedPercent],
+  )
+  const compositionRows = useMemo(
+    () =>
+      subagents
+        .map((subagent) => {
+          const words = effectiveAgentWordCountById.get(subagent.id) || 0
+          const share = aggregateWordCount > 0 ? (words / aggregateWordCount) * 100 : 0
+          return {
+            id: subagent.id,
+            name: subagent.name,
+            words,
+            share,
+          }
+        })
+        .sort((left, right) => right.words - left.words),
+    [aggregateWordCount, effectiveAgentWordCountById, subagents],
+  )
 
   const isSelectionControlled = selectedAgentIdProp !== undefined
   const [internalSelectedAgentId, setInternalSelectedAgentId] = useState<string | null>(subagents[0]?.id || null)
   const selectedAgentId = isSelectionControlled ? selectedAgentIdProp : internalSelectedAgentId
   const [focusedNodeId, setFocusedNodeId] = useState<string | null>(selectedAgentId ? `agent-${selectedAgentId}` : null)
+  const [isFullscreen, setIsFullscreen] = useState(false)
+  const [isEditingPayload, setIsEditingPayload] = useState(false)
+  const [payloadDraft, setPayloadDraft] = useState("")
+  const boardRef = useRef<HTMLDivElement | null>(null)
+  const reactFlowRef = useRef<ReactFlowInstance | null>(null)
 
   const setSelectedAgentId = useCallback(
     (nextId: string | null) => {
@@ -154,6 +262,7 @@ export function ContextOrchestrationBoard({
     const nodes: Node<ContextFlowNodeData>[] = []
     const edges: Edge[] = []
     const details = new Map<string, NodeDetailEntry>()
+    const subagentIdSet = new Set(subagents.map((subagent) => subagent.id))
 
     const sourceNodeIds: string[] = []
     CONTEXT_SOURCES.forEach((source, index) => {
@@ -163,6 +272,7 @@ export function ContextOrchestrationBoard({
         id: nodeId,
         type: "contextNode",
         position: { x: 24, y: 48 + index * 138 },
+        selected: focusedNodeId === nodeId,
         data: {
           title: source.title,
           subtitle: source.subtitle,
@@ -183,6 +293,10 @@ export function ContextOrchestrationBoard({
       const analysis = analysisById.get(subagent.id)
       const nodeId = `agent-${subagent.id}`
       const riskCount = analysis?.risks.filter((risk) => risk.level === "warning").length || 0
+      const agentWords = effectiveAgentWordCountById.get(subagent.id) || 0
+      const relativeSharePercent = aggregateWordCount > 0
+        ? Math.round((agentWords / aggregateWordCount) * 100)
+        : 0
       nodes.push({
         id: nodeId,
         type: "contextNode",
@@ -192,7 +306,7 @@ export function ContextOrchestrationBoard({
           title: subagent.name,
           subtitle: analysis?.summary || "No prompt summary available.",
           meta: analysis ? toAgentMeta(analysis) : "No analysis",
-          badge: analysis ? `${analysis.compositionScore}%` : undefined,
+          badge: `${relativeSharePercent}%`,
           tone: "agent",
           agentId: subagent.id,
         },
@@ -203,8 +317,11 @@ export function ContextOrchestrationBoard({
         title: subagent.name,
         subtitle: subagent.description || "No description set.",
         body: subagent.content || "No prompt content available.",
+        agentId: subagent.id,
+        editable: true,
         stats: [
-          { label: "Composition", value: analysis ? `${analysis.compositionScore}%` : "N/A" },
+          { label: "Usage", value: `${effectiveAgentWordCountById.get(subagent.id) || 0} words` },
+          { label: "Tokens", value: `~${Math.ceil((effectiveAgentWordCountById.get(subagent.id) || 0) * 1.3)}` },
           { label: "Layers", value: analysis ? String(analysis.sections.length) : "0" },
           { label: "Dependencies", value: analysis ? String(analysis.dependencies.length) : "0" },
           { label: "Warnings", value: String(riskCount) },
@@ -213,53 +330,151 @@ export function ContextOrchestrationBoard({
         ],
       })
 
-      sourceNodeIds.forEach((sourceNodeId) => {
-        edges.push({
-          id: `edge-${sourceNodeId}-${nodeId}`,
-          source: sourceNodeId,
-          target: nodeId,
-          animated: false,
-          type: "smoothstep",
-          style: {
-            stroke: subagent.id === selectedAgentId ? "rgba(34,211,238,0.62)" : "rgba(34,211,238,0.28)",
-            strokeWidth: subagent.id === selectedAgentId ? 2 : 1.4,
-          },
-          markerEnd: {
-            type: MarkerType.ArrowClosed,
-            color: subagent.id === selectedAgentId ? "rgba(34,211,238,0.62)" : "rgba(34,211,238,0.3)",
-          },
+      if (!selectedAgentId || subagent.id === selectedAgentId) {
+        sourceNodeIds.forEach((sourceNodeId) => {
+          edges.push({
+            id: `edge-${sourceNodeId}-${nodeId}`,
+            source: sourceNodeId,
+            target: nodeId,
+            sourceHandle: "source-right",
+            targetHandle: "target-left",
+            animated: false,
+            type: "smoothstep",
+            style: {
+              stroke: subagent.id === selectedAgentId ? "rgba(34,211,238,0.62)" : "rgba(34,211,238,0.28)",
+              strokeWidth: subagent.id === selectedAgentId ? 2 : 1.4,
+            },
+            markerEnd: {
+              type: MarkerType.ArrowClosed,
+              color: subagent.id === selectedAgentId ? "rgba(34,211,238,0.62)" : "rgba(34,211,238,0.3)",
+            },
+          })
         })
-      })
+      }
 
       const dependencies = analysis?.dependencies || []
-      dependencies.forEach((dependencyId) => {
-        edges.push({
-          id: `edge-handoff-${subagent.id}-${dependencyId}`,
-          source: `agent-${subagent.id}`,
-          target: `agent-${dependencyId}`,
-          type: "smoothstep",
-          animated: true,
-          label: "handoff",
-          labelStyle: {
-            fill: "var(--flow-edge-label)",
-            fontSize: 10,
-            fontWeight: 600,
-          },
-          labelBgPadding: [6, 2],
-          labelBgBorderRadius: 8,
-          labelBgStyle: {
-            fill: "var(--flow-edge-label-bg)",
-            opacity: 0.9,
-          },
-          style: {
-            stroke: "rgba(251,191,36,0.76)",
-            strokeWidth: 2,
-          },
-          markerEnd: {
-            type: MarkerType.ArrowClosed,
-            color: "rgba(251,191,36,0.76)",
-          },
+      if (!selectedAgentId || subagent.id === selectedAgentId) {
+        dependencies.forEach((dependencyId) => {
+          edges.push({
+            id: `edge-handoff-${subagent.id}-${dependencyId}`,
+            source: `agent-${subagent.id}`,
+            target: `agent-${dependencyId}`,
+            sourceHandle: "source-left",
+            targetHandle: "target-left",
+            type: "smoothstep",
+            animated: true,
+            pathOptions: {
+              offset: 220,
+              borderRadius: 14,
+            },
+            style: {
+              stroke: "rgba(251,191,36,0.76)",
+              strokeWidth: 2,
+              zIndex: 0,
+            },
+            markerEnd: {
+              type: MarkerType.ArrowClosed,
+              color: "rgba(251,191,36,0.76)",
+            },
+          })
         })
+      }
+
+      if (selectedAgentId && subagent.id === selectedAgentId && dependencies.length > 0) {
+        const directDependencySet = new Set(dependencies)
+        const reachable = new Set<string>()
+        const queue = [...dependencies]
+
+        while (queue.length > 0) {
+          const dependencyId = queue.shift()
+          if (!dependencyId || reachable.has(dependencyId) || !subagentIdSet.has(dependencyId)) {
+            continue
+          }
+          reachable.add(dependencyId)
+          const nestedDependencies = analysisById.get(dependencyId)?.dependencies || []
+          nestedDependencies.forEach((nestedId) => {
+            if (!reachable.has(nestedId)) {
+              queue.push(nestedId)
+            }
+          })
+        }
+
+        Array.from(reachable)
+          .filter((dependencyId) => !directDependencySet.has(dependencyId) && dependencyId !== subagent.id)
+          .forEach((dependencyId) => {
+            edges.push({
+              id: `edge-handoff-transitive-${subagent.id}-${dependencyId}`,
+              source: `agent-${subagent.id}`,
+              target: `agent-${dependencyId}`,
+              sourceHandle: "source-left",
+              targetHandle: "target-left",
+              type: "smoothstep",
+              animated: false,
+              pathOptions: {
+                offset: 260,
+                borderRadius: 14,
+              },
+              style: {
+                stroke: "rgba(148,163,184,0.78)",
+                strokeWidth: 1.8,
+                strokeDasharray: "6 4",
+                zIndex: 0,
+              },
+              markerEnd: {
+                type: MarkerType.ArrowClosed,
+                color: "rgba(148,163,184,0.78)",
+              },
+            })
+          })
+      }
+    })
+
+    const aggregateNodeCenterY = 48 + Math.max((subagents.length - 1) * 138 * 0.5, 70)
+    const aggregateNodeId = "output-aggregate-all-agents"
+    nodes.push({
+      id: aggregateNodeId,
+      type: "contextNode",
+      position: { x: 1120, y: aggregateNodeCenterY - 220 },
+      data: {
+        title: "Total Context (All Agents)",
+        subtitle: "Aggregated context footprint across the full board",
+        meta: `${aggregateWarningCount} warnings`,
+        badge: `${aggregateWordCount} words`,
+        tone: "output",
+      },
+    })
+    details.set(aggregateNodeId, {
+      tone: "output",
+      title: "Total Context (All Agents)",
+      subtitle: `${subagents.length} agents aggregated`,
+      body: "Combined context size across all visible agents on this board.",
+      stats: [
+        { label: "Agents", value: String(subagents.length) },
+        { label: "Words", value: String(aggregateWordCount) },
+        { label: "Tokens", value: `~${aggregateTokenCount}` },
+        { label: "Warnings", value: String(aggregateWarningCount) },
+      ],
+    })
+
+    subagents.forEach((subagent) => {
+      if (selectedAgentId && subagent.id !== selectedAgentId) {
+        return
+      }
+      edges.push({
+        id: `edge-aggregate-${subagent.id}`,
+        source: `agent-${subagent.id}`,
+        target: aggregateNodeId,
+        sourceHandle: "source-right",
+        targetHandle: "target-left",
+        type: "smoothstep",
+        style: {
+          stroke: "rgba(16,185,129,0.5)",
+          strokeWidth: 1.6,
+        },
+        markerEnd: {
+          type: MarkerType.ArrowClosed,
+          color: "rgba(16,185,129,0.5)",
+        },
       })
     })
 
@@ -303,6 +518,8 @@ export function ContextOrchestrationBoard({
           title: `${section.label} · ${section.title}`,
           subtitle: `${section.wordCount} words`,
           body: section.content,
+          agentId: selectedAgentId,
+          editable: true,
           stats: [
             { label: "Coverage", value: `${Math.round(section.coverage * 100)}%` },
             { label: "Type", value: section.type },
@@ -313,6 +530,8 @@ export function ContextOrchestrationBoard({
           id: `edge-selected-agent-${sectionNodeId}`,
           source: `agent-${selectedAgentId}`,
           target: sectionNodeId,
+          sourceHandle: "source-right",
+          targetHandle: "target-left",
           animated: false,
           type: "smoothstep",
           style: {
@@ -358,6 +577,8 @@ export function ContextOrchestrationBoard({
           id: `edge-${sectionNodeId}-${outputNodeId}`,
           source: sectionNodeId,
           target: outputNodeId,
+          sourceHandle: "source-right",
+          targetHandle: "target-left",
           type: "smoothstep",
           style: {
             stroke: "rgba(16,185,129,0.6)",
@@ -397,6 +618,8 @@ export function ContextOrchestrationBoard({
           id: `edge-risk-${selectedAgentId}-${risk.id}`,
           source: `agent-${selectedAgentId}`,
           target: riskNodeId,
+          sourceHandle: "source-right",
+          targetHandle: "target-left",
           type: "smoothstep",
           animated: risk.level === "warning",
           style: {
@@ -412,12 +635,92 @@ export function ContextOrchestrationBoard({
       })
     }
 
+    if (focusedNodeId?.startsWith("source-")) {
+      const nodeDepth = new Map<string, number>()
+      const edgeDepth = new Map<string, number>()
+      const queue = [focusedNodeId]
+      nodeDepth.set(focusedNodeId, 0)
+
+      while (queue.length > 0) {
+        const current = queue.shift()
+        if (!current) {
+          continue
+        }
+        const currentDepth = nodeDepth.get(current) ?? 0
+
+        edges.forEach((edge) => {
+          if (edge.source !== current) {
+            return
+          }
+
+          const nextDepth = currentDepth + 1
+          edgeDepth.set(edge.id, nextDepth)
+          if (!nodeDepth.has(edge.target)) {
+            nodeDepth.set(edge.target, nextDepth)
+            queue.push(edge.target)
+          }
+        })
+      }
+
+      nodes.forEach((node) => {
+        const depth = nodeDepth.get(node.id)
+        if (depth !== undefined) {
+          node.selected = true
+          const activeOpacity = depth <= 1 ? 1 : depth === 2 ? 0.5 : 0.22
+          node.style = {
+            ...node.style,
+            opacity: activeOpacity,
+          }
+        } else {
+          node.style = {
+            ...node.style,
+            opacity: 0.22,
+          }
+        }
+      })
+
+      edges.forEach((edge) => {
+        const depth = edgeDepth.get(edge.id)
+        if (depth !== undefined) {
+          const baseStrokeWidth =
+            (edge.style?.strokeWidth && typeof edge.style.strokeWidth === "number")
+              ? edge.style.strokeWidth
+              : 1.6
+
+          const baseColor =
+            (edge.style?.stroke && typeof edge.style.stroke === "string")
+              ? edge.style.stroke
+              : "rgba(148,163,184,0.68)"
+
+          edge.animated = depth === 1
+          const activeOpacity = depth <= 1 ? 1 : depth === 2 ? 0.5 : 0.22
+          edge.style = {
+            ...edge.style,
+            stroke: baseColor,
+            strokeWidth: baseStrokeWidth + 0.8,
+            opacity: activeOpacity,
+          }
+          edge.markerEnd = {
+            type: MarkerType.ArrowClosed,
+            color: baseColor,
+          }
+          return
+        }
+
+        edge.animated = false
+        edge.style = {
+          ...edge.style,
+          opacity: 0.22,
+        }
+      })
+    }
+
     return {
       nodes,
       edges,
       details,
     }
-  }, [analysisById, selectedAgentId, subagents])
+  }, [aggregateTokenCount, aggregateWarningCount, aggregateWordCount, analysisById, effectiveAgentWordCountById, focusedNodeId, selectedAgentId, subagents])
 
   useEffect(() => {
     if (!selectedAgentId) {
@@ -433,12 +736,48 @@ export function ContextOrchestrationBoard({
     })
   }, [graph.details, selectedAgentId])
 
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(document.fullscreenElement === boardRef.current)
+    }
+    document.addEventListener("fullscreenchange", handleFullscreenChange)
+    return () => document.removeEventListener("fullscreenchange", handleFullscreenChange)
+  }, [])
+
+  useEffect(() => {
+    const instance = reactFlowRef.current
+    if (!instance) {
+      return
+    }
+
+    const timer = window.setTimeout(() => {
+      instance.fitView({ padding: 0.18, duration: 260 })
+    }, 60)
+
+    return () => window.clearTimeout(timer)
+  }, [isFullscreen, graph.nodes, graph.edges])
+
   const selectedAnalysis = selectedAgentId ? analysisById.get(selectedAgentId) : null
+  const selectedEffectiveWordCount = selectedAgentId
+    ? (effectiveAgentWordCountById.get(selectedAgentId) || 0)
+    : 0
   const focusedDetail = focusedNodeId ? graph.details.get(focusedNodeId) : null
-  const activeDetail =
+  const baseActiveDetail =
     focusedDetail
     || (selectedAgentId ? graph.details.get(`agent-${selectedAgentId}`) : null)
     || null
+  const overrideBody = focusedNodeId ? payloadOverrides[focusedNodeId] : undefined
+  const activeDetail = baseActiveDetail
+    ? {
+      ...baseActiveDetail,
+      body: overrideBody ?? baseActiveDetail.body,
+    }
+    : null
+
+  useEffect(() => {
+    setIsEditingPayload(false)
+    setPayloadDraft(activeDetail?.body || "")
+  }, [activeDetail?.title, activeDetail?.body, activeDetail?.tone])
 
   const handleNodeClick: NodeMouseHandler = (_, node) => {
     const nodeData = node.data as ContextFlowNodeData
@@ -447,6 +786,60 @@ export function ContextOrchestrationBoard({
     }
     setFocusedNodeId(node.id)
   }
+
+  const canEditPayload = Boolean(activeDetail?.editable && activeDetail.agentId && focusedNodeId && activeDetail.body !== undefined)
+  const hasOverride = Boolean(focusedNodeId && payloadOverrides[focusedNodeId] !== undefined)
+
+  const handleSavePayload = useCallback(async () => {
+    if (!activeDetail?.editable || !focusedNodeId || activeDetail.body === undefined) {
+      return
+    }
+    setPayloadOverrides((current) => ({
+      ...current,
+      [focusedNodeId]: payloadDraft,
+    }))
+    setIsEditingPayload(false)
+  }, [activeDetail, focusedNodeId, payloadDraft])
+
+  const handleFullscreenToggle = useCallback(async () => {
+    const boardElement = boardRef.current
+    if (!boardElement) {
+      return
+    }
+    try {
+      if (document.fullscreenElement === boardElement) {
+        await document.exitFullscreen()
+      } else {
+        await boardElement.requestFullscreen()
+      }
+    } catch {
+      // Ignore fullscreen errors (for example when blocked by browser policy).
+    }
+  }, [])
+
+  const selectedAgentIndex = selectedAgentId
+    ? subagents.findIndex((subagent) => subagent.id === selectedAgentId)
+    : -1
+  const hasPrevAgent = selectedAgentIndex > 0
+  const hasNextAgent = selectedAgentIndex >= 0 && selectedAgentIndex < subagents.length - 1
+
+  const handlePrevAgent = useCallback(() => {
+    if (!hasPrevAgent) {
+      return
+    }
+    const previousAgentId = subagents[selectedAgentIndex - 1]?.id || null
+    setSelectedAgentId(previousAgentId)
+    setFocusedNodeId(previousAgentId ? `agent-${previousAgentId}` : null)
+  }, [hasPrevAgent, selectedAgentIndex, setSelectedAgentId, subagents])
+
+  const handleNextAgent = useCallback(() => {
+    if (!hasNextAgent) {
+      return
+    }
+    const nextAgentId = subagents[selectedAgentIndex + 1]?.id || null
+    setSelectedAgentId(nextAgentId)
+    setFocusedNodeId(nextAgentId ? `agent-${nextAgentId}` : null)
+  }, [hasNextAgent, selectedAgentIndex, setSelectedAgentId, subagents])
 
   if (subagents.length === 0) {
     return (
@@ -458,46 +851,89 @@ export function ContextOrchestrationBoard({
   }
 
   return (
-    <div className={`space-y-4 ${className}`}>
+    <div
+      ref={boardRef}
+      className={`space-y-4 ${isFullscreen ? "h-screen overflow-auto bg-slate-950/95 p-4 sm:p-6" : ""} ${className}`}
+    >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Context Orchestration Board</h2>
           <p className="text-sm text-slate-600 dark:text-slate-400">
             Engineer agent context as a composed graph: global sources, handoffs, section layers, and final output context.
           </p>
+          <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+            Aggregated context size: {aggregateWordCount} words (~{aggregateTokenCount} tokens)
+          </p>
+          <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+            Context window: {contextUsedPercent}% used ({contextLeftPercent}% left) · {formatCompactTokens(aggregateTokenCount)} / {formatCompactTokens(contextWindowTokens)} tokens
+          </p>
         </div>
 
-        {!hideAgentSelector && (
-          <div className="flex items-center gap-2">
-            <label htmlFor="context-focus" className="text-xs font-medium uppercase tracking-[0.16em] text-slate-500">
-              Focus Agent
-            </label>
-            <select
-              id="context-focus"
-              value={selectedAgentId || ""}
-              onChange={(event) => {
-                const nextId = event.target.value || null
-                setSelectedAgentId(nextId)
-                setFocusedNodeId(nextId ? `agent-${nextId}` : null)
-              }}
-              className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
-            >
-              {subagents.map((subagent) => (
-                <option key={subagent.id} value={subagent.id}>
-                  {subagent.name}
-                </option>
-              ))}
-            </select>
-          </div>
-        )}
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={handlePrevAgent}
+            disabled={!hasPrevAgent}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 transition enabled:hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100 dark:enabled:hover:bg-white/[0.09]"
+            aria-label="Select previous agent"
+          >
+            <ChevronLeft className="h-4 w-4" />
+            Prev Agent
+          </button>
+          <button
+            type="button"
+            onClick={handleNextAgent}
+            disabled={!hasNextAgent}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 transition enabled:hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100 dark:enabled:hover:bg-white/[0.09]"
+            aria-label="Select next agent"
+          >
+            Next Agent
+            <ChevronRight className="h-4 w-4" />
+          </button>
+          {!hideAgentSelector && (
+            <>
+              <label htmlFor="context-focus" className="text-xs font-medium uppercase tracking-[0.16em] text-slate-500">
+                Focus Agent
+              </label>
+              <select
+                id="context-focus"
+                value={selectedAgentId || ""}
+                onChange={(event) => {
+                  const nextId = event.target.value || null
+                  setSelectedAgentId(nextId)
+                  setFocusedNodeId(nextId ? `agent-${nextId}` : null)
+                }}
+                className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
+              >
+                {subagents.map((subagent) => (
+                  <option key={subagent.id} value={subagent.id}>
+                    {subagent.name}
+                  </option>
+                ))}
+              </select>
+            </>
+          )}
+          <button
+            type="button"
+            onClick={handleFullscreenToggle}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 transition hover:bg-slate-100 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100 dark:hover:bg-white/[0.09]"
+            aria-label={isFullscreen ? "Exit fullscreen mode" : "Enter fullscreen mode"}
+          >
+            {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+            {isFullscreen ? "Exit Full Screen" : "Full Screen"}
+          </button>
+        </div>
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_350px]">
+      <div className={`grid gap-4 ${isFullscreen ? "h-[calc(100vh-8.5rem)] xl:grid-cols-[minmax(0,1fr)_380px]" : "xl:grid-cols-[minmax(0,1fr)_350px]"}`}>
         <div className="rounded-2xl border border-slate-200/80 bg-white/80 p-3 shadow-sm backdrop-blur dark:border-white/10 dark:bg-white/[0.04]">
           <FlowCanvas
             nodes={graph.nodes}
             edges={graph.edges}
             nodeTypes={nodeTypes}
+            onInit={(instance) => {
+              reactFlowRef.current = instance
+            }}
             onNodeClick={handleNodeClick}
             onPaneClick={() => {
               if (selectedAgentId) {
@@ -507,8 +943,10 @@ export function ContextOrchestrationBoard({
               }
             }}
             showMiniMap
+            miniMapWidth={132}
+            miniMapHeight={88}
             nodesDraggable={false}
-            className="!h-[640px]"
+            className={isFullscreen ? "!h-[calc(100vh-13.6rem)] min-h-[560px]" : "!h-[640px]"}
           />
           <div className="mt-3 flex flex-wrap gap-2">
             {([
@@ -528,7 +966,7 @@ export function ContextOrchestrationBoard({
           </div>
         </div>
 
-        <aside className="rounded-2xl border border-slate-200/80 bg-white/85 p-4 shadow-sm backdrop-blur dark:border-white/10 dark:bg-white/[0.05]">
+        <aside className={`rounded-2xl border border-slate-200/80 bg-white/85 p-4 shadow-sm backdrop-blur dark:border-white/10 dark:bg-white/[0.05] ${isFullscreen ? "overflow-auto" : ""}`}>
           {!activeDetail ? (
             <p className="text-sm text-slate-600 dark:text-slate-400">Select a node to inspect its context details.</p>
           ) : (
@@ -561,12 +999,80 @@ export function ContextOrchestrationBoard({
 
               {activeDetail.body && (
                 <div>
-                  <p className="mb-1 text-xs font-medium uppercase tracking-[0.14em] text-slate-500 dark:text-slate-500">
-                    Context Payload
-                  </p>
-                  <pre className="max-h-[350px] overflow-auto rounded-xl border border-slate-200/80 bg-slate-50/85 p-3 text-[11px] leading-relaxed whitespace-pre-wrap text-slate-700 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-300">
-                    {activeDetail.body}
-                  </pre>
+                  <div className="mb-1 flex items-center justify-between gap-2">
+                    <p className="text-xs font-medium uppercase tracking-[0.14em] text-slate-500 dark:text-slate-500">
+                      Context Payload
+                    </p>
+                    {canEditPayload && !isEditingPayload && (
+                      <div className="flex items-center gap-1.5">
+                        {hasOverride && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (!focusedNodeId) return
+                              setPayloadOverrides((current) => {
+                                const next = { ...current }
+                                delete next[focusedNodeId]
+                                return next
+                              })
+                            }}
+                            className="rounded-md border border-slate-300 px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-100 dark:border-white/15 dark:text-slate-200 dark:hover:bg-white/[0.06]"
+                          >
+                            Clear Override
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPayloadDraft(activeDetail.body || "")
+                            setIsEditingPayload(true)
+                          }}
+                          className="rounded-md border border-slate-300 px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-100 dark:border-white/15 dark:text-slate-200 dark:hover:bg-white/[0.06]"
+                        >
+                          Edit Override
+                        </button>
+                      </div>
+                    )}
+                    {canEditPayload && isEditingPayload && (
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPayloadDraft(activeDetail.body || "")
+                            setIsEditingPayload(false)
+                          }}
+                          className="rounded-md border border-slate-300 px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50 dark:border-white/15 dark:text-slate-200 dark:hover:bg-white/[0.06]"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void handleSavePayload()}
+                          disabled={payloadDraft.trim() === (activeDetail.body || "").trim()}
+                          className="rounded-md bg-slate-900 px-2 py-1 text-[11px] font-medium text-white hover:bg-black disabled:opacity-50 dark:bg-white dark:text-slate-900"
+                        >
+                          Save Override
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                  {hasOverride && (
+                    <p className="mb-1 text-[11px] text-amber-500 dark:text-amber-300">
+                      Manual override active for this node.
+                    </p>
+                  )}
+                  {isEditingPayload ? (
+                    <textarea
+                      value={payloadDraft}
+                      onChange={(event) => setPayloadDraft(event.target.value)}
+                      rows={10}
+                      className="max-h-[380px] w-full rounded-xl border border-slate-200/80 bg-slate-50/85 p-3 text-[11px] leading-relaxed whitespace-pre-wrap text-slate-700 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-300"
+                    />
+                  ) : (
+                    <pre className="max-h-[350px] overflow-auto rounded-xl border border-slate-200/80 bg-slate-50/85 p-3 text-[11px] leading-relaxed whitespace-pre-wrap text-slate-700 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-300">
+                      {activeDetail.body}
+                    </pre>
+                  )}
                 </div>
               )}
             </div>
@@ -580,7 +1086,9 @@ export function ContextOrchestrationBoard({
             <div className="space-y-1.5 text-xs text-slate-700 dark:text-slate-300">
               <p className="flex items-center gap-1.5">
                 <Activity className="h-3.5 w-3.5 text-indigo-400" />
-                {selectedAnalysis ? `${selectedAnalysis.compositionScore}% context completeness` : "No agent selected"}
+                {selectedAnalysis
+                  ? `${selectedEffectiveWordCount} words · ~${Math.ceil(selectedEffectiveWordCount * 1.3)} tokens`
+                  : "No agent selected"}
               </p>
               <p className="flex items-center gap-1.5">
                 <ArrowRightLeft className="h-3.5 w-3.5 text-amber-400" />
@@ -592,6 +1100,38 @@ export function ContextOrchestrationBoard({
                   ? `${selectedAnalysis.risks.filter((risk) => risk.level === "warning").length} warning signal(s)`
                   : "0 warning signals"}
               </p>
+            </div>
+          </div>
+
+          <div className="mt-4 space-y-2 rounded-xl border border-slate-200/80 bg-slate-50/80 p-3 dark:border-white/10 dark:bg-white/[0.03]">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-xs font-medium uppercase tracking-[0.14em] text-slate-500">Context Composition Diagram</p>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                {aggregateWordCount} words · ~{aggregateTokenCount} tokens
+              </p>
+            </div>
+            <div className="space-y-2">
+              {compositionRows.map((row) => {
+                const isActive = row.id === selectedAgentId
+                return (
+                  <div key={row.id} className="space-y-1">
+                    <div className="flex items-center justify-between gap-2 text-[11px]">
+                      <p className={`truncate ${isActive ? "font-semibold text-slate-900 dark:text-slate-100" : "text-slate-700 dark:text-slate-300"}`}>
+                        {row.name}
+                      </p>
+                      <p className="shrink-0 text-slate-500 dark:text-slate-400">
+                        {row.words}w ({Math.round(row.share)}%)
+                      </p>
+                    </div>
+                    <div className="h-2.5 overflow-hidden rounded-full bg-slate-200/80 dark:bg-white/10">
+                      <div
+                        className={`h-full rounded-full transition-all ${isActive ? "bg-indigo-500" : "bg-cyan-500/80"}`}
+                        style={{ width: `${Math.max(row.share, row.words > 0 ? 2 : 0)}%` }}
+                      />
+                    </div>
+                  </div>
+                )
+              })}
             </div>
           </div>
         </aside>

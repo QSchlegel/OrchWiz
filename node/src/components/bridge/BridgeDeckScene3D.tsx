@@ -42,6 +42,7 @@ interface StationVisual {
   screenTexture: THREE.CanvasTexture
   screenWidth: number
   screenHeight: number
+  screenPlane: THREE.Mesh
 }
 
 interface WarpStreakLayer {
@@ -1302,12 +1303,18 @@ export function BridgeDeckScene3D({
         screenTexture: screen.texture,
         screenWidth: screen.width,
         screenHeight: screen.height,
+        screenPlane,
       }
     }
 
     const raycaster = new THREE.Raycaster()
     const pointer = new THREE.Vector2()
     let hoveredStationKey: BridgeStationKey | null = null
+    let displaysVisibleUntil = 0
+
+    const markDisplayActivity = () => {
+      displaysVisibleUntil = performance.now() + 2000
+    }
 
     const pickStation = (event: PointerEvent) => {
       const rect = renderer.domElement.getBoundingClientRect()
@@ -1321,6 +1328,7 @@ export function BridgeDeckScene3D({
     }
 
     const handlePointerMove = (event: PointerEvent) => {
+      markDisplayActivity()
       const stationKey = pickStation(event)
       hoveredStationKey = stationKey
       renderer.domElement.style.cursor = stationKey ? "pointer" : "default"
@@ -1333,6 +1341,7 @@ export function BridgeDeckScene3D({
 
     const handlePointerDown = (event: PointerEvent) => {
       if (event.button !== 0) return
+      markDisplayActivity()
       const stationKey = pickStation(event)
       if (stationKey) {
         onStationSelectRef.current?.(stationKey)
@@ -1465,6 +1474,15 @@ export function BridgeDeckScene3D({
             : 0.1
       }
 
+      const displaysActive = performance.now() <= displaysVisibleUntil
+      mainScreenPlane.visible = displaysActive
+      systemsScreenPlane.visible = displaysActive
+      queueScreenPlane.visible = displaysActive
+      tickerPlane.visible = displaysActive
+      for (const stationKey of STATION_ORDER) {
+        stationVisuals[stationKey].screenPlane.visible = displaysActive
+      }
+
       const sceneData = sceneDataRef.current
       const telemetrySignature = JSON.stringify({
         operatorLabel: sceneData.operatorLabel,
@@ -1505,7 +1523,7 @@ export function BridgeDeckScene3D({
           lastEventAt: sceneData.lastEventAt,
         })
 
-        if (mainScreen.context) {
+        if (displaysActive && mainScreen.context) {
           drawMainScreen(mainScreen.context, {
             title: telemetry.mainScreen.title,
             lines: telemetry.mainScreen.lines,
@@ -1516,7 +1534,7 @@ export function BridgeDeckScene3D({
           mainScreen.texture.needsUpdate = true
         }
 
-        if (systemsScreen.context) {
+        if (displaysActive && systemsScreen.context) {
           drawSystemsScreen(systemsScreen.context, {
             title: telemetry.systemsScreen.title,
             lines: telemetry.systemsScreen.lines,
@@ -1527,7 +1545,7 @@ export function BridgeDeckScene3D({
           systemsScreen.texture.needsUpdate = true
         }
 
-        if (queueScreen.context) {
+        if (displaysActive && queueScreen.context) {
           drawQueueScreen(queueScreen.context, {
             title: telemetry.queueScreen.title,
             lines: telemetry.queueScreen.lines,
@@ -1538,7 +1556,7 @@ export function BridgeDeckScene3D({
           queueScreen.texture.needsUpdate = true
         }
 
-        if (tickerScreen.context) {
+        if (displaysActive && tickerScreen.context) {
           drawTicker(tickerScreen.context, {
             line: telemetry.tickerLine,
             width: tickerScreen.width,
@@ -1558,7 +1576,7 @@ export function BridgeDeckScene3D({
           const accent = stationColorByKey[stationKey]
           const telemetryBlock = telemetry.stationScreens[stationKey]
 
-          if (visual.screenContext) {
+          if (displaysActive && visual.screenContext) {
             drawStationScreen(visual.screenContext, {
               title: telemetryBlock.title,
               lines: telemetryBlock.lines,

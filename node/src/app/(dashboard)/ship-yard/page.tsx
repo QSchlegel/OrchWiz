@@ -1,5 +1,6 @@
 "use client"
 
+import Link from "next/link"
 import { useCallback, useEffect, useMemo, useState, type ElementType } from "react"
 import {
   CheckCircle2,
@@ -79,6 +80,19 @@ interface LaunchMessage {
   type: "success" | "error" | "info"
   text: string
   suggestedCommands?: string[]
+}
+
+interface BridgeConnectionSummary {
+  total: number
+  enabled: number
+  autoRelay: number
+  providers: {
+    telegram: { total: number; enabled: number }
+    discord: { total: number; enabled: number }
+    whatsapp: { total: number; enabled: number }
+  }
+  lastDeliveryAt: string | null
+  lastDeliveryStatus: "pending" | "processing" | "completed" | "failed" | null
 }
 
 const steps: { id: WizardStepId; title: string; subtitle: string; icon: ElementType }[] = [
@@ -165,6 +179,8 @@ export default function ShipYardPage() {
   const [isLoadingShips, setIsLoadingShips] = useState(true)
   const [bridgeCrew, setBridgeCrew] = useState<BridgeCrewRecord[]>([])
   const [isLoadingCrew, setIsLoadingCrew] = useState(false)
+  const [isLoadingConnectionSummary, setIsLoadingConnectionSummary] = useState(false)
+  const [connectionSummary, setConnectionSummary] = useState<BridgeConnectionSummary | null>(null)
   const [crewDrafts, setCrewDrafts] = useState<Record<string, CrewOverrideInput & { status: "active" | "inactive" }>>(
     {},
   )
@@ -242,6 +258,28 @@ export default function ShipYardPage() {
     }
   }, [selectedShipDeploymentId])
 
+  const fetchConnectionSummary = useCallback(async () => {
+    if (!selectedShipDeploymentId) {
+      setConnectionSummary(null)
+      return
+    }
+
+    setIsLoadingConnectionSummary(true)
+    try {
+      const response = await fetch(
+        `/api/bridge/connections?deploymentId=${selectedShipDeploymentId}&deliveriesTake=6`,
+      )
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const payload = await response.json()
+      setConnectionSummary((payload?.summary || null) as BridgeConnectionSummary | null)
+    } catch (error) {
+      console.error("Failed to load bridge connection summary:", error)
+      setConnectionSummary(null)
+    } finally {
+      setIsLoadingConnectionSummary(false)
+    }
+  }, [selectedShipDeploymentId])
+
   useEffect(() => {
     fetchShips()
   }, [fetchShips])
@@ -249,6 +287,10 @@ export default function ShipYardPage() {
   useEffect(() => {
     fetchBridgeCrew()
   }, [fetchBridgeCrew])
+
+  useEffect(() => {
+    fetchConnectionSummary()
+  }, [fetchConnectionSummary])
 
   const canAdvance = useMemo(() => {
     if (currentStep.id === "mission") {
@@ -889,16 +931,73 @@ export default function ShipYardPage() {
 
         {selectedShipDeploymentId && (
           <SurfaceCard>
+            <div className="mb-4 rounded-xl border border-slate-300/70 bg-white/75 p-3 dark:border-white/12 dark:bg-white/[0.04]">
+              <div className="flex items-center justify-between gap-3">
+                <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                  Bridge Connections
+                </h2>
+                <Link
+                  href={`/bridge-connections?shipDeploymentId=${selectedShipDeploymentId}`}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-cyan-500/35 bg-cyan-500/10 px-2.5 py-1 text-xs text-cyan-700 dark:text-cyan-200"
+                >
+                  Open Connections
+                </Link>
+              </div>
+
+              {isLoadingConnectionSummary ? (
+                <div className="mt-2 inline-flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  Loading connection status...
+                </div>
+              ) : connectionSummary ? (
+                <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-600 dark:text-slate-300">
+                  <span className="rounded-md border border-slate-300/70 px-2 py-1 dark:border-white/15">
+                    Total {connectionSummary.total}
+                  </span>
+                  <span className="rounded-md border border-slate-300/70 px-2 py-1 dark:border-white/15">
+                    Enabled {connectionSummary.enabled}
+                  </span>
+                  <span className="rounded-md border border-slate-300/70 px-2 py-1 dark:border-white/15">
+                    Auto Relay {connectionSummary.autoRelay}
+                  </span>
+                  {connectionSummary.lastDeliveryStatus && (
+                    <span className="rounded-md border border-slate-300/70 px-2 py-1 dark:border-white/15">
+                      Last {connectionSummary.lastDeliveryStatus}
+                    </span>
+                  )}
+                  {connectionSummary.lastDeliveryAt && (
+                    <span className="text-slate-500 dark:text-slate-400">
+                      {new Date(connectionSummary.lastDeliveryAt).toLocaleString()}
+                    </span>
+                  )}
+                </div>
+              ) : (
+                <p className="mt-2 text-xs text-slate-600 dark:text-slate-300">
+                  No connection data available for this ship yet.
+                </p>
+              )}
+            </div>
+
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-50">Bridge Crew Editor</h2>
-              <button
-                type="button"
-                onClick={fetchBridgeCrew}
-                className="inline-flex items-center gap-1.5 rounded-md border border-slate-300/70 bg-white/70 px-2.5 py-1 text-xs text-slate-700 dark:border-white/12 dark:bg-white/[0.04] dark:text-slate-200"
-              >
-                <CheckCircle2 className="h-3.5 w-3.5" />
-                Sync
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={fetchConnectionSummary}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-slate-300/70 bg-white/70 px-2.5 py-1 text-xs text-slate-700 dark:border-white/12 dark:bg-white/[0.04] dark:text-slate-200"
+                >
+                  <CheckCircle2 className="h-3.5 w-3.5" />
+                  Sync Connections
+                </button>
+                <button
+                  type="button"
+                  onClick={fetchBridgeCrew}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-slate-300/70 bg-white/70 px-2.5 py-1 text-xs text-slate-700 dark:border-white/12 dark:bg-white/[0.04] dark:text-slate-200"
+                >
+                  <CheckCircle2 className="h-3.5 w-3.5" />
+                  Sync Crew
+                </button>
+              </div>
             </div>
 
             {isLoadingCrew ? (

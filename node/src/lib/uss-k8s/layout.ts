@@ -1,36 +1,30 @@
 import type { Node, XYPosition } from "reactflow"
 
 const USS_K8S_STRUCTURAL_LAYOUT: Record<string, XYPosition> = {
-  // Operator interfaces
-  qs: { x: 580, y: 90 },
-  ui: { x: 790, y: 90 },
+  // Left panel: operator + bridge command lane
+  qs: { x: 120, y: 100 },
+  ui: { x: 340, y: 100 },
+  xo: { x: 120, y: 210 },
+  ops: { x: 300, y: 210 },
+  eng: { x: 480, y: 210 },
+  sec: { x: 120, y: 320 },
+  med: { x: 300, y: 320 },
+  cou: { x: 480, y: 320 },
 
-  // Bridge crew lane
-  xo: { x: 560, y: 180 },
-  ops: { x: 500, y: 270 },
-  eng: { x: 660, y: 270 },
-  sec: { x: 820, y: 270 },
-  med: { x: 980, y: 270 },
-  cou: { x: 1140, y: 270 },
+  // Left panel: runtime control lane
+  gw: { x: 120, y: 470 },
+  cron: { x: 300, y: 470 },
+  state: { x: 480, y: 470 },
 
-  // Runtime control lane
-  gw: { x: 540, y: 430 },
-  cron: { x: 760, y: 430 },
-  state: { x: 980, y: 430 },
-
-  // Telemetry source lane
-  lf: { x: 430, y: 610 },
-  app: { x: 650, y: 610 },
-  nodes: { x: 870, y: 610 },
-  evt: { x: 1090, y: 610 },
-
-  // Storage/metrics lane
-  ch: { x: 430, y: 770 },
-  loki: { x: 650, y: 770 },
-  prom: { x: 870, y: 770 },
-
-  // Dashboard + alerts sink
-  graf: { x: 870, y: 930 },
+  // Right panel: execution substrate + observability stack
+  app: { x: 860, y: 210 },
+  nodes: { x: 1060, y: 210 },
+  evt: { x: 1260, y: 210 },
+  loki: { x: 860, y: 360 },
+  prom: { x: 1060, y: 360 },
+  graf: { x: 1260, y: 360 },
+  lf: { x: 860, y: 510 },
+  ch: { x: 1060, y: 510 },
 }
 
 const FALLBACK_POSITION: XYPosition = { x: 80, y: 1020 }
