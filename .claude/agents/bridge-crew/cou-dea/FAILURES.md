@@ -1,0 +1,2 @@
+- Avoid long narrative updates.
+- Avoid messaging without explicit action ownership.

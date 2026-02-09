@@ -2,10 +2,20 @@ import { NextRequest, NextResponse } from "next/server"
 import { auth } from "@/lib/auth"
 import { headers } from "next/headers"
 import { prisma } from "@/lib/prisma"
+import {
+  applyForwardedBridgeStationEvents,
+  buildCanonicalBridgeStations,
+} from "@/lib/bridge/stations"
 
 export const dynamic = "force-dynamic"
 
-const ROLE_FALLBACK = ["Helm", "Ops", "Science", "Engineering", "Tactical", "Comms"]
+function asString(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null
+  }
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : null
+}
 
 function mapTaskStatus(status?: string) {
   switch (status) {
@@ -29,16 +39,44 @@ export async function GET(request: NextRequest) {
     }
 
     const includeForwarded = request.nextUrl.searchParams.get("includeForwarded") === "true"
+    const requestedShipDeploymentId = asString(request.nextUrl.searchParams.get("shipDeploymentId"))
 
-    const [subagents, tasks, forwardedBridgeEvents, forwardedSystemEvents] = await Promise.all([
-      prisma.subagent.findMany({
-        where: {
-          OR: [{ isShared: true }, { teamId: "uss-k8s" }],
-        },
-        orderBy: {
-          createdAt: "asc",
-        },
-      }),
+    const availableShips = await prisma.agentDeployment.findMany({
+      where: {
+        userId: session.user.id,
+        deploymentType: "ship",
+      },
+      select: {
+        id: true,
+        name: true,
+        status: true,
+        updatedAt: true,
+        nodeId: true,
+        nodeType: true,
+        deploymentProfile: true,
+      },
+      orderBy: {
+        updatedAt: "desc",
+      },
+    })
+
+    const requestedShip = requestedShipDeploymentId
+      ? availableShips.find((ship) => ship.id === requestedShipDeploymentId)
+      : null
+    const selectedShip = requestedShip || availableShips.find((ship) => ship.status === "active") || availableShips[0] || null
+
+    const [bridgeCrew, tasks, forwardedBridgeEvents, forwardedSystemEvents] = await Promise.all([
+      selectedShip
+        ? prisma.bridgeCrew.findMany({
+            where: {
+              deploymentId: selectedShip.id,
+              status: "active",
+            },
+            orderBy: {
+              role: "asc",
+            },
+          })
+        : Promise.resolve([]),
       prisma.task.findMany({
         where: {
           session: {
@@ -80,21 +118,15 @@ export async function GET(request: NextRequest) {
         : Promise.resolve([]),
     ])
 
-    const stationBase = subagents.slice(0, ROLE_FALLBACK.length).map((agent, index) => {
-      const role = ROLE_FALLBACK[index % ROLE_FALLBACK.length]
-      const statusIndex = index % 3
-      const status = statusIndex === 0 ? "online" : statusIndex === 1 ? "busy" : "offline"
-
-      return {
-        id: agent.id,
-        name: agent.name,
-        role,
-        status,
-        load: 35 + (index * 11) % 60,
-        focus: agent.description || "Awaiting orders",
-        queue: [] as string[],
-      }
-    })
+    const stationBase = buildCanonicalBridgeStations(
+      bridgeCrew.map((crewMember) => ({
+        id: crewMember.id,
+        role: crewMember.role,
+        callsign: crewMember.callsign,
+        name: crewMember.name,
+        description: crewMember.description,
+      })),
+    )
 
     const workItems = tasks.map((task, index) => {
       const station = stationBase[index % Math.max(stationBase.length, 1)]
@@ -114,7 +146,7 @@ export async function GET(request: NextRequest) {
       }
     })
 
-    const stationsWithQueue = stationBase.map((station) => {
+    let stationsWithQueue = stationBase.map((station) => {
       const queue = workItems
         .filter((item) => item.assignedTo === station.id)
         .map((item) => item.name)
@@ -154,44 +186,23 @@ export async function GET(request: NextRequest) {
     }
 
     if (includeForwarded) {
-      for (const event of forwardedBridgeEvents) {
-        const payload = (event.payload || {}) as Record<string, unknown>
-        const eventStationId = (payload.stationId as string) || `forwarded-${event.id}`
-        const existingStation = stationsWithQueue.find((station) => station.id === eventStationId)
-
-        if (existingStation) {
-          if (typeof payload.status === "string") {
-            existingStation.status = payload.status
-          }
-          if (typeof payload.load === "number") {
-            existingStation.load = payload.load
-          }
-          if (typeof payload.focus === "string") {
-            existingStation.focus = payload.focus
-          }
-          continue
-        }
-
-        stationsWithQueue.push({
-          id: eventStationId,
-          name:
-            (payload.name as string) ||
-            `${event.sourceNode.name || event.sourceNode.nodeId} station`,
-          role: (payload.role as string) || "Remote",
-          status: (payload.status as string) || "online",
-          load: typeof payload.load === "number" ? payload.load : 40,
-          focus:
-            (payload.focus as string) ||
-            `Forwarded from ${event.sourceNode.name || event.sourceNode.nodeId}`,
-          queue: [],
-        })
-      }
+      stationsWithQueue = applyForwardedBridgeStationEvents(stationsWithQueue, forwardedBridgeEvents)
     }
 
     return NextResponse.json({
       stations: stationsWithQueue,
       workItems,
       systems,
+      selectedShipDeploymentId: selectedShip?.id || null,
+      availableShips: availableShips.map((ship) => ({
+        id: ship.id,
+        name: ship.name,
+        status: ship.status,
+        updatedAt: ship.updatedAt,
+        nodeId: ship.nodeId,
+        nodeType: ship.nodeType,
+        deploymentProfile: ship.deploymentProfile,
+      })),
     })
   } catch (error) {
     console.error("Error loading bridge state:", error)

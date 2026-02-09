@@ -1,4 +1,5 @@
-kube_context = "minikube"
+infrastructure_kind = "kind"
+kube_context = "kind-orchwiz" # set to "minikube" when infrastructure_kind = "minikube"
 namespace    = "orchwiz-starship"
 app_name     = "orchwiz"
 app_image    = "ghcr.io/your-org/orchwiz:latest"

@@ -1,0 +1,2 @@
+- Avoid policy statements without actionable alternatives.
+- Avoid ambiguous risk severity language.

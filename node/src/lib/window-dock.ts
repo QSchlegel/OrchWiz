@@ -67,3 +67,31 @@ export function dispatchDockRestore(detail: DockRestoreEventDetail) {
   window.dispatchEvent(new CustomEvent<DockRestoreEventDetail>(WINDOW_DOCK_RESTORE_EVENT, { detail }))
 }
 
+// ── Window position persistence ──────────────────────────
+
+const WINDOW_POSITIONS_KEY = "orchwiz:window-positions"
+
+export interface WindowPosition {
+  x: number
+  y: number
+  width: number
+}
+
+export function readWindowPositions(scope: DockScope): Record<string, WindowPosition> | null {
+  if (typeof window === "undefined") return null
+  try {
+    const raw = window.localStorage.getItem(`${WINDOW_POSITIONS_KEY}:${scope}`)
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    if (typeof parsed !== "object" || parsed === null) return null
+    return parsed
+  } catch {
+    return null
+  }
+}
+
+export function writeWindowPositions(scope: DockScope, positions: Record<string, WindowPosition>): void {
+  if (typeof window === "undefined") return
+  window.localStorage.setItem(`${WINDOW_POSITIONS_KEY}:${scope}`, JSON.stringify(positions))
+}
+

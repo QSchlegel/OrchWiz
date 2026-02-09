@@ -8,6 +8,7 @@ export interface SystemNodeData {
   detail?: string
   visualVariant?: "uss-k8s"
   commandTier?: number
+  buildMode?: boolean
 }
 
 const statusStyles = {
@@ -53,8 +54,18 @@ export function SystemNode({ data, selected }: NodeProps<SystemNodeData>) {
           </p>
         )}
       </div>
-      <Handle type="target" position={Position.Top} style={{ opacity: 0 }} />
-      <Handle type="source" position={Position.Bottom} style={{ opacity: 0 }} />
+      <Handle
+        type="target"
+        position={Position.Top}
+        style={{ opacity: data.buildMode ? 1 : 0 }}
+        className={data.buildMode ? "!h-3 !w-3 !border-2 !border-white !bg-amber-500 build-handle-pulse" : ""}
+      />
+      <Handle
+        type="source"
+        position={Position.Bottom}
+        style={{ opacity: data.buildMode ? 1 : 0 }}
+        className={data.buildMode ? "!h-3 !w-3 !border-2 !border-white !bg-amber-500 build-handle-pulse" : ""}
+      />
     </div>
   )
 }

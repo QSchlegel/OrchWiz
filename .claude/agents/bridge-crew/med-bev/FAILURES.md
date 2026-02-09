@@ -1,0 +1,2 @@
+- Avoid vague health signals.
+- Avoid recovery calls without observable evidence.

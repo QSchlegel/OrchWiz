@@ -1,0 +1,2 @@
+- Avoid vague handoffs.
+- Avoid long narrative output.

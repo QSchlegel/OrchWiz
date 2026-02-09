@@ -29,6 +29,7 @@ model User {
   applicationDeployments ApplicationDeployment[]
   projects              Project[]
   forwardingConfigs     ForwardingConfig[]
+  shipTopologies        ShipTopology[]
 }
 
 model AuthSession {
@@ -440,6 +441,7 @@ model AgentDeployment {
   subagentId    String?
   nodeId        String
   nodeType      NodeType
+  deploymentType DeploymentType     @default(agent)
   deploymentProfile DeploymentProfile @default(local_starship_build)
   provisioningMode ProvisioningMode @default(terraform_ansible)
   nodeUrl       String?
@@ -455,12 +457,20 @@ model AgentDeployment {
 
   subagent      Subagent?           @relation(fields: [subagentId], references: [id], onDelete: SetNull)
   user          User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  bridgeCrew    BridgeCrew[]
+  applications  ApplicationDeployment[]
 
   @@index([nodeId])
   @@index([status])
   @@index([userId])
   @@index([subagentId])
+  @@index([deploymentType])
   @@index([deploymentProfile])
+}
+
+enum DeploymentType {
+  agent
+  ship
 }
 
 enum DeploymentProfile {
@@ -489,6 +499,39 @@ enum DeploymentStatus {
   updating
 }
 
+model BridgeCrew {
+  id            String          @id @default(cuid())
+  deploymentId  String
+  role          BridgeCrewRole
+  callsign      String
+  name          String
+  description   String?
+  content       String
+  status        BridgeCrewStatus @default(active)
+  metadata      Json?
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  deployment    AgentDeployment @relation(fields: [deploymentId], references: [id], onDelete: Cascade)
+
+  @@unique([deploymentId, role])
+  @@index([deploymentId])
+}
+
+enum BridgeCrewRole {
+  xo
+  ops
+  eng
+  sec
+  med
+  cou
+}
+
+enum BridgeCrewStatus {
+  active
+  inactive
+}
+
 model ApplicationDeployment {
   id            String              @id @default(cuid())
   name          String
@@ -501,6 +544,7 @@ model ApplicationDeployment {
   startCommand  String?
   port          Int?
   environment   Json?
+  shipDeploymentId String
   nodeId        String
   nodeType      NodeType
   deploymentProfile DeploymentProfile @default(local_starship_build)
@@ -517,8 +561,10 @@ model ApplicationDeployment {
   createdAt     DateTime            @default(now())
   updatedAt     DateTime            @updatedAt
 
+  shipDeployment AgentDeployment     @relation(fields: [shipDeploymentId], references: [id], onDelete: Cascade)
   user          User                @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@index([shipDeploymentId])
   @@index([nodeId])
   @@index([status])
   @@index([userId])
@@ -681,4 +727,29 @@ model GitHubWebhookEvent {
   @@index([action])
   @@index([repository])
   @@index([createdAt])
+}
+
+model ShipTopology {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  userId      String
+  teamId      String?  @default("uss-k8s")
+
+  components  Json
+  edges       Json
+  positions   Json?
+  hierarchy   Json?
+
+  isDefault   Boolean  @default(false)
+  version     Int      @default(1)
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([teamId])
+  @@index([isDefault])
 }

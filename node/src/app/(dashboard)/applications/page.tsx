@@ -38,12 +38,15 @@ import { layoutColumns } from "@/lib/flow/layout"
 import { buildEdgesToAnchors, mapAnchorsToNodes, mapApplicationsToNodes } from "@/lib/flow/mappers"
 import type { Node } from "reactflow"
 import { useEventStream } from "@/lib/realtime/useEventStream"
+import Link from "next/link"
 
 type DeploymentProfile = "local_starship_build" | "cloud_shipyard"
 type ProvisioningMode = "terraform_ansible" | "terraform_only" | "ansible_only"
 type NodeType = "local" | "cloud" | "hybrid"
+type InfrastructureKind = "kind" | "minikube" | "existing_k8s"
 
 interface InfrastructureConfig {
+  kind: InfrastructureKind
   kubeContext: string
   namespace: string
   terraformWorkspace: string
@@ -63,6 +66,7 @@ interface ApplicationFormData {
   startCommand: string
   port: number
   environment: Record<string, unknown>
+  shipDeploymentId: string
   nodeId: string
   nodeType: NodeType
   deploymentProfile: DeploymentProfile
@@ -71,6 +75,18 @@ interface ApplicationFormData {
   infrastructure: InfrastructureConfig
   nodeUrl: string
   version: string
+}
+
+interface ShipSelectorItem {
+  id: string
+  name: string
+  status: "pending" | "deploying" | "active" | "inactive" | "failed" | "updating"
+  nodeId: string
+  nodeType: NodeType
+  nodeUrl: string | null
+  deploymentProfile: DeploymentProfile
+  provisioningMode: ProvisioningMode
+  config: unknown
 }
 
 const deploymentProfileLabels: Record<DeploymentProfile, string> = {
@@ -84,9 +100,30 @@ const provisioningModeLabels: Record<ProvisioningMode, string> = {
   ansible_only: "Ansible only",
 }
 
+const infrastructureKindLabels: Record<InfrastructureKind, string> = {
+  kind: "KIND",
+  minikube: "Minikube",
+  existing_k8s: "Existing Kubernetes",
+}
+
+function isInfrastructureKind(value: unknown): value is InfrastructureKind {
+  return value === "kind" || value === "minikube" || value === "existing_k8s"
+}
+
+function kubeContextForKind(kind: InfrastructureKind): string {
+  if (kind === "kind") {
+    return "kind-orchwiz"
+  }
+  if (kind === "minikube") {
+    return "minikube"
+  }
+  return "existing-cluster"
+}
+
 function defaultInfrastructure(profile: DeploymentProfile): InfrastructureConfig {
   if (profile === "cloud_shipyard") {
     return {
+      kind: "existing_k8s",
       kubeContext: "existing-cluster",
       namespace: "orchwiz-shipyard",
       terraformWorkspace: "shipyard-cloud",
@@ -97,7 +134,8 @@ function defaultInfrastructure(profile: DeploymentProfile): InfrastructureConfig
   }
 
   return {
-    kubeContext: "minikube",
+    kind: "kind",
+    kubeContext: "kind-orchwiz",
     namespace: "orchwiz-starship",
     terraformWorkspace: "starship-local",
     terraformEnvDir: "infra/terraform/environments/starship-local",
@@ -134,6 +172,15 @@ interface Application {
   startCommand: string | null
   port: number | null
   environment: any
+  shipDeploymentId: string | null
+  ship: {
+    id: string
+    name: string
+    status: string
+    nodeId: string
+    nodeType: NodeType
+    deploymentProfile: DeploymentProfile
+  } | null
   nodeId: string
   nodeType: NodeType
   deploymentProfile: DeploymentProfile
@@ -262,7 +309,10 @@ function formatUptime(deployedAt: Date): string {
   return `${minutes}m`
 }
 
-function extractInfrastructureConfig(config: unknown): InfrastructureConfig | null {
+function extractInfrastructureConfig(
+  config: unknown,
+  deploymentProfile?: DeploymentProfile,
+): InfrastructureConfig | null {
   if (!config || typeof config !== "object") {
     return null
   }
@@ -272,7 +322,31 @@ function extractInfrastructureConfig(config: unknown): InfrastructureConfig | nu
     return null
   }
 
-  return infrastructure as InfrastructureConfig
+  const raw = infrastructure as Record<string, unknown>
+  const defaultConfig = defaultInfrastructure(deploymentProfile || "local_starship_build")
+  const inferredKind = isInfrastructureKind(raw.kind)
+    ? raw.kind
+    : deploymentProfile === "cloud_shipyard"
+      ? "existing_k8s"
+      : typeof raw.kubeContext === "string" && raw.kubeContext.toLowerCase().includes("minikube")
+        ? "minikube"
+        : "kind"
+
+  return {
+    kind: inferredKind,
+    kubeContext: typeof raw.kubeContext === "string" ? raw.kubeContext : kubeContextForKind(inferredKind),
+    namespace: typeof raw.namespace === "string" ? raw.namespace : defaultConfig.namespace,
+    terraformWorkspace:
+      typeof raw.terraformWorkspace === "string"
+        ? raw.terraformWorkspace
+        : defaultConfig.terraformWorkspace,
+    terraformEnvDir:
+      typeof raw.terraformEnvDir === "string" ? raw.terraformEnvDir : defaultConfig.terraformEnvDir,
+    ansibleInventory:
+      typeof raw.ansibleInventory === "string" ? raw.ansibleInventory : defaultConfig.ansibleInventory,
+    ansiblePlaybook:
+      typeof raw.ansiblePlaybook === "string" ? raw.ansiblePlaybook : defaultConfig.ansiblePlaybook,
+  }
 }
 
 export default function ApplicationsPage() {
@@ -285,6 +359,8 @@ export default function ApplicationsPage() {
   const [showCreateForm, setShowCreateForm] = useState(false)
   const [includeForwarded, setIncludeForwarded] = useState(false)
   const [sourceNodeId, setSourceNodeId] = useState("")
+  const [ships, setShips] = useState<ShipSelectorItem[]>([])
+  const [isLoadingShips, setIsLoadingShips] = useState(true)
   const [formData, setFormData] = useState<ApplicationFormData>({
     name: "",
     description: "",
@@ -296,6 +372,7 @@ export default function ApplicationsPage() {
     startCommand: "",
     port: 3000,
     environment: {},
+    shipDeploymentId: "",
     nodeId: "",
     nodeType: "local" as NodeType,
     deploymentProfile: initialDeploymentProfile,
@@ -306,10 +383,60 @@ export default function ApplicationsPage() {
     version: "",
   })
 
+  const selectedShip = useMemo(
+    () => ships.find((ship) => ship.id === formData.shipDeploymentId) || null,
+    [formData.shipDeploymentId, ships],
+  )
+
   const derivedNodeType = useMemo(
     () => deriveNodeType(formData.deploymentProfile, formData.advancedNodeTypeOverride, formData.nodeType),
     [formData.advancedNodeTypeOverride, formData.deploymentProfile, formData.nodeType],
   )
+
+  const applyShipToForm = (ship: ShipSelectorItem, current: ApplicationFormData): ApplicationFormData => {
+    const infrastructure = extractInfrastructureConfig(ship.config, ship.deploymentProfile)
+    return {
+      ...current,
+      shipDeploymentId: ship.id,
+      nodeId: ship.nodeId,
+      nodeType: ship.nodeType,
+      deploymentProfile: ship.deploymentProfile,
+      provisioningMode: ship.provisioningMode,
+      advancedNodeTypeOverride: false,
+      nodeUrl: ship.nodeUrl || "",
+      infrastructure: infrastructure || defaultInfrastructure(ship.deploymentProfile),
+    }
+  }
+
+  const fetchShips = async () => {
+    setIsLoadingShips(true)
+    try {
+      const response = await fetch("/api/ships")
+      if (response.ok) {
+        const data = (await response.json()) as ShipSelectorItem[]
+        const nextShips = Array.isArray(data) ? data : []
+        setShips(nextShips)
+        setFormData((current) => {
+          if (nextShips.length === 0) {
+            return { ...current, shipDeploymentId: "" }
+          }
+          const existing = nextShips.find((ship) => ship.id === current.shipDeploymentId)
+          if (existing) {
+            return applyShipToForm(existing, current)
+          }
+          return applyShipToForm(nextShips[0], current)
+        })
+      }
+    } catch (error) {
+      console.error("Error fetching ships:", error)
+    } finally {
+      setIsLoadingShips(false)
+    }
+  }
+
+  useEffect(() => {
+    fetchShips()
+  }, [])
 
   useEffect(() => {
     fetchApplications()
@@ -317,9 +444,10 @@ export default function ApplicationsPage() {
 
   useEventStream({
     enabled: true,
-    types: ["application.updated", "forwarding.received"],
+    types: ["ship.application.updated", "application.updated", "ship.updated", "forwarding.received"],
     onEvent: () => {
       fetchApplications()
+      fetchShips()
     },
   })
 
@@ -343,6 +471,9 @@ export default function ApplicationsPage() {
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (!formData.shipDeploymentId) {
+      return
+    }
     setIsCreating(true)
 
     try {
@@ -362,12 +493,7 @@ export default function ApplicationsPage() {
           startCommand: formData.startCommand,
           port: formData.port || null,
           environment: formData.environment || {},
-          nodeId: formData.nodeId,
-          nodeType: formData.nodeType,
-          deploymentProfile: formData.deploymentProfile,
-          provisioningMode: formData.provisioningMode,
-          advancedNodeTypeOverride: formData.advancedNodeTypeOverride,
-          nodeUrl: formData.nodeUrl || null,
+          shipDeploymentId: formData.shipDeploymentId,
           version: formData.version || null,
           config: {
             infrastructure: formData.infrastructure,
@@ -377,25 +503,30 @@ export default function ApplicationsPage() {
 
       if (response.ok) {
         setShowCreateForm(false)
-        setFormData({
-          name: "",
-          description: "",
-          applicationType: "docker",
-          image: "",
-          repository: "",
-          branch: "main",
-          buildCommand: "",
-          startCommand: "",
-          port: 3000,
-          environment: {},
-          nodeId: "",
-          nodeType: "local",
-          deploymentProfile: initialDeploymentProfile,
-          provisioningMode: "terraform_ansible",
-          advancedNodeTypeOverride: false,
-          infrastructure: defaultInfrastructure(initialDeploymentProfile),
-          nodeUrl: "",
-          version: "",
+        setFormData((current) => {
+          const base: ApplicationFormData = {
+            name: "",
+            description: "",
+            applicationType: "docker",
+            image: "",
+            repository: "",
+            branch: "main",
+            buildCommand: "",
+            startCommand: "",
+            port: 3000,
+            environment: {},
+            shipDeploymentId: current.shipDeploymentId,
+            nodeId: "",
+            nodeType: "local",
+            deploymentProfile: initialDeploymentProfile,
+            provisioningMode: "terraform_ansible",
+            advancedNodeTypeOverride: false,
+            infrastructure: defaultInfrastructure(initialDeploymentProfile),
+            nodeUrl: "",
+            version: "",
+          }
+          const activeShip = ships.find((ship) => ship.id === base.shipDeploymentId)
+          return activeShip ? applyShipToForm(activeShip, base) : base
         })
         fetchApplications()
       }
@@ -441,15 +572,20 @@ export default function ApplicationsPage() {
   }
 
   const topologyNodes = useMemo(() => {
-    const appInputs = applications.map((app) => ({
-      id: app.id,
-      name: app.name,
-      status: app.status,
-      nodeType: app.nodeType,
-      applicationType: app.applicationType,
-      deploymentProfile: app.deploymentProfile,
-      provisioningMode: app.provisioningMode,
-    }))
+    const appInputs = applications.map((app) => {
+      const infrastructure = extractInfrastructureConfig(app.config, app.deploymentProfile)
+      return {
+        id: app.id,
+        name: app.name,
+        status: app.status,
+        nodeType: app.nodeType,
+        applicationType: app.applicationType,
+        shipName: app.ship?.name,
+        deploymentProfile: app.deploymentProfile,
+        provisioningMode: app.provisioningMode,
+        infrastructureKind: infrastructure?.kind,
+      }
+    })
 
     const localInputs = appInputs.filter((item) => item.nodeType === "local")
     const cloudInputs = appInputs.filter((item) => item.nodeType === "cloud")
@@ -522,7 +658,8 @@ export default function ApplicationsPage() {
           </div>
           <button
             onClick={() => setShowCreateForm(true)}
-            className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-blue-600 to-cyan-600 text-white rounded-xl hover:from-blue-700 hover:to-cyan-700 transition-all duration-300 stack-2 transform hover:scale-105"
+            disabled={isLoadingShips || ships.length === 0}
+            className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-blue-600 to-cyan-600 text-white rounded-xl hover:from-blue-700 hover:to-cyan-700 transition-all duration-300 stack-2 transform hover:scale-105 disabled:opacity-60 disabled:cursor-not-allowed disabled:transform-none"
           >
             <Package className="w-5 h-5" />
             Deploy Application
@@ -568,6 +705,15 @@ export default function ApplicationsPage() {
           <OrchestrationSurface level={5} className="mb-8">
             <h2 className="text-2xl font-semibold mb-6">Deploy New Application</h2>
             <form onSubmit={handleCreate} className="space-y-4">
+              {ships.length === 0 && (
+                <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+                  No ships available. Launch a ship in{" "}
+                  <Link href="/ship-yard" className="underline underline-offset-2">
+                    Ship Yard
+                  </Link>{" "}
+                  before deploying applications.
+                </div>
+              )}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium mb-2">Application Name</label>
@@ -594,6 +740,39 @@ export default function ApplicationsPage() {
                     <option value="custom">Custom</option>
                   </select>
                 </div>
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium mb-2">Target Ship</label>
+                  <select
+                    value={formData.shipDeploymentId}
+                    onChange={(e) => {
+                      const selectedId = e.target.value
+                      const ship = ships.find((entry) => entry.id === selectedId)
+                      if (!ship) {
+                        setFormData({ ...formData, shipDeploymentId: selectedId })
+                        return
+                      }
+                      setFormData((current) => applyShipToForm(ship, { ...current, shipDeploymentId: selectedId }))
+                    }}
+                    required
+                    disabled={ships.length === 0}
+                    className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20 disabled:opacity-60"
+                  >
+                    {ships.length === 0 ? (
+                      <option value="">No ships available</option>
+                    ) : (
+                      ships.map((ship) => (
+                        <option key={ship.id} value={ship.id}>
+                          {ship.name} ({ship.status})
+                        </option>
+                      ))
+                    )}
+                  </select>
+                  {selectedShip && (
+                    <p className="mt-1 text-xs text-cyan-300">
+                      Deploying to {selectedShip.nodeType} node `{selectedShip.nodeId}` via {deploymentProfileLabels[selectedShip.deploymentProfile]}.
+                    </p>
+                  )}
+                </div>
                 <div>
                   <label className="block text-sm font-medium mb-2">Node ID</label>
                   <input
@@ -601,6 +780,8 @@ export default function ApplicationsPage() {
                     value={formData.nodeId}
                     onChange={(e) => setFormData({ ...formData, nodeId: e.target.value })}
                     required
+                    readOnly
+                    disabled
                     className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
                     placeholder="node-001"
                   />
@@ -626,6 +807,7 @@ export default function ApplicationsPage() {
                         infrastructure: defaultInfrastructure(deploymentProfile),
                       })
                     }}
+                    disabled
                     className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
                   >
                     <option value="local_starship_build">Local Starship Build</option>
@@ -639,6 +821,7 @@ export default function ApplicationsPage() {
                     onChange={(e) =>
                       setFormData({ ...formData, provisioningMode: e.target.value as ProvisioningMode })
                     }
+                    disabled
                     className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
                   >
                     <option value="terraform_ansible">Terraform + Ansible</option>
@@ -673,6 +856,7 @@ export default function ApplicationsPage() {
                               nodeType: e.target.checked ? formData.nodeType : "cloud",
                             })
                           }
+                          disabled
                         />
                         Advanced override (allow hybrid)
                       </label>
@@ -680,6 +864,7 @@ export default function ApplicationsPage() {
                         <select
                           value={formData.nodeType}
                           onChange={(e) => setFormData({ ...formData, nodeType: e.target.value as NodeType })}
+                          disabled
                           className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
                         >
                           <option value="cloud">Cloud</option>
@@ -761,13 +946,44 @@ export default function ApplicationsPage() {
                     type="url"
                     value={formData.nodeUrl}
                     onChange={(e) => setFormData({ ...formData, nodeUrl: e.target.value })}
+                    readOnly
+                    disabled
                     className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
                     placeholder="https://node.example.com"
                   />
                 </div>
                 <div className="md:col-span-2">
                   <label className="block text-sm font-medium mb-2">Infrastructure (config.infrastructure)</label>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 opacity-70 pointer-events-none">
+                    <select
+                      value={formData.infrastructure.kind}
+                      onChange={(e) => {
+                        const selectedKind = e.target.value as InfrastructureKind
+                        const infrastructureKind =
+                          formData.deploymentProfile === "cloud_shipyard" ? "existing_k8s" : selectedKind
+                        setFormData({
+                          ...formData,
+                          infrastructure: {
+                            ...formData.infrastructure,
+                            kind: infrastructureKind,
+                            kubeContext: kubeContextForKind(infrastructureKind),
+                          },
+                        })
+                      }}
+                      disabled={formData.deploymentProfile === "cloud_shipyard"}
+                      className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
+                    >
+                      {formData.deploymentProfile === "cloud_shipyard" ? (
+                        <option value="existing_k8s">
+                          {infrastructureKindLabels.existing_k8s}
+                        </option>
+                      ) : (
+                        <>
+                          <option value="kind">{infrastructureKindLabels.kind}</option>
+                          <option value="minikube">{infrastructureKindLabels.minikube}</option>
+                        </>
+                      )}
+                    </select>
                     <input
                       type="text"
                       value={formData.infrastructure.kubeContext}
@@ -866,7 +1082,7 @@ export default function ApplicationsPage() {
               <div className="flex gap-3">
                 <button
                   type="submit"
-                  disabled={isCreating}
+                  disabled={isCreating || ships.length === 0 || !formData.shipDeploymentId}
                   className="px-6 py-3 bg-gradient-to-r from-blue-600 to-cyan-600 text-white rounded-xl hover:from-blue-700 hover:to-cyan-700 transition-all duration-300 disabled:opacity-50 stack-2"
                 >
                   {isCreating ? "Deploying..." : "Deploy"}
@@ -904,12 +1120,21 @@ export default function ApplicationsPage() {
                 />
               ))}
             </div>
-            <button
-              onClick={() => setShowCreateForm(true)}
-              className="px-6 py-3 bg-gradient-to-r from-blue-600 to-cyan-600 text-white rounded-xl hover:from-blue-700 hover:to-cyan-700 transition-all"
-            >
-              Deploy First Application
-            </button>
+            {ships.length === 0 ? (
+              <Link
+                href="/ship-yard"
+                className="inline-flex px-6 py-3 bg-gradient-to-r from-indigo-600 to-violet-600 text-white rounded-xl hover:from-indigo-700 hover:to-violet-700 transition-all"
+              >
+                Open Ship Yard
+              </Link>
+            ) : (
+              <button
+                onClick={() => setShowCreateForm(true)}
+                className="px-6 py-3 bg-gradient-to-r from-blue-600 to-cyan-600 text-white rounded-xl hover:from-blue-700 hover:to-cyan-700 transition-all"
+              >
+                Deploy First Application
+              </button>
+            )}
           </OrchestrationSurface>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -932,6 +1157,9 @@ export default function ApplicationsPage() {
                       <div>
                         <h3 className="text-lg font-semibold leading-tight">{application.name}</h3>
                         <span className={`text-xs ${appTypeInfo.color}`}>{appTypeInfo.label}</span>
+                        {application.ship?.name && (
+                          <span className="ml-2 text-xs text-cyan-300">on {application.ship.name}</span>
+                        )}
                       </div>
                     </div>
                     <div
@@ -1003,7 +1231,10 @@ export default function ApplicationsPage() {
                         healthStatus={application.healthStatus}
                         deploymentProfile={application.deploymentProfile}
                         provisioningMode={application.provisioningMode}
-                        infrastructure={extractInfrastructureConfig(application.config)}
+                        infrastructure={extractInfrastructureConfig(
+                          application.config,
+                          application.deploymentProfile,
+                        )}
                         showCapabilities={false}
                         showConfig={false}
                         showSecurity={false}
@@ -1105,7 +1336,10 @@ export default function ApplicationsPage() {
                         deployedAt={application.deployedAt}
                         deploymentProfile={application.deploymentProfile}
                         provisioningMode={application.provisioningMode}
-                        infrastructure={extractInfrastructureConfig(application.config)}
+                        infrastructure={extractInfrastructureConfig(
+                          application.config,
+                          application.deploymentProfile,
+                        )}
                         showCapabilities={true}
                         showConfig={false}
                         showSecurity={true}

@@ -6,6 +6,7 @@ import {
   Network,
   Server,
   Cpu,
+  Github,
   Package,
   ArrowRight,
   ChevronDown,
@@ -112,6 +113,15 @@ export default function Home() {
               >
                 Take the tour
                 <ChevronDown className="w-4 h-4" />
+              </a>
+              <a
+                href="https://github.com/QSchlegel/OrchWiz"
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-2 px-7 py-3.5 rounded-xl border border-slate-300/80 dark:border-white/10 bg-white/80 dark:bg-white/[0.03] text-slate-700 dark:text-gray-300 font-medium text-sm tracking-wide hover:bg-white dark:hover:bg-white/[0.06] hover:border-slate-400/70 dark:hover:border-white/20 transition-all duration-300 shadow-sm shadow-slate-900/5 dark:shadow-none"
+              >
+                <Github className="w-4 h-4" />
+                GitHub
               </a>
             </div>
 

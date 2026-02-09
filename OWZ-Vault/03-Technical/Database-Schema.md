@@ -82,12 +82,14 @@ Orchwiz uses PostgreSQL with Prisma ORM. The schema is defined in `node/prisma/s
 - Tracks iterations and feedback
 
 ### AgentDeployment / ApplicationDeployment
-- Deployment records for agents and applications
+- Ship + application deployment records
+- `AgentDeployment.deploymentType` differentiates `agent` and `ship`.
+- `ApplicationDeployment.shipDeploymentId` links each application deployment to a ship deployment.
 - Typed deployment profile fields:
   - `deploymentProfile`: `local_starship_build` or `cloud_shipyard`
   - `provisioningMode`: `terraform_ansible`, `terraform_only`, or `ansible_only`
 - Existing flexible JSON fields remain:
-  - `config` (includes `config.infrastructure` for Terraform/Ansible settings)
+  - `config` (includes `config.infrastructure.kind` = `kind|minikube|existing_k8s` plus Terraform/Ansible settings)
   - `metadata`
 
 ## Relationships

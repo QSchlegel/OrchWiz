@@ -16,7 +16,6 @@ import {
   Heart,
   MessageSquare,
   Monitor,
-  PanelRightClose,
   Radio,
   RefreshCw,
   Server,
@@ -54,6 +53,8 @@ import {
   type SubsystemGroup,
   type TopologyComponent,
 } from "@/lib/uss-k8s/topology"
+import { useSelectionHistory } from "@/lib/uss-k8s/useSelectionHistory"
+import { useShipSelection } from "@/lib/shipyard/useShipSelection"
 import { LoadingSkeleton } from "@/components/uss-k8s/LoadingSkeleton"
 import { BridgeCrewCard } from "@/components/uss-k8s/BridgeCrewCard"
 import {
@@ -68,12 +69,14 @@ import { FocusModeDrawer } from "@/components/uss-k8s/FocusModeDrawer"
 import {
   addDockWindow,
   readDockWindows,
+  readWindowPositions,
   removeDockWindow,
   WINDOW_DOCK_RESTORE_EVENT,
+  writeWindowPositions,
   type DockRestoreEventDetail,
   type DockScope,
 } from "@/lib/window-dock"
-import { applyNodeChanges, type Node, type NodeChange, type ReactFlowInstance, type XYPosition } from "reactflow"
+import type { Node, NodeChange, ReactFlowInstance, XYPosition } from "reactflow"
 
 const nodeTypes = {
   stationNode: StationNode,
@@ -148,6 +151,15 @@ interface DesktopWindowMeta {
   title: string
 }
 
+interface ShipSelectorItem {
+  id: string
+  name: string
+  status: "pending" | "deploying" | "active" | "inactive" | "failed" | "updating"
+  nodeId: string
+  nodeType: "local" | "cloud" | "hybrid"
+  deploymentProfile: "local_starship_build" | "cloud_shipyard"
+}
+
 const MOBILE_SECTIONS: { key: MobileSection; label: string; icon: React.ElementType }[] = [
   { key: "topology", label: "Topology", icon: Cpu },
   { key: "detail", label: "Detail", icon: Activity },
@@ -209,7 +221,10 @@ function formatStardate(date: Date) {
 
 export default function UssK8sPage() {
   const { data: session } = useSession()
+  const { selectedShipDeploymentId, setSelectedShipDeploymentId } = useShipSelection()
+  const selectionHistory = useSelectionHistory()
   const [components, setComponents] = useState<TopologyComponent[]>(USS_K8S_COMPONENTS)
+  const [availableShips, setAvailableShips] = useState<ShipSelectorItem[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -251,12 +266,56 @@ export default function UssK8sPage() {
     setError(null)
 
     try {
-      const res = await fetch("/api/uss-k8s/topology")
+      const params = new URLSearchParams()
+      if (selectedShipDeploymentId) {
+        params.set("shipDeploymentId", selectedShipDeploymentId)
+      }
+
+      const res = await fetch(`/api/uss-k8s/topology?${params.toString()}`)
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
 
       const data = await res.json()
       if (Array.isArray(data.components)) {
         setComponents(data.components)
+      }
+      const nextAvailableShips: ShipSelectorItem[] = Array.isArray(data.availableShips)
+        ? data.availableShips
+            .map((ship: Record<string, unknown>) => {
+              if (typeof ship.id !== "string" || typeof ship.name !== "string") return null
+              if (
+                ship.status !== "pending" &&
+                ship.status !== "deploying" &&
+                ship.status !== "active" &&
+                ship.status !== "inactive" &&
+                ship.status !== "failed" &&
+                ship.status !== "updating"
+              ) {
+                return null
+              }
+              if (ship.nodeType !== "local" && ship.nodeType !== "cloud" && ship.nodeType !== "hybrid") {
+                return null
+              }
+              if (ship.deploymentProfile !== "local_starship_build" && ship.deploymentProfile !== "cloud_shipyard") {
+                return null
+              }
+
+              return {
+                id: ship.id,
+                name: ship.name,
+                status: ship.status,
+                nodeId: typeof ship.nodeId === "string" ? ship.nodeId : "",
+                nodeType: ship.nodeType,
+                deploymentProfile: ship.deploymentProfile,
+              } satisfies ShipSelectorItem
+            })
+            .filter((ship: ShipSelectorItem | null): ship is ShipSelectorItem => ship !== null)
+        : []
+      setAvailableShips(nextAvailableShips)
+
+      const resolvedShipDeploymentId =
+        typeof data.selectedShipDeploymentId === "string" ? data.selectedShipDeploymentId : null
+      if (resolvedShipDeploymentId !== selectedShipDeploymentId) {
+        setSelectedShipDeploymentId(resolvedShipDeploymentId)
       }
     } catch (err) {
       console.error("Failed to load uss-k8s topology:", err)
@@ -264,60 +323,16 @@ export default function UssK8sPage() {
     } finally {
       setIsLoading(false)
     }
-  }, [])
+  }, [selectedShipDeploymentId, setSelectedShipDeploymentId])
 
   useEffect(() => {
     loadTopology()
   }, [loadTopology])
 
-  useEffect(() => {
-    const WINDOW_IDS: DesktopWindowId[] = ["hierarchy", "operator", "crew", "detail", "legend"]
-
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Ignore when typing in inputs
-      const tag = (e.target as HTMLElement)?.tagName
-      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return
-
-      if (e.key === "Escape") {
-        if (focusDrawerId) {
-          setFocusDrawerId(null)
-          return
-        }
-        setSelectedId(null)
-        setHighlightNodeId(null)
-        return
-      }
-
-      // Cmd/Ctrl + 0: toggle focus mode
-      if ((e.metaKey || e.ctrlKey) && e.key === "0") {
-        e.preventDefault()
-        toggleFocusMode()
-        return
-      }
-
-      // Cmd/Ctrl + 1-5: toggle windows
-      if ((e.metaKey || e.ctrlKey) && e.key >= "1" && e.key <= "5") {
-        e.preventDefault()
-        const index = parseInt(e.key) - 1
-        const windowId = WINDOW_IDS[index]
-        if (!windowId) return
-
-        if (focusMode) {
-          setFocusDrawerId((prev) => (prev === windowId ? null : windowId))
-        } else {
-          const ws = desktopWindows[windowId]
-          if (ws.collapsed) {
-            restoreDesktopWindow(windowId)
-          } else {
-            collapseDesktopWindow(windowId)
-          }
-        }
-        return
-      }
-    }
-    window.addEventListener("keydown", handleKeyDown)
-    return () => window.removeEventListener("keydown", handleKeyDown)
-  }, [focusMode, focusDrawerId, desktopWindows, collapseDesktopWindow, restoreDesktopWindow, toggleFocusMode])
+  const selectedShip = useMemo(() => {
+    if (!selectedShipDeploymentId) return null
+    return availableShips.find((ship) => ship.id === selectedShipDeploymentId) || null
+  }, [availableShips, selectedShipDeploymentId])
 
   const focusDesktopWindow = useCallback((id: DesktopWindowId) => {
     setDesktopWindows((previous) => {
@@ -419,7 +434,24 @@ export default function UssK8sPage() {
       setDesktopStageSize({ width, height })
 
       setDesktopWindows((previous) => {
-        const seed = windowsSeededRef.current ? previous : createInitialDesktopWindows(width, height)
+        let seed = windowsSeededRef.current ? previous : createInitialDesktopWindows(width, height)
+        // Merge persisted positions on first seed
+        if (!windowsSeededRef.current) {
+          const persisted = readWindowPositions(WINDOW_DOCK_SCOPE)
+          if (persisted) {
+            seed = { ...seed }
+            for (const [id, pos] of Object.entries(persisted)) {
+              if (id in seed) {
+                seed[id as DesktopWindowId] = {
+                  ...seed[id as DesktopWindowId],
+                  x: pos.x,
+                  y: pos.y,
+                  width: pos.width,
+                }
+              }
+            }
+          }
+        }
         windowsSeededRef.current = true
         const next = { ...seed }
 
@@ -515,6 +547,17 @@ export default function UssK8sPage() {
     }
 
     const handleWindowDragEnd = () => {
+      if (draggingWindowRef.current) {
+        // Persist window positions after drag
+        setDesktopWindows((current) => {
+          const positions: Record<string, { x: number; y: number; width: number }> = {}
+          for (const [id, ws] of Object.entries(current)) {
+            positions[id] = { x: ws.x, y: ws.y, width: ws.width }
+          }
+          writeWindowPositions(WINDOW_DOCK_SCOPE, positions)
+          return current
+        })
+      }
       draggingWindowRef.current = null
     }
 
@@ -650,11 +693,14 @@ export default function UssK8sPage() {
     if (!instance) return
     const targetNode = instance.getNodes().find((n) => n.id === nodeId)
     if (!targetNode) return
-    instance.setCenter(
-      targetNode.position.x + 80,
-      targetNode.position.y + 40,
-      { zoom: 1.1, duration: 600 },
-    )
+    // Delay pan by one frame so React can render the selection highlight first
+    requestAnimationFrame(() => {
+      instance.setCenter(
+        targetNode.position.x + 80,
+        targetNode.position.y + 40,
+        { zoom: 1.1, duration: 800 },
+      )
+    })
   }, [])
 
   const handleEdgeTypeToggle = (type: EdgeType) => {
@@ -701,6 +747,16 @@ export default function UssK8sPage() {
     return counts
   }, [])
 
+  const adjacency = useMemo(() => {
+    const incoming: Record<string, string[]> = {}
+    const outgoing: Record<string, string[]> = {}
+    for (const edge of USS_K8S_EDGES) {
+      ;(incoming[edge.target] ??= []).push(edge.source)
+      ;(outgoing[edge.source] ??= []).push(edge.target)
+    }
+    return { incoming, outgoing }
+  }, [])
+
   const stardate = formatStardate(new Date())
   const operatorLabel = session?.user?.email || "Operator"
   const hasFilteredResults = filteredComponents.length > 0
@@ -721,7 +777,8 @@ export default function UssK8sPage() {
     setHighlightNodeId(id)
     panToNode(id)
     restoreDesktopWindow("detail")
-  }, [panToNode, restoreDesktopWindow])
+    selectionHistory.push(id)
+  }, [panToNode, restoreDesktopWindow, selectionHistory])
 
   const selectAndHighlightMobile = useCallback((id: string) => {
     selectAndHighlight(id)
@@ -750,6 +807,106 @@ export default function UssK8sPage() {
     setSelectedId(null)
     setActiveGroupFilter(null)
   }, [])
+
+  // Global keyboard shortcuts
+  useEffect(() => {
+    const WINDOW_IDS: DesktopWindowId[] = ["hierarchy", "operator", "crew", "detail", "legend"]
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return
+
+      if (e.key === "Escape") {
+        if (focusDrawerId) {
+          setFocusDrawerId(null)
+          return
+        }
+        setSelectedId(null)
+        setHighlightNodeId(null)
+        return
+      }
+
+      // Cmd/Ctrl + 0: toggle focus mode
+      if ((e.metaKey || e.ctrlKey) && e.key === "0") {
+        e.preventDefault()
+        toggleFocusMode()
+        return
+      }
+
+      // Cmd/Ctrl + 1-5: toggle windows
+      if ((e.metaKey || e.ctrlKey) && e.key >= "1" && e.key <= "5") {
+        e.preventDefault()
+        const index = parseInt(e.key) - 1
+        const windowId = WINDOW_IDS[index]
+        if (!windowId) return
+
+        if (focusMode) {
+          setFocusDrawerId((prev) => (prev === windowId ? null : windowId))
+        } else {
+          const ws = desktopWindows[windowId]
+          if (ws.collapsed) {
+            restoreDesktopWindow(windowId)
+          } else {
+            collapseDesktopWindow(windowId)
+          }
+        }
+        return
+      }
+
+      // Cmd/Ctrl + [ : selection history back
+      if ((e.metaKey || e.ctrlKey) && e.key === "[") {
+        e.preventDefault()
+        const prev = selectionHistory.back()
+        if (prev) selectAndHighlight(prev)
+        return
+      }
+
+      // Cmd/Ctrl + ] : selection history forward
+      if ((e.metaKey || e.ctrlKey) && e.key === "]") {
+        e.preventDefault()
+        const next = selectionHistory.forward()
+        if (next) selectAndHighlight(next)
+        return
+      }
+
+      // / : focus search input
+      if (e.key === "/" && !e.metaKey && !e.ctrlKey) {
+        e.preventDefault()
+        const searchInput = document.querySelector<HTMLInputElement>("[data-search-input]")
+        searchInput?.focus()
+        return
+      }
+
+      // Arrow keys: navigate between connected nodes
+      if (selectedId && (e.key === "ArrowUp" || e.key === "ArrowLeft")) {
+        e.preventDefault()
+        const neighbors = adjacency.incoming[selectedId]
+        if (neighbors?.length) selectAndHighlight(neighbors[0])
+        return
+      }
+      if (selectedId && (e.key === "ArrowDown" || e.key === "ArrowRight")) {
+        e.preventDefault()
+        const neighbors = adjacency.outgoing[selectedId]
+        if (neighbors?.length) selectAndHighlight(neighbors[0])
+        return
+      }
+
+      // Tab: cycle through all components
+      if (e.key === "Tab" && !e.metaKey && !e.ctrlKey) {
+        e.preventDefault()
+        const ids = components.map((c) => c.id)
+        if (ids.length === 0) return
+        const currentIdx = selectedId ? ids.indexOf(selectedId) : -1
+        const nextIdx = e.shiftKey
+          ? (currentIdx <= 0 ? ids.length - 1 : currentIdx - 1)
+          : (currentIdx + 1) % ids.length
+        selectAndHighlight(ids[nextIdx])
+        return
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown)
+    return () => window.removeEventListener("keydown", handleKeyDown)
+  }, [focusMode, focusDrawerId, desktopWindows, collapseDesktopWindow, restoreDesktopWindow, toggleFocusMode, selectedId, adjacency, selectionHistory, selectAndHighlight, components])
 
   const hierarchyPanel = (
     <div className="rounded-lg border border-slate-300/75 bg-white/72 px-3 py-3 dark:border-white/12 dark:bg-white/[0.03]">
@@ -969,11 +1126,37 @@ export default function UssK8sPage() {
               </h1>
             </div>
             <div className="flex items-center gap-2">
+              <label className="hidden items-center gap-2 rounded-md border border-slate-300/70 bg-white/70 px-2.5 py-1.5 text-[11px] text-slate-700 sm:inline-flex dark:border-white/12 dark:bg-white/[0.04] dark:text-slate-300">
+                <span className="readout text-slate-600 dark:text-slate-400">Ship</span>
+                <select
+                  value={selectedShipDeploymentId || ""}
+                  onChange={(event) => setSelectedShipDeploymentId(event.target.value || null)}
+                  className="min-w-[170px] bg-transparent text-[11px] font-medium text-slate-800 outline-none dark:text-slate-100"
+                >
+                  {availableShips.length === 0 ? (
+                    <option value="">No ships</option>
+                  ) : (
+                    <>
+                      <option value="">Auto-select latest active</option>
+                      {availableShips.map((ship) => (
+                        <option key={ship.id} value={ship.id}>
+                          {ship.name} ({ship.status})
+                        </option>
+                      ))}
+                    </>
+                  )}
+                </select>
+              </label>
               <span className="readout text-slate-700 dark:text-slate-300">
                 {filteredComponents.length === components.length
                   ? `${components.length} Components`
                   : `${filteredComponents.length} / ${components.length}`}
               </span>
+              {selectedShip && (
+                <span className="hidden rounded-md border border-slate-300/70 bg-white/70 px-2 py-1 text-[11px] text-slate-700 sm:inline-flex dark:border-white/12 dark:bg-white/[0.04] dark:text-slate-200">
+                  {selectedShip.name}
+                </span>
+              )}
 
               {/* Desktop window controls */}
               <div className="hidden items-center gap-1 xl:flex">
@@ -1178,13 +1361,13 @@ export default function UssK8sPage() {
                     </>
                   ) : (
                   <>
-                  {!desktopWindows.hierarchy.collapsed && (
                     <DockableWindow
                       id="hierarchy"
                       subtitle={DESKTOP_WINDOW_META.hierarchy.subtitle}
                       title={DESKTOP_WINDOW_META.hierarchy.title}
                       style={desktopWindowStyles.hierarchy}
                       bodyClassName="p-3"
+                      collapsed={desktopWindows.hierarchy.collapsed}
                       onDragStart={handleWindowDragStart}
                       onCollapse={collapseDesktopWindow}
                       onFocus={handleWindowFocus}
@@ -1192,15 +1375,14 @@ export default function UssK8sPage() {
                     >
                       {hierarchyPanel}
                     </DockableWindow>
-                  )}
 
-                  {!desktopWindows.operator.collapsed && (
                     <DockableWindow
                       id="operator"
                       subtitle={DESKTOP_WINDOW_META.operator.subtitle}
                       title={DESKTOP_WINDOW_META.operator.title}
                       style={desktopWindowStyles.operator}
                       bodyClassName="p-4"
+                      collapsed={desktopWindows.operator.collapsed}
                       onDragStart={handleWindowDragStart}
                       onCollapse={collapseDesktopWindow}
                       onFocus={handleWindowFocus}
@@ -1234,15 +1416,14 @@ export default function UssK8sPage() {
                         })}
                       </div>
                     </DockableWindow>
-                  )}
 
-                  {!desktopWindows.crew.collapsed && (
                     <DockableWindow
                       id="crew"
                       subtitle={DESKTOP_WINDOW_META.crew.subtitle}
                       title={DESKTOP_WINDOW_META.crew.title}
                       style={desktopWindowStyles.crew}
                       bodyClassName="h-[calc(100%-3rem)] overflow-y-auto p-4"
+                      collapsed={desktopWindows.crew.collapsed}
                       onDragStart={handleWindowDragStart}
                       onCollapse={collapseDesktopWindow}
                       onFocus={handleWindowFocus}
@@ -1285,15 +1466,14 @@ export default function UssK8sPage() {
                         </div>
                       )}
                     </DockableWindow>
-                  )}
 
-                  {!desktopWindows.detail.collapsed && (
                     <DockableWindow
                       id="detail"
                       subtitle={selected ? `${DESKTOP_WINDOW_META.detail.subtitle} App` : DESKTOP_WINDOW_META.detail.subtitle}
                       title={selected ? `${selected.label} Inspector` : DESKTOP_WINDOW_META.detail.title}
                       style={desktopWindowStyles.detail}
                       bodyClassName="h-[calc(100%-3rem)] overflow-y-auto p-4"
+                      collapsed={desktopWindows.detail.collapsed}
                       onDragStart={handleWindowDragStart}
                       onCollapse={collapseDesktopWindow}
                       onFocus={handleWindowFocus}
@@ -1345,15 +1525,14 @@ export default function UssK8sPage() {
 
                       {isObservabilityContextOpen && <div className="mt-3">{renderObservabilityList(selectAndHighlight)}</div>}
                     </DockableWindow>
-                  )}
 
-                  {hasFilteredResults && !desktopWindows.legend.collapsed && (
                     <DockableWindow
                       id="legend"
                       subtitle={DESKTOP_WINDOW_META.legend.subtitle}
                       title={DESKTOP_WINDOW_META.legend.title}
                       style={desktopWindowStyles.legend}
                       bodyClassName="px-4 py-2.5"
+                      collapsed={desktopWindows.legend.collapsed || !hasFilteredResults}
                       onDragStart={handleWindowDragStart}
                       onCollapse={collapseDesktopWindow}
                       onFocus={handleWindowFocus}
@@ -1361,7 +1540,6 @@ export default function UssK8sPage() {
                     >
                       {groupLegend}
                     </DockableWindow>
-                  )}
                   </>
                   )}
                 </div>

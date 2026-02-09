@@ -1,5 +1,10 @@
 import type { ForwardingEvent, NodeSource } from "@prisma/client"
-import { parseDeploymentProfile, parseProvisioningMode } from "@/lib/deployment/profile"
+import {
+  parseDeploymentType,
+  normalizeInfrastructureInConfig,
+  parseDeploymentProfile,
+  parseProvisioningMode,
+} from "@/lib/deployment/profile"
 
 type ForwardingEventWithSource = ForwardingEvent & {
   sourceNode: NodeSource
@@ -132,6 +137,9 @@ export function mapForwardedAction(event: ForwardingEventWithSource) {
 
 export function mapForwardedDeployment(event: ForwardingEventWithSource) {
   const payload = asRecord(event.payload)
+  const deploymentType = parseDeploymentType(payload.deploymentType)
+  const deploymentProfile = parseDeploymentProfile(payload.deploymentProfile)
+  const normalizedInfrastructure = normalizeInfrastructureInConfig(deploymentProfile, payload.config)
 
   return {
     id: `forwarded-${event.id}`,
@@ -140,11 +148,12 @@ export function mapForwardedDeployment(event: ForwardingEventWithSource) {
     subagentId: asNullableString(payload.subagentId),
     nodeId: asString(payload.nodeId, event.sourceNode.nodeId),
     nodeType: asString(payload.nodeType, event.sourceNode.nodeType || "local"),
-    deploymentProfile: parseDeploymentProfile(payload.deploymentProfile),
+    deploymentType,
+    deploymentProfile,
     provisioningMode: parseProvisioningMode(payload.provisioningMode),
     nodeUrl: asNullableString(payload.nodeUrl),
     status: asString(payload.status, "active"),
-    config: asRecord(payload.config),
+    config: normalizedInfrastructure.config,
     metadata: {
       ...asRecord(payload.metadata),
       forwarded: asBoolean(true),

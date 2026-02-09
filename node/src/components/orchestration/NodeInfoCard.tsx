@@ -303,6 +303,7 @@ interface NodeInfoCardProps {
   deploymentProfile?: string | null
   provisioningMode?: string | null
   infrastructure?: {
+    kind?: "kind" | "minikube" | "existing_k8s"
     kubeContext?: string
     namespace?: string
     terraformWorkspace?: string
@@ -371,6 +372,14 @@ export function NodeInfoCard({
         : provisioningMode === "ansible_only"
           ? "Ansible only"
           : provisioningMode
+  const infrastructureKindLabel =
+    infrastructure?.kind === "kind"
+      ? "KIND"
+      : infrastructure?.kind === "minikube"
+        ? "Minikube"
+        : infrastructure?.kind === "existing_k8s"
+          ? "Existing Kubernetes"
+          : infrastructure?.kind
 
   return (
     <div className={`space-y-${compact ? "2" : "3"}`}>
@@ -428,7 +437,7 @@ export function NodeInfoCard({
         />
       )}
 
-      {(deploymentProfileLabel || provisioningModeLabel) && (
+      {(deploymentProfileLabel || provisioningModeLabel || infrastructureKindLabel) && (
         <div className="rounded-lg border border-white/10 bg-black/20 px-2.5 py-2">
           <div className="text-[10px] font-medium uppercase tracking-wider text-gray-400 mb-1">
             Deployment Profile
@@ -444,9 +453,15 @@ export function NodeInfoCard({
                 {provisioningModeLabel}
               </span>
             )}
+            {infrastructureKindLabel && (
+              <span className="rounded-full border border-emerald-500/30 bg-emerald-500/15 px-2 py-0.5 text-[10px] text-emerald-300">
+                {infrastructureKindLabel}
+              </span>
+            )}
           </div>
           {!compact && infrastructure && (
             <div className="mt-2 grid grid-cols-1 gap-1 text-[10px] text-gray-400">
+              {infrastructureKindLabel && <div>Cluster Kind: {infrastructureKindLabel}</div>}
               {infrastructure.kubeContext && <div>Context: {infrastructure.kubeContext}</div>}
               {infrastructure.namespace && <div>Namespace: {infrastructure.namespace}</div>}
               {infrastructure.terraformWorkspace && (

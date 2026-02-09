@@ -6,9 +6,15 @@ import { headers } from "next/headers"
 import { runDeploymentAdapter } from "@/lib/deployment/adapter"
 import { publishRealtimeEvent } from "@/lib/realtime/events"
 import { mapForwardedDeployment } from "@/lib/forwarding/projections"
-import { normalizeDeploymentProfileInput } from "@/lib/deployment/profile"
+import { publishShipUpdated } from "@/lib/shipyard/events"
+import {
+  normalizeDeploymentProfileInput,
+  normalizeInfrastructureInConfig,
+  parseDeploymentType,
+} from "@/lib/deployment/profile"
 
 export const dynamic = 'force-dynamic'
+// Deprecated alias route: prefer /api/ships for ship operations.
 
 export async function GET(request: NextRequest) {
   try {
@@ -19,10 +25,18 @@ export async function GET(request: NextRequest) {
 
     const includeForwarded = request.nextUrl.searchParams.get("includeForwarded") === "true"
     const sourceNodeId = request.nextUrl.searchParams.get("sourceNodeId")
+    const deploymentTypeQuery = request.nextUrl.searchParams.get("deploymentType")
+    const deploymentType =
+      deploymentTypeQuery === null
+        ? "ship"
+        : deploymentTypeQuery === "agent" || deploymentTypeQuery === "ship"
+          ? parseDeploymentType(deploymentTypeQuery)
+          : "ship"
 
     const deployments = await prisma.agentDeployment.findMany({
       where: {
         userId: session.user.id,
+        deploymentType,
       },
       include: {
         subagent: {
@@ -37,9 +51,19 @@ export async function GET(request: NextRequest) {
         createdAt: "desc",
       },
     })
+    const normalizedDeployments = deployments.map((deployment) => {
+      const normalizedInfrastructure = normalizeInfrastructureInConfig(
+        deployment.deploymentProfile,
+        deployment.config,
+      )
+      return {
+        ...deployment,
+        config: normalizedInfrastructure.config,
+      }
+    })
 
     if (!includeForwarded) {
-      return NextResponse.json(deployments)
+      return NextResponse.json(normalizedDeployments)
     }
 
     const forwardedEvents = await prisma.forwardingEvent.findMany({
@@ -62,8 +86,10 @@ export async function GET(request: NextRequest) {
       take: 100,
     })
 
-    const forwardedDeployments = forwardedEvents.map(mapForwardedDeployment)
-    const combined = [...deployments, ...forwardedDeployments].sort((a: any, b: any) => {
+    const forwardedDeployments = forwardedEvents
+      .map(mapForwardedDeployment)
+      .filter((deployment) => deployment.deploymentType === deploymentType)
+    const combined = [...normalizedDeployments, ...forwardedDeployments].sort((a: any, b: any) => {
       const aDate = new Date(a.createdAt || a.forwardingOccurredAt || 0).getTime()
       const bDate = new Date(b.createdAt || b.forwardingOccurredAt || 0).getTime()
       return bDate - aDate
@@ -99,7 +125,10 @@ export async function POST(request: NextRequest) {
       deploymentProfile,
       provisioningMode,
       advancedNodeTypeOverride,
+      deploymentType,
     } = body
+    const resolvedDeploymentType =
+      deploymentType === "agent" || deploymentType === "ship" ? deploymentType : "ship"
 
     const normalizedProfile = normalizeDeploymentProfileInput({
       deploymentProfile,
@@ -116,6 +145,7 @@ export async function POST(request: NextRequest) {
         subagentId: subagentId || null,
         nodeId,
         nodeType: normalizedProfile.nodeType,
+        deploymentType: parseDeploymentType(resolvedDeploymentType),
         deploymentProfile: normalizedProfile.deploymentProfile,
         provisioningMode: normalizedProfile.provisioningMode,
         nodeUrl: nodeUrl || null,
@@ -181,14 +211,22 @@ export async function POST(request: NextRequest) {
       },
     })
 
-    publishRealtimeEvent({
-      type: "deployment.updated",
-      payload: {
-        deploymentId: updatedDeployment.id,
+    if (updatedDeployment.deploymentType === "ship") {
+      publishShipUpdated({
+        shipId: updatedDeployment.id,
         status: updatedDeployment.status,
         nodeId: updatedDeployment.nodeId,
-      },
-    })
+      })
+    } else {
+      publishRealtimeEvent({
+        type: "deployment.updated",
+        payload: {
+          deploymentId: updatedDeployment.id,
+          status: updatedDeployment.status,
+          nodeId: updatedDeployment.nodeId,
+        },
+      })
+    }
 
     return NextResponse.json(updatedDeployment)
   } catch (error) {

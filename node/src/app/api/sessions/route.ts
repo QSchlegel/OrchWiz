@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma"
 import { headers } from "next/headers"
 import { mapForwardedSession } from "@/lib/forwarding/projections"
 import { publishRealtimeEvent } from "@/lib/realtime/events"
+import { buildSessionWhereFilter, hasBridgeAgentChannel } from "@/lib/sessions/filters"
 
 export const dynamic = 'force-dynamic'
 
@@ -18,22 +19,16 @@ export async function GET(request: NextRequest) {
     const status = searchParams.get("status")
     const mode = searchParams.get("mode")
     const source = searchParams.get("source")
+    const bridgeChannel = searchParams.get("bridgeChannel")
     const includeForwarded = searchParams.get("includeForwarded") === "true"
     const sourceNodeId = searchParams.get("sourceNodeId")
-
-    const where: any = {
+    const where = buildSessionWhereFilter({
       userId: session.user.id,
-    }
-
-    if (status) {
-      where.status = status
-    }
-    if (mode) {
-      where.mode = mode
-    }
-    if (source) {
-      where.source = source
-    }
+      status,
+      mode,
+      source,
+      bridgeChannel,
+    })
 
     const sessions = await prisma.session.findMany({
       where,
@@ -73,7 +68,11 @@ export async function GET(request: NextRequest) {
       take: 100,
     })
 
-    const forwardedSessions = forwardedEvents.map(mapForwardedSession)
+    let forwardedSessions = forwardedEvents.map(mapForwardedSession)
+    if (bridgeChannel === "agent") {
+      forwardedSessions = forwardedSessions.filter((entry) => hasBridgeAgentChannel(entry.metadata))
+    }
+
     const combined = [...sessions, ...forwardedSessions].sort((a: any, b: any) => {
       const aDate = new Date(a.updatedAt || a.forwardingOccurredAt || 0).getTime()
       const bDate = new Date(b.updatedAt || b.forwardingOccurredAt || 0).getTime()

@@ -35,6 +35,7 @@ export interface DeploymentInput {
   nodeType?: string
   deploymentProfile?: string
   provisioningMode?: string
+  infrastructureKind?: string
   meta?: string
 }
 
@@ -43,9 +44,11 @@ export interface ApplicationInput {
   name: string
   status: string
   applicationType?: string
+  shipName?: string
   nodeType?: string
   deploymentProfile?: string
   provisioningMode?: string
+  infrastructureKind?: string
 }
 
 export interface AnchorInput {
@@ -125,6 +128,7 @@ export function mapDeploymentsToNodes(deployments: DeploymentInput[], selectedId
       nodeType: deployment.nodeType,
       deploymentProfile: deployment.deploymentProfile,
       provisioningMode: deployment.provisioningMode,
+      infrastructureKind: deployment.infrastructureKind,
       meta: deployment.meta,
     },
     position: { x: 0, y: 0 },
@@ -141,8 +145,10 @@ export function mapApplicationsToNodes(applications: ApplicationInput[], selecte
       status: app.status,
       nodeType: app.nodeType,
       appType: app.applicationType,
+      shipName: app.shipName,
       deploymentProfile: app.deploymentProfile,
       provisioningMode: app.provisioningMode,
+      infrastructureKind: app.infrastructureKind,
     },
     position: { x: 0, y: 0 },
     selected: app.id === selectedId,
@@ -245,6 +251,7 @@ export type SubsystemVisualVariant = "uss-k8s"
 
 interface SubsystemMapOptions {
   visualVariant?: SubsystemVisualVariant
+  buildMode?: boolean
 }
 
 export interface SubsystemEdgeInput {
@@ -270,6 +277,7 @@ export function mapSubsystemToNodes(
   options: SubsystemMapOptions = {},
 ): Node[] {
   const visualVariant = options.visualVariant
+  const buildMode = options.buildMode ?? false
 
   return components.map((c) => {
     const nodeType = nodeTypeForComponent[c.componentType] || "systemNode"
@@ -286,6 +294,7 @@ export function mapSubsystemToNodes(
           meta: c.group,
           visualVariant,
           commandTier,
+          buildMode,
         },
         position: { x: 0, y: 0 },
         selected: c.id === selectedId,
@@ -301,6 +310,7 @@ export function mapSubsystemToNodes(
         status: c.status || "nominal",
         visualVariant,
         commandTier,
+        buildMode,
       },
       position: { x: 0, y: 0 },
       selected: c.id === selectedId,

@@ -1,0 +1,2 @@
+- Avoid changing too many variables at once.
+- Avoid incomplete rollback plans.

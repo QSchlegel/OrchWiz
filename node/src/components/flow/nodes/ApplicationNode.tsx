@@ -6,9 +6,24 @@ export interface ApplicationNodeData {
   title: string
   status: string
   appType?: string
+  shipName?: string
   nodeType?: string
   deploymentProfile?: string
   provisioningMode?: string
+  infrastructureKind?: string
+}
+
+const infrastructureKindLabel = (kind?: string) => {
+  switch (kind) {
+    case "kind":
+      return "KIND"
+    case "minikube":
+      return "Minikube"
+    case "existing_k8s":
+      return "Existing K8s"
+    default:
+      return kind
+  }
 }
 
 const statusColor = (status: string) => {
@@ -46,10 +61,18 @@ export function ApplicationNode({ data, selected }: NodeProps<ApplicationNodeDat
         {data.appType && <span>{data.appType}</span>}
         {data.nodeType && <span>{data.nodeType}</span>}
       </div>
-      {(data.deploymentProfile || data.provisioningMode) && (
+      {data.shipName && (
+        <div className="mt-1 text-[10px] text-cyan-300">
+          Ship: {data.shipName}
+        </div>
+      )}
+      {(data.deploymentProfile || data.provisioningMode || data.infrastructureKind) && (
         <div className="mt-1 text-[10px] text-slate-500">
           {data.deploymentProfile && <span>{data.deploymentProfile}</span>}
           {data.provisioningMode && <span className="ml-2">{data.provisioningMode}</span>}
+          {data.infrastructureKind && (
+            <span className="ml-2">{infrastructureKindLabel(data.infrastructureKind)}</span>
+          )}
         </div>
       )}
       <Handle type="target" position={Position.Left} style={{ opacity: 0 }} />

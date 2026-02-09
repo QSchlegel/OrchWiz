@@ -31,6 +31,7 @@ Deploy to cloud platforms:
 - Provider-agnostic Kubernetes target
 - Existing cluster required (no cluster provisioning in this profile)
 - Uses `infra/terraform/environments/shipyard-cloud` + `infra/ansible/playbooks/shipyard_cloud.yml`
+- Infrastructure kind for this profile is fixed as `existing_k8s`
 
 ## Configuration
 

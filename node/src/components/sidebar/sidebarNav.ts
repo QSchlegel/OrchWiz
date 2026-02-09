@@ -20,6 +20,7 @@ import {
   BadgeCheck,
   BookOpen,
   FolderKanban,
+  Database,
 } from "lucide-react"
 // Github is imported from lucide-react as "Github"
 import { Github } from "lucide-react"
@@ -53,8 +54,9 @@ export const sidebarNav: NavGroup[] = [
     label: "Fleet",
     icon: Rocket,
     items: [
-      { href: "/subagents", label: "Subagents", icon: Bot },
-      { href: "/deployments", label: "Deployments", icon: Container },
+      { href: "/personal", label: "Personal", icon: Bot },
+      { href: "/ship-yard", label: "Ship Yard", icon: Ship },
+      { href: "/ships", label: "Ships", icon: Container },
       { href: "/applications", label: "Applications", icon: AppWindow },
     ],
   },
@@ -65,6 +67,7 @@ export const sidebarNav: NavGroup[] = [
     items: [
       { href: "/bridge", label: "Bridge", icon: Network },
       { href: "/uss-k8s", label: "USS-K8S", icon: Ship },
+      { href: "/vault", label: "Vault", icon: Database },
     ],
   },
   {

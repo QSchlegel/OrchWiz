@@ -4,14 +4,42 @@ import { auth } from "@/lib/auth"
 import { prisma } from "@/lib/prisma"
 import { headers } from "next/headers"
 import { runDeploymentAdapter } from "@/lib/deployment/adapter"
-import { publishRealtimeEvent } from "@/lib/realtime/events"
 import {
-  normalizeDeploymentProfileInput,
+  normalizeInfrastructureInConfig,
   parseDeploymentProfile,
   parseProvisioningMode,
 } from "@/lib/deployment/profile"
+import {
+  buildApplicationTargetFromShip,
+  resolveShipForApplication,
+  withApplicationShipSummary,
+} from "@/lib/shipyard/application-target"
+import { publishShipApplicationUpdated } from "@/lib/shipyard/events"
 
-export const dynamic = 'force-dynamic'
+export const dynamic = "force-dynamic"
+
+function parseNodeType(value: unknown): "local" | "cloud" | "hybrid" {
+  if (value === "local" || value === "cloud" || value === "hybrid") {
+    return value
+  }
+  return "local"
+}
+
+function resolveShipError(error: unknown): NextResponse | null {
+  if (!(error instanceof Error)) {
+    return null
+  }
+  if (error.message === "Ship not found") {
+    return NextResponse.json({ error: "Ship not found" }, { status: 404 })
+  }
+  if (error.message === "shipDeploymentId or nodeId is required") {
+    return NextResponse.json(
+      { error: "shipDeploymentId is required (or provide legacy nodeId for compatibility)" },
+      { status: 400 },
+    )
+  }
+  return null
+}
 
 export async function GET(request: NextRequest) {
   try {
@@ -27,13 +55,36 @@ export async function GET(request: NextRequest) {
       where: {
         userId: session.user.id,
       },
+      include: {
+        shipDeployment: {
+          select: {
+            id: true,
+            name: true,
+            status: true,
+            nodeId: true,
+            nodeType: true,
+            deploymentProfile: true,
+          },
+        },
+      },
       orderBy: {
         createdAt: "desc",
       },
     })
 
+    const normalizedApplications = applications.map((application) => {
+      const normalizedInfrastructure = normalizeInfrastructureInConfig(
+        application.deploymentProfile,
+        application.config,
+      )
+      return withApplicationShipSummary({
+        ...application,
+        config: normalizedInfrastructure.config,
+      })
+    })
+
     if (!includeForwarded) {
-      return NextResponse.json(applications)
+      return NextResponse.json(normalizedApplications)
     }
 
     const forwardedEvents = await prisma.forwardingEvent.findMany({
@@ -58,6 +109,29 @@ export async function GET(request: NextRequest) {
 
     const forwardedApplications = forwardedEvents.map((event) => {
       const payload = (event.payload || {}) as Record<string, unknown>
+      const deploymentProfile = parseDeploymentProfile(payload.deploymentProfile)
+      const normalizedInfrastructure = normalizeInfrastructureInConfig(
+        deploymentProfile,
+        payload.config,
+      )
+
+      const shipDeploymentId =
+        typeof payload.shipDeploymentId === "string" ? payload.shipDeploymentId : null
+      const shipName = typeof payload.shipName === "string" ? payload.shipName : null
+
+      const ship = shipDeploymentId || shipName
+        ? {
+            id: shipDeploymentId || `forwarded-ship-${event.id}`,
+            name:
+              shipName ||
+              `Forwarded ship ${String(payload.nodeId || event.sourceNode.nodeId || "unknown")}`,
+            status: String(payload.shipStatus || payload.status || "active"),
+            nodeId: String(payload.nodeId || event.sourceNode.nodeId),
+            nodeType: parseNodeType(payload.nodeType || event.sourceNode.nodeType || "local"),
+            deploymentProfile,
+          }
+        : null
+
       return {
         id: `forwarded-${event.id}`,
         name: String(payload.name || "Forwarded application"),
@@ -70,13 +144,15 @@ export async function GET(request: NextRequest) {
         startCommand: (payload.startCommand as string) || null,
         port: typeof payload.port === "number" ? payload.port : null,
         environment: (payload.environment as Record<string, unknown>) || {},
+        shipDeploymentId,
+        ship,
         nodeId: String(payload.nodeId || event.sourceNode.nodeId),
-        nodeType: String(payload.nodeType || event.sourceNode.nodeType || "local"),
-        deploymentProfile: parseDeploymentProfile(payload.deploymentProfile),
+        nodeType: parseNodeType(payload.nodeType || event.sourceNode.nodeType || "local"),
+        deploymentProfile,
         provisioningMode: parseProvisioningMode(payload.provisioningMode),
         nodeUrl: (payload.nodeUrl as string) || null,
         status: String(payload.status || "active"),
-        config: (payload.config as Record<string, unknown>) || {},
+        config: normalizedInfrastructure.config,
         metadata: {
           ...((payload.metadata as Record<string, unknown>) || {}),
           isForwarded: true,
@@ -92,7 +168,7 @@ export async function GET(request: NextRequest) {
       }
     })
 
-    const combined = [...applications, ...forwardedApplications].sort((a: any, b: any) => {
+    const combined = [...normalizedApplications, ...forwardedApplications].sort((a: any, b: any) => {
       const aDate = new Date(a.createdAt || 0).getTime()
       const bDate = new Date(b.createdAt || 0).getTime()
       return bDate - aDate
@@ -116,9 +192,9 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json()
-    const { 
-      name, 
-      description, 
+    const {
+      name,
+      description,
       applicationType,
       image,
       repository,
@@ -127,22 +203,32 @@ export async function POST(request: NextRequest) {
       startCommand,
       port,
       environment,
-      nodeId, 
-      nodeType, 
-      nodeUrl, 
-      config, 
+      config,
       metadata,
       version,
+      shipDeploymentId,
+      nodeId,
+      nodeType,
+      nodeUrl,
       deploymentProfile,
       provisioningMode,
       advancedNodeTypeOverride,
     } = body
 
-    const normalizedProfile = normalizeDeploymentProfileInput({
+    const ship = await resolveShipForApplication({
+      userId: session.user.id,
+      appName: name,
+      shipDeploymentId,
+      nodeId,
+      nodeType,
+      nodeUrl,
       deploymentProfile,
       provisioningMode,
-      nodeType,
       advancedNodeTypeOverride,
+      config,
+    })
+
+    const target = buildApplicationTargetFromShip(ship, {
       config,
     })
 
@@ -158,12 +244,13 @@ export async function POST(request: NextRequest) {
         startCommand: startCommand || null,
         port: port || null,
         environment: environment || {},
-        nodeId,
-        nodeType: normalizedProfile.nodeType,
-        deploymentProfile: normalizedProfile.deploymentProfile,
-        provisioningMode: normalizedProfile.provisioningMode,
-        nodeUrl: nodeUrl || null,
-        config: normalizedProfile.config as Prisma.InputJsonValue,
+        shipDeploymentId: target.shipDeploymentId,
+        nodeId: target.nodeId,
+        nodeType: target.nodeType,
+        deploymentProfile: target.deploymentProfile,
+        provisioningMode: target.provisioningMode,
+        nodeUrl: target.nodeUrl,
+        config: target.config as Prisma.InputJsonValue,
         metadata: metadata || {},
         version: version || null,
         userId: session.user.id,
@@ -206,19 +293,44 @@ export async function POST(request: NextRequest) {
           ...(adapterResult.error ? { deploymentError: adapterResult.error } : {}),
         },
       },
-    })
-
-    publishRealtimeEvent({
-      type: "application.updated",
-      payload: {
-        applicationId: updatedApplication.id,
-        status: updatedApplication.status,
-        nodeId: updatedApplication.nodeId,
+      include: {
+        shipDeployment: {
+          select: {
+            id: true,
+            name: true,
+            status: true,
+            nodeId: true,
+            nodeType: true,
+            deploymentProfile: true,
+          },
+        },
       },
     })
 
-    return NextResponse.json(updatedApplication)
+    publishShipApplicationUpdated({
+      applicationId: updatedApplication.id,
+      status: updatedApplication.status,
+      nodeId: updatedApplication.nodeId,
+      shipDeploymentId: updatedApplication.shipDeploymentId,
+    })
+
+    const normalizedInfrastructure = normalizeInfrastructureInConfig(
+      updatedApplication.deploymentProfile,
+      updatedApplication.config,
+    )
+
+    return NextResponse.json(
+      withApplicationShipSummary({
+        ...updatedApplication,
+        config: normalizedInfrastructure.config,
+      }),
+    )
   } catch (error) {
+    const shipErrorResponse = resolveShipError(error)
+    if (shipErrorResponse) {
+      return shipErrorResponse
+    }
+
     console.error("Error creating application:", error)
     return NextResponse.json(
       { error: "Internal server error" },

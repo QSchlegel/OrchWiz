@@ -2,10 +2,31 @@ import { NextRequest, NextResponse } from "next/server"
 import { auth } from "@/lib/auth"
 import { prisma } from "@/lib/prisma"
 import { headers } from "next/headers"
-import { publishRealtimeEvent } from "@/lib/realtime/events"
-import { normalizeDeploymentProfileInput } from "@/lib/deployment/profile"
+import { normalizeInfrastructureInConfig } from "@/lib/deployment/profile"
+import {
+  buildApplicationTargetFromShip,
+  resolveShipForApplication,
+  withApplicationShipSummary,
+} from "@/lib/shipyard/application-target"
+import { publishShipApplicationUpdated } from "@/lib/shipyard/events"
 
-export const dynamic = 'force-dynamic'
+export const dynamic = "force-dynamic"
+
+function resolveShipError(error: unknown): NextResponse | null {
+  if (!(error instanceof Error)) {
+    return null
+  }
+  if (error.message === "Ship not found") {
+    return NextResponse.json({ error: "Ship not found" }, { status: 404 })
+  }
+  if (error.message === "shipDeploymentId or nodeId is required") {
+    return NextResponse.json(
+      { error: "shipDeploymentId is required (or provide legacy nodeId for compatibility)" },
+      { status: 400 },
+    )
+  }
+  return null
+}
 
 export async function GET(
   request: NextRequest,
@@ -23,13 +44,35 @@ export async function GET(
         id,
         userId: session.user.id,
       },
+      include: {
+        shipDeployment: {
+          select: {
+            id: true,
+            name: true,
+            status: true,
+            nodeId: true,
+            nodeType: true,
+            deploymentProfile: true,
+          },
+        },
+      },
     })
 
     if (!application) {
       return NextResponse.json({ error: "Application not found" }, { status: 404 })
     }
 
-    return NextResponse.json(application)
+    const normalizedInfrastructure = normalizeInfrastructureInConfig(
+      application.deploymentProfile,
+      application.config,
+    )
+
+    return NextResponse.json(
+      withApplicationShipSummary({
+        ...application,
+        config: normalizedInfrastructure.config,
+      }),
+    )
   } catch (error) {
     console.error("Error fetching application:", error)
     return NextResponse.json(
@@ -51,31 +94,69 @@ export async function PUT(
 
     const { id } = await params
     const body = await request.json()
-    const updateData = {
+
+    const existingApplication = await prisma.applicationDeployment.findFirst({
+      where: {
+        id,
+        userId: session.user.id,
+      },
+      select: {
+        id: true,
+        name: true,
+        shipDeploymentId: true,
+        nodeId: true,
+        nodeType: true,
+        nodeUrl: true,
+        deploymentProfile: true,
+        provisioningMode: true,
+        config: true,
+      },
+    })
+
+    if (!existingApplication) {
+      return NextResponse.json({ error: "Application not found" }, { status: 404 })
+    }
+
+    const updateData: Record<string, any> = {
       ...body,
       updatedAt: new Date(),
     }
 
-    const shouldNormalizeProfileInput =
+    const shouldResolveShip =
+      "shipDeploymentId" in body ||
+      "nodeId" in body ||
+      "nodeType" in body ||
+      "nodeUrl" in body ||
       "deploymentProfile" in body ||
       "provisioningMode" in body ||
-      "nodeType" in body ||
       "advancedNodeTypeOverride" in body ||
       "config" in body
 
-    if (shouldNormalizeProfileInput) {
-      const normalizedProfile = normalizeDeploymentProfileInput({
-        deploymentProfile: body.deploymentProfile,
-        provisioningMode: body.provisioningMode,
-        nodeType: body.nodeType,
+    if (shouldResolveShip) {
+      const ship = await resolveShipForApplication({
+        userId: session.user.id,
+        appName: body.name ?? existingApplication.name,
+        shipDeploymentId: body.shipDeploymentId ?? existingApplication.shipDeploymentId,
+        nodeId: body.nodeId ?? existingApplication.nodeId,
+        nodeType: body.nodeType ?? existingApplication.nodeType,
+        nodeUrl: body.nodeUrl ?? existingApplication.nodeUrl,
+        deploymentProfile: body.deploymentProfile ?? existingApplication.deploymentProfile,
+        provisioningMode: body.provisioningMode ?? existingApplication.provisioningMode,
         advancedNodeTypeOverride: body.advancedNodeTypeOverride,
-        config: body.config,
+        config: body.config ?? existingApplication.config,
       })
 
-      updateData.deploymentProfile = normalizedProfile.deploymentProfile
-      updateData.provisioningMode = normalizedProfile.provisioningMode
-      updateData.nodeType = normalizedProfile.nodeType
-      updateData.config = normalizedProfile.config
+      const target = buildApplicationTargetFromShip(ship, {
+        config: body.config ?? existingApplication.config,
+      })
+
+      updateData.shipDeploymentId = target.shipDeploymentId
+      updateData.nodeId = target.nodeId
+      updateData.nodeType = target.nodeType
+      updateData.nodeUrl = target.nodeUrl
+      updateData.deploymentProfile = target.deploymentProfile
+      updateData.provisioningMode = target.provisioningMode
+      updateData.config = target.config
     }
 
     delete updateData.advancedNodeTypeOverride
@@ -86,19 +167,44 @@ export async function PUT(
         userId: session.user.id,
       },
       data: updateData,
-    })
-
-    publishRealtimeEvent({
-      type: "application.updated",
-      payload: {
-        applicationId: application.id,
-        status: application.status,
-        nodeId: application.nodeId,
+      include: {
+        shipDeployment: {
+          select: {
+            id: true,
+            name: true,
+            status: true,
+            nodeId: true,
+            nodeType: true,
+            deploymentProfile: true,
+          },
+        },
       },
     })
 
-    return NextResponse.json(application)
+    publishShipApplicationUpdated({
+      applicationId: application.id,
+      status: application.status,
+      nodeId: application.nodeId,
+      shipDeploymentId: application.shipDeploymentId,
+    })
+
+    const normalizedInfrastructure = normalizeInfrastructureInConfig(
+      application.deploymentProfile,
+      application.config,
+    )
+
+    return NextResponse.json(
+      withApplicationShipSummary({
+        ...application,
+        config: normalizedInfrastructure.config,
+      }),
+    )
   } catch (error) {
+    const shipErrorResponse = resolveShipError(error)
+    if (shipErrorResponse) {
+      return shipErrorResponse
+    }
+
     console.error("Error updating application:", error)
     return NextResponse.json(
       { error: "Internal server error" },
@@ -119,6 +225,22 @@ export async function DELETE(
 
     const { id } = await params
 
+    const existingApplication = await prisma.applicationDeployment.findFirst({
+      where: {
+        id,
+        userId: session.user.id,
+      },
+      select: {
+        id: true,
+        nodeId: true,
+        shipDeploymentId: true,
+      },
+    })
+
+    if (!existingApplication) {
+      return NextResponse.json({ error: "Application not found" }, { status: 404 })
+    }
+
     await prisma.applicationDeployment.delete({
       where: {
         id,
@@ -126,12 +248,11 @@ export async function DELETE(
       },
     })
 
-    publishRealtimeEvent({
-      type: "application.updated",
-      payload: {
-        applicationId: id,
-        status: "deleted",
-      },
+    publishShipApplicationUpdated({
+      applicationId: existingApplication.id,
+      status: "deleted",
+      nodeId: existingApplication.nodeId,
+      shipDeploymentId: existingApplication.shipDeploymentId,
     })
 
     return NextResponse.json({ success: true })

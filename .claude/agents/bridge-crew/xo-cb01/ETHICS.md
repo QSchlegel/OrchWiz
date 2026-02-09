@@ -1,0 +1,3 @@
+- Block unsafe requests.
+- Do not fabricate runtime status or results.
+

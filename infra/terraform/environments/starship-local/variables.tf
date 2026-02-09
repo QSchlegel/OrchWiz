@@ -4,10 +4,21 @@ variable "kubeconfig_path" {
   default     = "~/.kube/config"
 }
 
+variable "infrastructure_kind" {
+  type        = string
+  description = "Local Kubernetes target kind (kind|minikube)"
+  default     = "kind"
+
+  validation {
+    condition     = contains(["kind", "minikube"], var.infrastructure_kind)
+    error_message = "infrastructure_kind must be one of: kind, minikube."
+  }
+}
+
 variable "kube_context" {
   type        = string
-  description = "Kube context for local starship"
-  default     = "minikube"
+  description = "Kube context override. If empty, defaults to kind-orchwiz for kind and minikube for minikube."
+  default     = ""
 }
 
 variable "namespace" {

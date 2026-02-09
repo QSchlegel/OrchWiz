@@ -1,0 +1,2 @@
+- Avoid over-optimizing at the expense of safety.
+- Avoid hidden dependencies in rollout plans.

@@ -1,41 +1,69 @@
 ---
-- name: Deploy OrchWiz Local Starship Build on Minikube
+- name: Deploy OrchWiz Local Starship Build on Local Kubernetes
   hosts: local
   gather_facts: false
   vars:
     terraform_dir: "{{ lookup('env', 'TF_DIR') | default('../../terraform/environments/starship-local', true) }}"
+    infrastructure_kind: "{{ lookup('env', 'INFRASTRUCTURE_KIND') | default('kind', true) }}"
+    kube_context_override: "{{ lookup('env', 'KUBE_CONTEXT') | default('', true) }}"
     orchwiz_namespace: "{{ lookup('env', 'ORCHWIZ_NAMESPACE') | default('orchwiz-starship', true) }}"
     app_name: "{{ lookup('env', 'ORCHWIZ_APP_NAME') | default('orchwiz', true) }}"
 
   tasks:
+    - name: Validate infrastructure kind
+      ansible.builtin.assert:
+        that:
+          - infrastructure_kind in ['kind', 'minikube']
+        fail_msg: "infrastructure_kind must be one of: kind, minikube."
+
     - name: Check prerequisites
       ansible.builtin.command: "which {{ item }}"
       loop:
         - terraform
         - kubectl
-        - minikube
       changed_when: false
+
+    - name: Check Minikube CLI when Minikube is selected
+      ansible.builtin.command: which minikube
+      changed_when: false
+      when: infrastructure_kind == "minikube"
 
     - name: Terraform init
       ansible.builtin.command: terraform -chdir={{ terraform_dir }} init -backend=false
       changed_when: false
+      environment:
+        TF_VAR_infrastructure_kind: "{{ infrastructure_kind }}"
+        TF_VAR_kube_context: "{{ kube_context_override }}"
 
     - name: Terraform plan
       ansible.builtin.command: terraform -chdir={{ terraform_dir }} plan -out=tfplan
       changed_when: false
+      environment:
+        TF_VAR_infrastructure_kind: "{{ infrastructure_kind }}"
+        TF_VAR_kube_context: "{{ kube_context_override }}"
 
     - name: Terraform apply
       ansible.builtin.command: terraform -chdir={{ terraform_dir }} apply -auto-approve tfplan
+      environment:
+        TF_VAR_infrastructure_kind: "{{ infrastructure_kind }}"
+        TF_VAR_kube_context: "{{ kube_context_override }}"
 
     - name: Wait for deployment rollout
       ansible.builtin.command: kubectl -n {{ orchwiz_namespace }} rollout status deploy/{{ app_name }} --timeout=300s
       changed_when: false
 
-    - name: Resolve local access URL
+    - name: Resolve local access URL for Minikube
       ansible.builtin.command: minikube service -n {{ orchwiz_namespace }} {{ app_name }} --url
       register: starship_url
       changed_when: false
+      when: infrastructure_kind == "minikube"
 
-    - name: Print local access URL
+    - name: Print local access URL for Minikube
       ansible.builtin.debug:
         msg: "Local Starship endpoint: {{ starship_url.stdout }}"
+      when: infrastructure_kind == "minikube"
+
+    - name: Print local access command for KIND
+      ansible.builtin.debug:
+        msg: "Local Starship endpoint: kubectl -n {{ orchwiz_namespace }} port-forward svc/{{ app_name }} 3000:3000 (then open http://localhost:3000)"
+      when: infrastructure_kind == "kind"

@@ -18,7 +18,9 @@ Primary profile: `Local Starship Build`.
 2. Configure environment variables for local development
 3. Set up local PostgreSQL database
 4. Configure GitHub OAuth for localhost
-5. Optional Minikube path: use Terraform + Ansible from `infra/` (`starship-local` environment)
+5. Use Terraform + Ansible from `infra/` (`starship-local` environment)
+   - Default local cluster kind: `kind` (`kubeContext=kind-orchwiz`)
+   - Optional alternative: `minikube`
 
 ## Configuration
 
@@ -26,13 +28,15 @@ Primary profile: `Local Starship Build`.
 - Local PostgreSQL instance
 - Default port: 5432
 - Database name: orchis (or custom)
-- Starship profile default: in-cluster PostgreSQL via Helm when using Minikube
+- Starship profile default: in-cluster PostgreSQL via Helm for local Kubernetes
 
 ### Application
 - Runs on http://localhost:3000
 - Development mode with hot reload
 - Direct database connection
-- Starship profile default: exposed through `minikube service --url`
+- Starship profile default access:
+  - KIND: `kubectl -n orchwiz-starship port-forward svc/orchwiz 3000:3000`
+  - Minikube: `minikube service -n orchwiz-starship orchwiz --url`
 
 ### Authentication
 - GitHub OAuth callback: http://localhost:3000/api/auth/callback/github

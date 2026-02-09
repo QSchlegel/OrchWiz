@@ -38,6 +38,12 @@ OrchWiz (Orchestration Wizard) is a command deck for Agent Ops: orchestration se
 - **Session Management**: Track and manage Agent Ops sessions with different modes
 - **Command Orchestration**: Define and execute custom commands across nodes
 
+### Ship-First Domain Model
+
+- **Ships are the canonical deployment target** (`/ships`, `/api/ships`).
+- **Applications deploy to ships** and store `shipDeploymentId` as the primary target link.
+- Legacy deployment endpoints remain available for compatibility (`/deployments`, `/api/deployments`).
+
 ## 🏗️ Architecture
 
 ### System Architecture Diagram
@@ -283,6 +289,8 @@ The runtime harness provides a control surface for observability and governance:
 
    # Command execution safety gate
    ENABLE_LOCAL_COMMAND_EXECUTION=false
+   ENABLE_LOCAL_INFRA_AUTO_INSTALL=false
+   LOCAL_INFRA_COMMAND_TIMEOUT_MS=600000
 
    # Forwarding
    ENABLE_FORWARDING_INGEST=true
@@ -414,7 +422,7 @@ OrchWiz uses a distributed node architecture where each node is an independent d
 - **Database**: Local PostgreSQL
 - **Network**: Localhost or private network
 - **Security**: Development-level (HTTP, local auth)
-- **Profile**: `Local Starship Build` (Terraform + Ansible, Minikube-first)
+- **Profile**: `Local Starship Build` (Terraform + Ansible, KIND-default with Minikube option)
 
 #### Cloud Node
 - **Use Case**: Production, team collaboration, high availability
@@ -464,8 +472,15 @@ See [dev-local/README.md](dev-local/README.md) for detailed local setup instruct
 
 Infrastructure scaffolding lives in [`infra/`](infra/README.md) and supports two explicit profiles:
 
-- **Local Starship Build**: Minikube + in-cluster PostgreSQL + app service access via `minikube service --url`.
+- **Local Starship Build**: local Kubernetes (`config.infrastructure.kind` = `kind|minikube`) + in-cluster PostgreSQL.
 - **Cloud Shipyard**: Provider-agnostic deployment to an existing Kubernetes cluster (app resources + optional ingress).
+
+Ship Yard local launches support a `saneBootstrap` option (defaults to enabled in local profile):
+
+- validates local files/tools/context before provisioning
+- can auto-install missing CLIs only when `ENABLE_LOCAL_INFRA_AUTO_INSTALL=true`
+- requires `ENABLE_LOCAL_COMMAND_EXECUTION=true` before running local provisioning
+- never auto-creates local clusters (`kind create cluster` / `minikube start`)
 
 Quick local starship flow:
 
@@ -473,6 +488,9 @@ Quick local starship flow:
 cp infra/terraform/environments/starship-local/terraform.tfvars.example infra/terraform/environments/starship-local/terraform.tfvars
 terraform -chdir=infra/terraform/environments/starship-local init -backend=false
 terraform -chdir=infra/terraform/environments/starship-local apply
+# KIND default access:
+kubectl -n orchwiz-starship port-forward svc/orchwiz 3000:3000
+# Minikube alternative:
 minikube service -n orchwiz-starship orchwiz --url
 ```
 

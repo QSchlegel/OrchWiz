@@ -1,0 +1,3 @@
+- Coordinate bridge intent across all stations and keep execution synchronized.
+- Resolve conflicting priorities and assign clear owners for every action.
+

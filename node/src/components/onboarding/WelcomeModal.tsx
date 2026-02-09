@@ -24,9 +24,9 @@ const quickStartItems = [
     bg: "bg-pink-100 dark:bg-pink-500/15",
   },
   {
-    title: "Deploy a subagent",
-    description: "Push an AI agent to a local or cloud node.",
-    href: "/subagents",
+    title: "Build personal agents",
+    description: "Manage your personal agent context and workflows.",
+    href: "/personal",
     icon: Rocket,
     color: "text-violet-600 dark:text-violet-400",
     bg: "bg-violet-100 dark:bg-violet-500/15",

@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma"
 import { headers } from "next/headers"
 import { runSessionRuntime } from "@/lib/runtime"
 import { publishRealtimeEvent } from "@/lib/realtime/events"
+import { resolveSessionRuntimePrompt } from "@/lib/runtime/bridge-prompt"
 
 export const dynamic = 'force-dynamic'
 
@@ -20,6 +21,11 @@ export async function POST(
     const { id } = await params
     const body = await request.json()
     const { prompt, metadata } = body
+    const metadataRecord = metadata && typeof metadata === "object" ? metadata : {}
+    const promptResolution = resolveSessionRuntimePrompt({
+      userPrompt: prompt,
+      metadata: metadataRecord as Record<string, unknown>,
+    })
 
     // Verify session belongs to user
     const dbSession = await prisma.session.findFirst({
@@ -38,8 +44,8 @@ export async function POST(
       data: {
         sessionId: id,
         type: "user_input",
-        content: prompt,
-        metadata: metadata || {},
+        content: promptResolution.interactionContent,
+        metadata: metadataRecord,
       },
     })
 
@@ -53,8 +59,8 @@ export async function POST(
 
     const runtimeResult = await runSessionRuntime({
       sessionId: id,
-      prompt,
-      metadata: metadata || {},
+      prompt: promptResolution.runtimePrompt,
+      metadata: metadataRecord,
     })
 
     const responseInteraction = await prisma.sessionInteraction.create({
@@ -66,6 +72,7 @@ export async function POST(
           provider: runtimeResult.provider,
           fallbackUsed: runtimeResult.fallbackUsed,
           ...(runtimeResult.metadata || {}),
+          ...(promptResolution.bridgeResponseMetadata || {}),
         },
       },
     })

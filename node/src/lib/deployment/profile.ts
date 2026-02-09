@@ -1,9 +1,12 @@
 export type NodeType = "local" | "cloud" | "hybrid"
 
+export type DeploymentType = "agent" | "ship"
 export type DeploymentProfile = "local_starship_build" | "cloud_shipyard"
 export type ProvisioningMode = "terraform_ansible" | "terraform_only" | "ansible_only"
+export type InfrastructureKind = "kind" | "minikube" | "existing_k8s"
 
 export interface InfrastructureConfig {
+  kind: InfrastructureKind
   kubeContext: string
   namespace: string
   terraformWorkspace: string
@@ -22,7 +25,10 @@ interface NormalizeProfileInput {
 
 const DEPLOYMENT_PROFILES: DeploymentProfile[] = ["local_starship_build", "cloud_shipyard"]
 const PROVISIONING_MODES: ProvisioningMode[] = ["terraform_ansible", "terraform_only", "ansible_only"]
+const INFRASTRUCTURE_KINDS: InfrastructureKind[] = ["kind", "minikube", "existing_k8s"]
+const DEPLOYMENT_TYPES: DeploymentType[] = ["agent", "ship"]
 
+export const DEFAULT_DEPLOYMENT_TYPE: DeploymentType = "agent"
 export const DEFAULT_DEPLOYMENT_PROFILE: DeploymentProfile = "local_starship_build"
 export const DEFAULT_PROVISIONING_MODE: ProvisioningMode = "terraform_ansible"
 
@@ -35,6 +41,19 @@ export const PROVISIONING_MODE_LABELS: Record<ProvisioningMode, string> = {
   terraform_ansible: "Terraform + Ansible",
   terraform_only: "Terraform only",
   ansible_only: "Ansible only",
+}
+
+export const INFRASTRUCTURE_KIND_LABELS: Record<InfrastructureKind, string> = {
+  kind: "KIND",
+  minikube: "Minikube",
+  existing_k8s: "Existing Kubernetes",
+}
+
+export function parseDeploymentType(value: unknown): DeploymentType {
+  if (typeof value === "string" && DEPLOYMENT_TYPES.includes(value as DeploymentType)) {
+    return value as DeploymentType
+  }
+  return DEFAULT_DEPLOYMENT_TYPE
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -70,6 +89,7 @@ export function parseProvisioningMode(value: unknown): ProvisioningMode {
 export function defaultInfrastructureConfig(profile: DeploymentProfile): InfrastructureConfig {
   if (profile === "cloud_shipyard") {
     return {
+      kind: "existing_k8s",
       kubeContext: "existing-cluster",
       namespace: "orchwiz-shipyard",
       terraformWorkspace: "shipyard-cloud",
@@ -80,7 +100,8 @@ export function defaultInfrastructureConfig(profile: DeploymentProfile): Infrast
   }
 
   return {
-    kubeContext: "minikube",
+    kind: "kind",
+    kubeContext: "kind-orchwiz",
     namespace: "orchwiz-starship",
     terraformWorkspace: "starship-local",
     terraformEnvDir: "infra/terraform/environments/starship-local",
@@ -89,19 +110,71 @@ export function defaultInfrastructureConfig(profile: DeploymentProfile): Infrast
   }
 }
 
+function parseInfrastructureKind(value: unknown): InfrastructureKind | undefined {
+  if (typeof value === "string" && INFRASTRUCTURE_KINDS.includes(value as InfrastructureKind)) {
+    return value as InfrastructureKind
+  }
+  return undefined
+}
+
+function inferInfrastructureKind(
+  profile: DeploymentProfile,
+  incomingKind: InfrastructureKind | undefined,
+  kubeContext: string | undefined,
+): InfrastructureKind {
+  if (profile === "cloud_shipyard") {
+    return "existing_k8s"
+  }
+
+  if (incomingKind === "kind" || incomingKind === "minikube") {
+    return incomingKind
+  }
+
+  if (kubeContext?.toLowerCase().includes("minikube")) {
+    return "minikube"
+  }
+
+  return "kind"
+}
+
 function normalizeInfrastructureConfig(
   profile: DeploymentProfile,
   incomingConfig: Record<string, unknown>,
 ): InfrastructureConfig {
   const defaults = defaultInfrastructureConfig(profile)
+  const incomingKubeContext = asString(incomingConfig.kubeContext)
+  const kind = inferInfrastructureKind(
+    profile,
+    parseInfrastructureKind(incomingConfig.kind),
+    incomingKubeContext,
+  )
+  const kubeContextDefault =
+    kind === "minikube" ? "minikube" : kind === "kind" ? "kind-orchwiz" : defaults.kubeContext
 
   return {
-    kubeContext: asString(incomingConfig.kubeContext) || defaults.kubeContext,
+    kind,
+    kubeContext: incomingKubeContext || kubeContextDefault,
     namespace: asString(incomingConfig.namespace) || defaults.namespace,
     terraformWorkspace: asString(incomingConfig.terraformWorkspace) || defaults.terraformWorkspace,
     terraformEnvDir: asString(incomingConfig.terraformEnvDir) || defaults.terraformEnvDir,
     ansibleInventory: asString(incomingConfig.ansibleInventory) || defaults.ansibleInventory,
     ansiblePlaybook: asString(incomingConfig.ansiblePlaybook) || defaults.ansiblePlaybook,
+  }
+}
+
+export function normalizeInfrastructureInConfig(
+  profile: DeploymentProfile,
+  rawConfig: unknown,
+): { infrastructure: InfrastructureConfig; config: Record<string, unknown> } {
+  const config = asRecord(rawConfig)
+  const infrastructure = normalizeInfrastructureConfig(profile, asRecord(config.infrastructure))
+
+  return {
+    infrastructure,
+    config: {
+      ...config,
+      infrastructure,
+    },
   }
 }
 
@@ -140,11 +213,7 @@ export function normalizeDeploymentProfileInput(input: NormalizeProfileInput) {
     allowHybridOverride,
   )
 
-  const config = asRecord(input.config)
-  const infrastructure = normalizeInfrastructureConfig(
-    deploymentProfile,
-    asRecord(config.infrastructure),
-  )
+  const { config, infrastructure } = normalizeInfrastructureInConfig(deploymentProfile, input.config)
 
   return {
     deploymentProfile,

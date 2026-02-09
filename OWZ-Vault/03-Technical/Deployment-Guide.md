@@ -8,7 +8,7 @@ This guide covers deploying Orchwiz nodes both locally and in the cloud.
 
 OrchWiz supports two explicit deployment profiles:
 
-- `Local Starship Build`: local Minikube-first flow using Terraform + Ansible.
+- `Local Starship Build`: local Kubernetes flow using Terraform + Ansible (`kind` default, `minikube` optional).
 - `Cloud Shipyard`: cloud Kubernetes flow using Terraform + Ansible against an existing cluster.
 
 ## Local Deployment
@@ -46,13 +46,15 @@ OrchWiz supports two explicit deployment profiles:
 5. **Access Application**
    - Open http://localhost:3000
 
-### Local Starship Build (Minikube + Terraform + Ansible)
+### Local Starship Build (KIND default + Minikube optional, Terraform + Ansible)
 
 1. Copy Terraform vars:
    ```bash
    cp infra/terraform/environments/starship-local/terraform.tfvars.example infra/terraform/environments/starship-local/terraform.tfvars
    ```
 2. Configure image + secrets in `terraform.tfvars`.
+   - Local default: `infrastructure_kind = "kind"` and `kube_context = "kind-orchwiz"`.
+   - Alternative: set `infrastructure_kind = "minikube"` and `kube_context = "minikube"`.
 3. Apply Terraform:
    ```bash
    terraform -chdir=infra/terraform/environments/starship-local init -backend=false
@@ -63,9 +65,14 @@ OrchWiz supports two explicit deployment profiles:
    ansible-playbook -i infra/ansible/inventory/local.ini.example infra/ansible/playbooks/starship_local.yml
    ```
 5. Get endpoint:
-   ```bash
-   minikube service -n orchwiz-starship orchwiz --url
-   ```
+   - KIND:
+     ```bash
+     kubectl -n orchwiz-starship port-forward svc/orchwiz 3000:3000
+     ```
+   - Minikube:
+     ```bash
+     minikube service -n orchwiz-starship orchwiz --url
+     ```
 
 ## Cloud Deployment with Cloudflare
 

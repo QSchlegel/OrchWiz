@@ -1,3 +1,15 @@
+locals {
+  effective_kube_context = trimspace(var.kube_context) != "" ? var.kube_context : (
+    var.infrastructure_kind == "minikube" ? "minikube" : "kind-orchwiz"
+  )
+
+  local_access_command = var.infrastructure_kind == "minikube" ? (
+    "minikube service -n ${module.starship_minikube.namespace} ${module.starship_minikube.service_name} --url"
+    ) : (
+    "kubectl -n ${module.starship_minikube.namespace} port-forward svc/${module.starship_minikube.service_name} 3000:3000"
+  )
+}
+
 module "starship_minikube" {
   source = "../../modules/starship-minikube"
 
@@ -24,6 +36,18 @@ output "service_name" {
   value = module.starship_minikube.service_name
 }
 
+output "infrastructure_kind" {
+  value = var.infrastructure_kind
+}
+
+output "kube_context" {
+  value = local.effective_kube_context
+}
+
+output "local_access_command" {
+  value = local.local_access_command
+}
+
 output "minikube_access_command" {
-  value = module.starship_minikube.minikube_access_command
+  value = var.infrastructure_kind == "minikube" ? local.local_access_command : null
 }

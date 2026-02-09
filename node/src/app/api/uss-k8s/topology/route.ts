@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server"
+import { NextRequest, NextResponse } from "next/server"
 import { auth } from "@/lib/auth"
 import { prisma } from "@/lib/prisma"
 import { headers } from "next/headers"
@@ -11,35 +11,71 @@ import {
 
 export const dynamic = "force-dynamic"
 
-export async function GET() {
+function asString(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null
+  }
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : null
+}
+
+export async function GET(request: NextRequest) {
   try {
     const session = await auth.api.getSession({ headers: await headers() })
     if (!session) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
 
-    // Fetch bridge crew subagents from the database
-    const bridgeCrew = await prisma.subagent.findMany({
-      where: { teamId: "uss-k8s" },
-      orderBy: { createdAt: "desc" },
+    const requestedShipDeploymentId = asString(request.nextUrl.searchParams.get("shipDeploymentId"))
+
+    const availableShips = await prisma.agentDeployment.findMany({
+      where: {
+        userId: session.user.id,
+        deploymentType: "ship",
+      },
+      select: {
+        id: true,
+        name: true,
+        status: true,
+        updatedAt: true,
+        nodeId: true,
+        nodeType: true,
+        deploymentProfile: true,
+      },
+      orderBy: {
+        updatedAt: "desc",
+      },
     })
 
-    // Build a lookup: lowercase agent label prefix → subagent record
+    const requestedShip = requestedShipDeploymentId
+      ? availableShips.find((ship) => ship.id === requestedShipDeploymentId)
+      : null
+    const selectedShip = requestedShip || availableShips.find((ship) => ship.status === "active") || availableShips[0] || null
+
+    const bridgeCrew = selectedShip
+      ? await prisma.bridgeCrew.findMany({
+          where: {
+            deploymentId: selectedShip.id,
+            status: "active",
+          },
+          orderBy: {
+            role: "asc",
+          },
+        })
+      : []
+
     const agentLookup = new Map<string, (typeof bridgeCrew)[number]>()
     for (const agent of bridgeCrew) {
-      // Match by name prefix (e.g. "XO-CB01" matches component id "xo")
-      const prefix = agent.name.split("-")[0].toLowerCase()
-      agentLookup.set(prefix, agent)
+      agentLookup.set(agent.role, agent)
     }
 
-    // Merge subagent data into topology components
     const components = USS_K8S_COMPONENTS.map((c) => {
       const agent = agentLookup.get(c.id)
       if (agent) {
         return {
           ...c,
           subagentId: agent.id,
-          subagentName: agent.name,
+          subagentName: agent.callsign || agent.name,
           subagentDescription: agent.description,
         }
       }
@@ -51,6 +87,16 @@ export async function GET() {
       edges: USS_K8S_EDGES,
       groups: SUBSYSTEM_GROUP_CONFIG,
       groupOrder: GROUP_ORDER,
+      selectedShipDeploymentId: selectedShip?.id || null,
+      availableShips: availableShips.map((ship) => ({
+        id: ship.id,
+        name: ship.name,
+        status: ship.status,
+        updatedAt: ship.updatedAt,
+        nodeId: ship.nodeId,
+        nodeType: ship.nodeType,
+        deploymentProfile: ship.deploymentProfile,
+      })),
     })
   } catch (error) {
     console.error("Error fetching uss-k8s topology:", error)

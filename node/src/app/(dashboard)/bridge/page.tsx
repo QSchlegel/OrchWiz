@@ -2,37 +2,36 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { useSession } from "@/lib/auth-client"
+import { useEventStream } from "@/lib/realtime/useEventStream"
+import type { BridgeStationKey } from "@/lib/bridge/stations"
+import { BridgeDeckScene3D } from "@/components/bridge/BridgeDeckScene3D"
+import { useShipSelection } from "@/lib/shipyard/useShipSelection"
 import {
   Activity,
   AlertTriangle,
   Bot,
   CheckCircle2,
-  ChevronRight,
-  Cpu,
-  Eye,
-  Globe,
-  Network,
+  Loader2,
+  Send,
   Shield,
   Signal,
-  Square,
+  Sparkles,
   Users,
 } from "lucide-react"
-import { OrchestrationSurface } from "@/components/orchestration/OrchestrationSurface"
-import { FlowCanvas } from "@/components/flow/FlowCanvas"
-import { StationNode, TaskNode, SystemNode } from "@/components/flow/nodes"
-import { layoutRadial } from "@/lib/flow/layout"
-import { buildTaskToStationEdges, mapStationsToNodes, mapTasksToNodes } from "@/lib/flow/mappers"
-import type { Edge, Node } from "reactflow"
-import { useEventStream } from "@/lib/realtime/useEventStream"
 
 interface BridgeStation {
   id: string
+  stationKey: BridgeStationKey
+  callsign: string
   name: string
   role: string
   status: "online" | "busy" | "offline"
   load: number
   focus: string
   queue: string[]
+  subagentId?: string
+  subagentName?: string
+  subagentDescription?: string
 }
 
 interface WorkItem {
@@ -49,30 +48,94 @@ interface SystemStatus {
   detail: string
 }
 
-const statusStyles = {
+interface ShipSelectorItem {
+  id: string
+  name: string
+  status: "pending" | "deploying" | "active" | "inactive" | "failed" | "updating"
+  nodeId: string
+  nodeType: "local" | "cloud" | "hybrid"
+  deploymentProfile: "local_starship_build" | "cloud_shipyard"
+}
+
+interface SessionListItem {
+  id: string
+  title: string | null
+  updatedAt: string
+  metadata?: Record<string, unknown>
+}
+
+interface SessionInteractionItem {
+  id: string
+  type: "user_input" | "ai_response" | "tool_use" | "error"
+  content: string
+  metadata?: Record<string, unknown>
+  timestamp: string
+}
+
+interface SessionDetail {
+  id: string
+  interactions: SessionInteractionItem[]
+}
+
+interface BridgeSessionRef {
+  id: string
+  stationKey: BridgeStationKey
+  title: string | null
+  updatedAt: string
+}
+
+interface BridgeMessageViewModel {
+  id: string
+  type: SessionInteractionItem["type"]
+  content: string
+  timestamp: string
+  pending?: boolean
+  bridgePrimaryAgent?: string
+  bridgeCameos?: string[]
+}
+
+interface BridgeSceneCommsEntry {
+  speaker: string
+  text: string
+  timestamp: string
+  kind: "directive" | "response" | "error" | "system"
+}
+
+type MobileSection = "scene" | "crew" | "comms" | "queue"
+
+const STATION_KEYS = new Set<BridgeStationKey>(["xo", "ops", "eng", "sec", "med", "cou"])
+
+const statusStyles: Record<BridgeStation["status"], string> = {
   online: "bg-emerald-400",
   busy: "bg-amber-400",
   offline: "bg-rose-400",
 }
 
-const workItemStyles = {
-  active: "text-cyan-300 bg-cyan-500/10 border-cyan-500/30",
-  completed: "text-emerald-300 bg-emerald-500/10 border-emerald-500/30",
-  failed: "text-rose-300 bg-rose-500/10 border-rose-500/30",
-  pending: "text-amber-300 bg-amber-500/10 border-amber-500/30",
+const statusLabelStyles: Record<BridgeStation["status"], string> = {
+  online: "text-emerald-700 dark:text-emerald-200 border-emerald-400/30 bg-emerald-500/10",
+  busy: "text-amber-700 dark:text-amber-200 border-amber-400/30 bg-amber-500/10",
+  offline: "text-rose-700 dark:text-rose-200 border-rose-400/30 bg-rose-500/10",
 }
 
-const systemStyles = {
-  nominal: "text-emerald-300",
-  warning: "text-amber-300",
-  critical: "text-rose-300",
+const workItemStyles: Record<WorkItem["status"], string> = {
+  active: "text-cyan-700 dark:text-cyan-100 border-cyan-400/30 bg-cyan-500/10",
+  completed: "text-emerald-700 dark:text-emerald-100 border-emerald-400/30 bg-emerald-500/10",
+  failed: "text-rose-700 dark:text-rose-100 border-rose-400/30 bg-rose-500/10",
+  pending: "text-amber-700 dark:text-amber-100 border-amber-400/30 bg-amber-500/10",
 }
 
-const nodeTypes = {
-  stationNode: StationNode,
-  taskNode: TaskNode,
-  systemNode: SystemNode,
+const systemStyles: Record<SystemStatus["state"], string> = {
+  nominal: "text-emerald-700 dark:text-emerald-200",
+  warning: "text-amber-700 dark:text-amber-200",
+  critical: "text-rose-700 dark:text-rose-200",
 }
+
+const mobileSections: Array<{ id: MobileSection; label: string }> = [
+  { id: "scene", label: "Scene" },
+  { id: "crew", label: "Crew" },
+  { id: "comms", label: "Comms" },
+  { id: "queue", label: "Queue" },
+]
 
 function formatStardate(date: Date) {
   const start = new Date(date.getFullYear(), 0, 0)
@@ -81,62 +144,112 @@ function formatStardate(date: Date) {
   return `${date.getFullYear()}.${String(day).padStart(3, "0")}`
 }
 
+function asRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object") {
+    return {}
+  }
+  return value as Record<string, unknown>
+}
+
+function asStationKey(value: unknown): BridgeStationKey | null {
+  if (typeof value !== "string") return null
+  const key = value.trim().toLowerCase() as BridgeStationKey
+  return STATION_KEYS.has(key) ? key : null
+}
+
+function asStationStatus(value: unknown): BridgeStation["status"] {
+  if (value === "online" || value === "busy" || value === "offline") {
+    return value
+  }
+  return "online"
+}
+
+function asSystemState(value: unknown): SystemStatus["state"] {
+  if (value === "nominal" || value === "warning" || value === "critical") {
+    return value
+  }
+  return "warning"
+}
+
+function compactTelemetryText(value: string, maxLength = 160) {
+  const compact = value.replace(/\s+/g, " ").trim()
+  if (compact.length <= maxLength) {
+    return compact
+  }
+  return `${compact.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`
+}
+
+function mapInteractionToMessage(interaction: SessionInteractionItem): BridgeMessageViewModel {
+  const metadata = asRecord(interaction.metadata)
+  const cameoRaw = metadata.bridgeCameos
+
+  return {
+    id: interaction.id,
+    type: interaction.type,
+    content: interaction.content,
+    timestamp: interaction.timestamp,
+    bridgePrimaryAgent:
+      typeof metadata.bridgePrimaryAgent === "string" ? metadata.bridgePrimaryAgent : undefined,
+    bridgeCameos: Array.isArray(cameoRaw)
+      ? cameoRaw.filter((item): item is string => typeof item === "string")
+      : undefined,
+  }
+}
+
+function extractBridgeSessionRef(session: SessionListItem): BridgeSessionRef | null {
+  const metadata = asRecord(session.metadata)
+  const bridge = asRecord(metadata.bridge)
+  const stationKey = asStationKey(bridge.stationKey)
+
+  if (!stationKey || bridge.channel !== "bridge-agent") {
+    return null
+  }
+
+  return {
+    id: session.id,
+    stationKey,
+    title: session.title,
+    updatedAt: session.updatedAt,
+  }
+}
+
 export default function BridgePage() {
   const { data: session } = useSession()
+  const { selectedShipDeploymentId, setSelectedShipDeploymentId } = useShipSelection()
+
   const [stations, setStations] = useState<BridgeStation[]>([])
   const [workItems, setWorkItems] = useState<WorkItem[]>([])
   const [systems, setSystems] = useState<SystemStatus[]>([])
-  const [selectedStationId, setSelectedStationId] = useState<string>("")
-  const [selectedTaskId, setSelectedTaskId] = useState<string | undefined>(undefined)
-  const [isLoading, setIsLoading] = useState(true)
+  const [availableShips, setAvailableShips] = useState<ShipSelectorItem[]>([])
+  const [selectedStationKey, setSelectedStationKey] = useState<BridgeStationKey | null>(null)
+  const [sessionsByStation, setSessionsByStation] = useState<Partial<Record<BridgeStationKey, BridgeSessionRef>>>(
+    {},
+  )
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
+  const [threadMessages, setThreadMessages] = useState<BridgeMessageViewModel[]>([])
+  const [composer, setComposer] = useState("")
+  const [mobileSection, setMobileSection] = useState<MobileSection>("scene")
+
+  const [isBridgeLoading, setIsBridgeLoading] = useState(true)
+  const [isThreadLoading, setIsThreadLoading] = useState(false)
+  const [isSending, setIsSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [lastBridgeEventAt, setLastBridgeEventAt] = useState<number | null>(null)
 
-  const loadData = useCallback(async () => {
-    setIsLoading(true)
-    setError(null)
-    try {
-      const response = await fetch("/api/bridge/state?includeForwarded=true")
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`)
-      }
-
-      const data = await response.json()
-      const nextStations = Array.isArray(data?.stations) ? data.stations : []
-      const nextWorkItems = Array.isArray(data?.workItems) ? data.workItems : []
-      const nextSystems = Array.isArray(data?.systems) ? data.systems : []
-
-      setStations(nextStations)
-      setWorkItems(nextWorkItems)
-      setSystems(nextSystems)
-      setSelectedStationId((current) => {
-        if (current && nextStations.some((station: BridgeStation) => station.id === current)) {
-          return current
-        }
-        return nextStations[0]?.id || ""
-      })
-    } catch (loadError) {
-      console.error("Bridge data load failed:", loadError)
-      setError("Unable to load bridge state")
-    } finally {
-      setIsLoading(false)
-    }
-  }, [])
-
-  useEffect(() => {
-    loadData()
-  }, [loadData])
-
-  useEventStream({
-    enabled: Boolean(session),
-    types: ["task.updated", "forwarding.received", "bridge.updated"],
-    onEvent: () => {
-      loadData()
-    },
-  })
+  const stardate = formatStardate(new Date())
+  const operatorLabel = session?.user?.email || "Operator"
 
   const selectedStation = useMemo(() => {
-    return stations.find((station) => station.id === selectedStationId) || stations[0]
-  }, [stations, selectedStationId])
+    if (!selectedStationKey) {
+      return stations[0] || null
+    }
+    return stations.find((station) => station.stationKey === selectedStationKey) || stations[0] || null
+  }, [stations, selectedStationKey])
+
+  const selectedShip = useMemo(() => {
+    if (!selectedShipDeploymentId) return null
+    return availableShips.find((ship) => ship.id === selectedShipDeploymentId) || null
+  }, [availableShips, selectedShipDeploymentId])
 
   const missionStats = useMemo(() => {
     return {
@@ -146,336 +259,830 @@ export default function BridgePage() {
     }
   }, [workItems])
 
-  const captainLabel = session?.user?.email || "Captain"
-  const stardate = formatStardate(new Date())
+  const sceneCommsFeed = useMemo<BridgeSceneCommsEntry[]>(() => {
+    const usefulMessages = threadMessages
+      .filter((message) => {
+        if (!message.content || !message.content.trim()) {
+          return false
+        }
+        return message.type === "user_input" || message.type === "ai_response" || message.type === "error"
+      })
+      .slice(-5)
 
-  const bridgeNodes = useMemo(() => {
-    const centerNode: Node = {
-      id: "captain-core",
-      type: "systemNode",
-      data: {
-        title: "Captain",
-        status: "nominal",
-        detail: captainLabel,
-      },
-      position: { x: 0, y: 0 },
-      draggable: false,
-      selectable: false,
+    return usefulMessages.map((message) => {
+      if (message.type === "user_input") {
+        return {
+          speaker: "OPERATOR",
+          text: compactTelemetryText(message.content),
+          timestamp: message.timestamp,
+          kind: "directive",
+        }
+      }
+
+      if (message.type === "error") {
+        return {
+          speaker: "SYSTEM",
+          text: compactTelemetryText(message.content),
+          timestamp: message.timestamp,
+          kind: "error",
+        }
+      }
+
+      return {
+        speaker: message.bridgePrimaryAgent || selectedStation?.callsign || "BRIDGE",
+        text: compactTelemetryText(message.content),
+        timestamp: message.timestamp,
+        kind: "response",
+      }
+    })
+  }, [threadMessages, selectedStation?.callsign])
+
+  const loadBridgeState = useCallback(async () => {
+    setIsBridgeLoading(true)
+    try {
+      const params = new URLSearchParams()
+      params.set("includeForwarded", "true")
+      if (selectedShipDeploymentId) {
+        params.set("shipDeploymentId", selectedShipDeploymentId)
+      }
+
+      const response = await fetch(`/api/bridge/state?${params.toString()}`)
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`)
+      }
+
+      const payload = await response.json()
+      const nextStations: BridgeStation[] = Array.isArray(payload?.stations)
+        ? payload.stations
+            .map((station: Record<string, unknown>) => {
+              const stationKey = asStationKey(station.stationKey)
+              if (!stationKey) return null
+
+              return {
+                id: typeof station.id === "string" ? station.id : `station-${stationKey}`,
+                stationKey,
+                callsign:
+                  typeof station.callsign === "string" && station.callsign.trim()
+                    ? station.callsign
+                    : stationKey.toUpperCase(),
+                name:
+                  typeof station.name === "string" && station.name.trim()
+                    ? station.name
+                    : stationKey.toUpperCase(),
+                role:
+                  typeof station.role === "string" && station.role.trim()
+                    ? station.role
+                    : "Bridge Specialist",
+                status: asStationStatus(station.status),
+                load: typeof station.load === "number" ? station.load : 0,
+                focus:
+                  typeof station.focus === "string" && station.focus.trim()
+                    ? station.focus
+                    : "Standing by for directives.",
+                queue: Array.isArray(station.queue)
+                  ? station.queue.filter((entry): entry is string => typeof entry === "string")
+                  : [],
+                subagentId: typeof station.subagentId === "string" ? station.subagentId : undefined,
+                subagentName: typeof station.subagentName === "string" ? station.subagentName : undefined,
+                subagentDescription:
+                  typeof station.subagentDescription === "string" ? station.subagentDescription : undefined,
+              } satisfies BridgeStation
+            })
+            .filter((station: BridgeStation | null): station is BridgeStation => station !== null)
+        : []
+
+      const nextWorkItems: WorkItem[] = Array.isArray(payload?.workItems)
+        ? payload.workItems.map((item: Record<string, unknown>) => {
+            const status =
+              item.status === "active" || item.status === "completed" || item.status === "failed"
+                ? item.status
+                : "pending"
+
+            return {
+              id: typeof item.id === "string" ? item.id : crypto.randomUUID(),
+              name: typeof item.name === "string" ? item.name : "Untitled task",
+              status,
+              eta: typeof item.eta === "string" ? item.eta : "TBD",
+              assignedTo: typeof item.assignedTo === "string" ? item.assignedTo : "",
+            } satisfies WorkItem
+          })
+        : []
+
+      const nextSystems: SystemStatus[] = Array.isArray(payload?.systems)
+        ? payload.systems.map((system: Record<string, unknown>) => ({
+            label: typeof system.label === "string" ? system.label : "Subsystem",
+            state: asSystemState(system.state),
+            detail: typeof system.detail === "string" ? system.detail : "No detail",
+          }))
+        : []
+
+      const nextAvailableShips: ShipSelectorItem[] = Array.isArray(payload?.availableShips)
+        ? payload.availableShips
+            .map((ship: Record<string, unknown>) => {
+              if (typeof ship.id !== "string" || typeof ship.name !== "string") return null
+              if (
+                ship.status !== "pending" &&
+                ship.status !== "deploying" &&
+                ship.status !== "active" &&
+                ship.status !== "inactive" &&
+                ship.status !== "failed" &&
+                ship.status !== "updating"
+              ) {
+                return null
+              }
+              if (ship.nodeType !== "local" && ship.nodeType !== "cloud" && ship.nodeType !== "hybrid") {
+                return null
+              }
+              if (ship.deploymentProfile !== "local_starship_build" && ship.deploymentProfile !== "cloud_shipyard") {
+                return null
+              }
+
+              return {
+                id: ship.id,
+                name: ship.name,
+                status: ship.status,
+                nodeId: typeof ship.nodeId === "string" ? ship.nodeId : "",
+                nodeType: ship.nodeType,
+                deploymentProfile: ship.deploymentProfile,
+              } satisfies ShipSelectorItem
+            })
+            .filter((ship: ShipSelectorItem | null): ship is ShipSelectorItem => ship !== null)
+        : []
+
+      setStations(nextStations)
+      setWorkItems(nextWorkItems)
+      setSystems(nextSystems)
+      setAvailableShips(nextAvailableShips)
+      setSelectedStationKey((current) => {
+        if (current && nextStations.some((station: BridgeStation) => station.stationKey === current)) {
+          return current
+        }
+        return nextStations[0]?.stationKey || null
+      })
+      const resolvedShipDeploymentId =
+        typeof payload?.selectedShipDeploymentId === "string" ? payload.selectedShipDeploymentId : null
+      if (resolvedShipDeploymentId !== selectedShipDeploymentId) {
+        setSelectedShipDeploymentId(resolvedShipDeploymentId)
+      }
+      setError(null)
+    } catch (loadError) {
+      console.error("Bridge state load failed:", loadError)
+      setError("Unable to load bridge state")
+    } finally {
+      setIsBridgeLoading(false)
     }
+  }, [selectedShipDeploymentId, setSelectedShipDeploymentId])
 
-    const stationNodes = layoutRadial(
-      { x: 0, y: 0 },
-      mapStationsToNodes(stations, selectedStationId),
-      220
-    )
+  const loadBridgeSessions = useCallback(async () => {
+    try {
+      const response = await fetch("/api/sessions?bridgeChannel=agent")
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`)
+      }
 
-    const taskNodes = layoutRadial(
-      { x: 0, y: 0 },
-      mapTasksToNodes(workItems, selectedTaskId),
-      380
-    )
+      const payload = await response.json()
+      const sessions = Array.isArray(payload) ? (payload as SessionListItem[]) : []
 
-    return [centerNode, ...stationNodes, ...taskNodes]
-  }, [stations, workItems, selectedStationId, selectedTaskId, captainLabel])
+      const nextMap: Partial<Record<BridgeStationKey, BridgeSessionRef>> = {}
+      for (const sessionItem of sessions) {
+        const ref = extractBridgeSessionRef(sessionItem)
+        if (!ref) continue
 
-  const bridgeEdges = useMemo(() => {
-    const taskEdges = buildTaskToStationEdges(workItems, stations)
-    const commandEdges: Edge[] = stations.map((station) => ({
-      id: `edge-captain-${station.id}`,
-      source: "captain-core",
-      target: station.id,
-      style: { stroke: "rgba(148, 163, 184, 0.5)", strokeWidth: 1.5 },
-      animated: station.status === "busy",
-    }))
-    return [...commandEdges, ...taskEdges]
-  }, [stations, workItems])
+        const current = nextMap[ref.stationKey]
+        if (!current || new Date(ref.updatedAt).getTime() > new Date(current.updatedAt).getTime()) {
+          nextMap[ref.stationKey] = ref
+        }
+      }
 
-  const handleBridgeNodeClick = (_: unknown, node: Node) => {
-    if (node.type === "stationNode") {
-      setSelectedStationId(node.id)
-      setSelectedTaskId(undefined)
+      setSessionsByStation(nextMap)
+    } catch (loadError) {
+      console.error("Bridge session list load failed:", loadError)
+    }
+  }, [])
+
+  const hydrateSessionThread = useCallback(async (sessionId: string) => {
+    setIsThreadLoading(true)
+    try {
+      const response = await fetch(`/api/sessions/${sessionId}`)
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`)
+      }
+
+      const payload = (await response.json()) as SessionDetail
+      const interactions = Array.isArray(payload?.interactions) ? payload.interactions : []
+      setThreadMessages(interactions.map(mapInteractionToMessage))
+      setError(null)
+    } catch (loadError) {
+      console.error("Thread load failed:", loadError)
+      setThreadMessages([])
+      setError("Unable to load station transcript")
+    } finally {
+      setIsThreadLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!session) return
+    void loadBridgeState()
+    void loadBridgeSessions()
+  }, [session, loadBridgeState, loadBridgeSessions])
+
+  useEffect(() => {
+    if (!selectedStation?.stationKey) {
+      setSelectedSessionId(null)
+      setThreadMessages([])
       return
     }
-    if (node.type === "taskNode") {
-      setSelectedTaskId(node.id)
-      const match = workItems.find((item) => item.id === node.id)
-      if (match?.assignedTo) {
-        setSelectedStationId(match.assignedTo)
-      }
+
+    const ref = sessionsByStation[selectedStation.stationKey]
+    if (!ref) {
+      setSelectedSessionId(null)
+      setThreadMessages([])
+      return
     }
-  }
+
+    setSelectedSessionId(ref.id)
+    void hydrateSessionThread(ref.id)
+  }, [selectedStation?.stationKey, sessionsByStation, hydrateSessionThread])
+
+  const ensureSessionForStation = useCallback(
+    async (station: BridgeStation): Promise<BridgeSessionRef> => {
+      const existing = sessionsByStation[station.stationKey]
+      if (existing) {
+        return existing
+      }
+
+      const response = await fetch("/api/sessions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          title: `${station.callsign} Bridge Thread`,
+          description: `Bridge conversation channel for ${station.callsign}`,
+          mode: "plan",
+          source: "web",
+          metadata: {
+            bridge: {
+              channel: "bridge-agent",
+              stationKey: station.stationKey,
+              callsign: station.callsign,
+              role: station.role,
+              name: station.name,
+            },
+          },
+        }),
+      })
+
+      if (!response.ok) {
+        throw new Error(`Failed to create session: HTTP ${response.status}`)
+      }
+
+      const created = (await response.json()) as { id: string; title: string | null; updatedAt: string }
+      const ref: BridgeSessionRef = {
+        id: created.id,
+        stationKey: station.stationKey,
+        title: created.title,
+        updatedAt: created.updatedAt,
+      }
+
+      setSessionsByStation((current) => ({ ...current, [station.stationKey]: ref }))
+      return ref
+    },
+    [sessionsByStation],
+  )
+
+  const handleSend = useCallback(
+    async (event: React.FormEvent) => {
+      event.preventDefault()
+      if (!selectedStation || !composer.trim() || isSending) return
+
+      const userPrompt = composer.trim()
+      const optimisticId = `local-${Date.now()}`
+
+      setIsSending(true)
+      setComposer("")
+      setThreadMessages((current) => [
+        ...current,
+        {
+          id: optimisticId,
+          type: "user_input",
+          content: userPrompt,
+          timestamp: new Date().toISOString(),
+          pending: true,
+        },
+      ])
+
+      try {
+        const sessionRef = await ensureSessionForStation(selectedStation)
+        setSelectedSessionId(sessionRef.id)
+
+        const cameoCandidates = stations
+          .filter((station) => station.stationKey !== selectedStation.stationKey)
+          .map((station) => ({
+            stationKey: station.stationKey,
+            callsign: station.callsign,
+            role: station.role,
+            name: station.name,
+            focus: station.focus,
+          }))
+
+        const response = await fetch(`/api/sessions/${sessionRef.id}/prompt`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            prompt: userPrompt,
+            metadata: {
+              bridge: {
+                channel: "bridge-agent",
+                stationKey: selectedStation.stationKey,
+                callsign: selectedStation.callsign,
+                role: selectedStation.role,
+                name: selectedStation.name,
+                focus: selectedStation.focus,
+                cameoCandidates,
+                missionContext: {
+                  operator: operatorLabel,
+                  stardate,
+                  systems: systems.slice(0, 3),
+                  workItems: workItems.slice(0, 5),
+                },
+              },
+            },
+          }),
+        })
+
+        if (!response.ok) {
+          throw new Error(`Prompt dispatch failed: HTTP ${response.status}`)
+        }
+
+        const payload = await response.json()
+        const userInteraction = payload?.interaction as SessionInteractionItem | undefined
+        const aiInteraction = payload?.responseInteraction as SessionInteractionItem | undefined
+
+        setThreadMessages((current) => {
+          const filtered = current.filter((message) => message.id !== optimisticId)
+          if (userInteraction) {
+            filtered.push(mapInteractionToMessage(userInteraction))
+          }
+          if (aiInteraction) {
+            filtered.push(mapInteractionToMessage(aiInteraction))
+          }
+          return filtered
+        })
+
+        void loadBridgeSessions()
+        void hydrateSessionThread(sessionRef.id)
+        setError(null)
+      } catch (sendError) {
+        console.error("Bridge send failed:", sendError)
+        setThreadMessages((current) => current.filter((message) => message.id !== optimisticId))
+        setComposer(userPrompt)
+        setError("Unable to send bridge directive")
+      } finally {
+        setIsSending(false)
+      }
+    },
+    [
+      selectedStation,
+      composer,
+      isSending,
+      ensureSessionForStation,
+      stations,
+      operatorLabel,
+      stardate,
+      systems,
+      workItems,
+      loadBridgeSessions,
+      hydrateSessionThread,
+    ],
+  )
+
+  const handleSceneStationSelect = useCallback((stationKey: BridgeStationKey) => {
+    setSelectedStationKey(stationKey)
+    if (typeof window !== "undefined" && window.matchMedia("(max-width: 1279px)").matches) {
+      setMobileSection("comms")
+    }
+  }, [])
+
+  useEventStream({
+    enabled: Boolean(session),
+    types: ["session.prompted", "task.updated", "bridge.updated", "forwarding.received"],
+    onEvent: (event) => {
+      if (
+        event.type === "session.prompted" ||
+        event.type === "task.updated" ||
+        event.type === "bridge.updated" ||
+        event.type === "forwarding.received"
+      ) {
+        setLastBridgeEventAt(Date.now())
+      }
+
+      if (event.type === "session.prompted") {
+        const payload = asRecord(event.payload)
+        if (selectedSessionId && payload.sessionId === selectedSessionId) {
+          void hydrateSessionThread(selectedSessionId)
+          void loadBridgeSessions()
+        }
+        return
+      }
+
+      if (event.type === "task.updated" || event.type === "bridge.updated" || event.type === "forwarding.received") {
+        void loadBridgeState()
+      }
+    },
+  })
 
   return (
-    <main className="min-h-screen relative overflow-hidden bg-slate-950 text-slate-100">
-      <div className="absolute inset-0 overflow-hidden pointer-events-none">
-        <div className="absolute -top-24 -left-16 h-72 w-72 rounded-full bg-cyan-500/20 blur-3xl" />
-        <div className="absolute top-1/2 -right-24 h-80 w-80 rounded-full bg-indigo-500/20 blur-3xl" />
-        <div className="absolute bottom-0 left-1/3 h-72 w-72 rounded-full bg-rose-500/10 blur-3xl" />
+    <main className="bridge-page min-h-screen overflow-hidden bg-slate-100 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
+      <div className="bridge-scene-background fixed inset-0 z-0">
+        <BridgeDeckScene3D
+          operatorLabel={operatorLabel}
+          stardate={stardate}
+          missionStats={missionStats}
+          systems={systems}
+          workItems={workItems}
+          stations={stations}
+          commsFeed={sceneCommsFeed}
+          lastEventAt={lastBridgeEventAt}
+          selectedStationKey={selectedStation?.stationKey ?? null}
+          onStationSelect={handleSceneStationSelect}
+        />
+        <div className="bridge-scene-scrim absolute inset-0" />
+        <div className="bridge-halftone absolute inset-0 opacity-55" />
       </div>
-      <div className="absolute inset-0 pointer-events-none bridge-grid opacity-40" />
-      <div className="absolute inset-0 pointer-events-none bridge-scanlines opacity-25" />
 
-      <div className="relative z-10 min-h-screen px-6 py-10 sm:px-10">
-        <div className="mx-auto flex w-full max-w-6xl flex-col gap-8">
-          {error && (
-            <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">
-              {error}
+      <div className="relative z-10 mx-auto flex w-full max-w-[1520px] flex-col gap-4 px-4 pb-8 pt-6 pointer-events-none sm:px-6 lg:px-8">
+        <section className="bridge-cel-panel bridge-cel-outline pointer-events-auto rounded-2xl px-4 py-4 sm:px-5">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="text-[11px] uppercase tracking-[0.24em] text-cyan-700/80 dark:text-cyan-200/80">Bridge Command</p>
+              <h1 className="mt-1 text-2xl font-semibold tracking-tight sm:text-3xl">Cel-Shaded Orchestration Bridge</h1>
             </div>
-          )}
-
-          {isLoading && (
-            <div className="rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-300">
-              Loading bridge state...
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <label className="inline-flex items-center gap-2 rounded-full border border-slate-900/20 bg-white/70 px-3 py-1 text-slate-700 dark:border-slate-300/25 dark:bg-slate-900/55 dark:text-slate-200">
+                <span className="text-[10px] uppercase tracking-[0.16em] text-slate-500 dark:text-slate-400">Ship</span>
+                <select
+                  value={selectedShipDeploymentId || ""}
+                  onChange={(event) => setSelectedShipDeploymentId(event.target.value || null)}
+                  className="min-w-[170px] bg-transparent text-xs font-medium text-slate-800 outline-none dark:text-slate-100"
+                >
+                  {availableShips.length === 0 ? (
+                    <option value="">No ships</option>
+                  ) : (
+                    <>
+                      <option value="">Auto-select latest active</option>
+                      {availableShips.map((ship) => (
+                        <option key={ship.id} value={ship.id}>
+                          {ship.name} ({ship.status})
+                        </option>
+                      ))}
+                    </>
+                  )}
+                </select>
+              </label>
+              <span className="inline-flex items-center gap-2 rounded-full border border-cyan-300/35 bg-cyan-500/10 px-3 py-1 text-cyan-700 dark:text-cyan-100">
+                <Users className="h-3.5 w-3.5" />
+                {operatorLabel}
+              </span>
+              <span className="rounded-full border border-slate-900/20 dark:border-slate-300/25 bg-white/70 dark:bg-slate-900/55 px-3 py-1 text-slate-700 dark:text-slate-200">
+                SD {stardate}
+              </span>
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-300/30 bg-emerald-500/10 px-3 py-1 text-emerald-700 dark:text-emerald-200">
+                <Signal className="h-3.5 w-3.5" />
+                Fleet uplink nominal
+              </span>
+              {selectedShip && (
+                <span className="rounded-full border border-slate-900/20 dark:border-slate-300/25 bg-white/70 dark:bg-slate-900/55 px-3 py-1 text-slate-700 dark:text-slate-200">
+                  {selectedShip.name}
+                </span>
+              )}
             </div>
-          )}
+          </div>
 
-          <OrchestrationSurface level={4} className="flex flex-col gap-6 bg-white/5">
-            <div className="flex flex-wrap items-center justify-between gap-4">
-              <div>
-                <p className="text-xs uppercase tracking-[0.2em] text-cyan-300/80">Bridge Command</p>
-                <h1 className="text-3xl font-semibold">Orchestration Bridge</h1>
+          <div className="mt-3 grid grid-cols-1 gap-2 text-xs text-slate-700 dark:text-slate-300 sm:grid-cols-3">
+            <div className="inline-flex items-center gap-2 rounded-lg border border-slate-900/15 dark:border-slate-300/20 bg-white/65 dark:bg-slate-900/40 px-2.5 py-2">
+              <Shield className="h-3.5 w-3.5 text-emerald-700 dark:text-emerald-300" />
+              Security posture stable
+            </div>
+            <div className="inline-flex items-center gap-2 rounded-lg border border-slate-900/15 dark:border-slate-300/20 bg-white/65 dark:bg-slate-900/40 px-2.5 py-2">
+              <Sparkles className="h-3.5 w-3.5 text-cyan-700 dark:text-cyan-300" />
+              Runtime synchronized
+            </div>
+            <div className="inline-flex items-center gap-2 rounded-lg border border-slate-900/15 dark:border-slate-300/20 bg-white/65 dark:bg-slate-900/40 px-2.5 py-2">
+              <Bot className="h-3.5 w-3.5 text-amber-700 dark:text-amber-300" />
+              Roundtable ready
+            </div>
+          </div>
+        </section>
+
+        {error && (
+          <div className="pointer-events-auto rounded-xl border border-rose-400/30 bg-rose-500/10 px-4 py-2 text-sm text-rose-700 dark:text-rose-100">
+            {error}
+          </div>
+        )}
+
+        <div className="pointer-events-auto xl:hidden">
+          <div className="grid grid-cols-4 gap-2 rounded-xl border border-slate-900/15 dark:border-slate-300/20 bg-white/70 dark:bg-slate-900/55 p-1 backdrop-blur-sm">
+            {mobileSections.map((section) => (
+              <button
+                key={section.id}
+                type="button"
+                onClick={() => setMobileSection(section.id)}
+                className={`rounded-md px-2 py-1.5 text-xs font-medium transition ${
+                  mobileSection === section.id
+                    ? "bg-cyan-500/20 text-cyan-700 dark:text-cyan-100"
+                    : "text-slate-700 dark:text-slate-300 hover:bg-slate-200/80 dark:hover:bg-slate-700/40"
+                }`}
+              >
+                {section.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="grid gap-4 xl:grid-cols-[290px_minmax(0,1fr)_360px]">
+          <section className={`${mobileSection === "crew" ? "block" : "hidden"} xl:block`}>
+            <div className="bridge-cel-panel bridge-cel-outline pointer-events-auto rounded-2xl p-4">
+              <div className="mb-3 flex items-center justify-between">
+                <h2 className="text-base font-semibold">Bridge Crew</h2>
+                <span className="text-xs text-slate-700 dark:text-slate-300">{stations.length} agents</span>
               </div>
-              <div className="flex items-center gap-3 text-sm">
-                <div className="flex items-center gap-2 rounded-full border border-cyan-500/40 px-3 py-1 text-cyan-200">
-                  <Users className="h-4 w-4" />
-                  <span>{captainLabel}</span>
+
+              {isBridgeLoading ? (
+                <div className="flex items-center gap-2 rounded-lg border border-slate-900/15 dark:border-slate-300/20 bg-white/70 dark:bg-slate-900/45 px-3 py-3 text-sm text-slate-700 dark:text-slate-300">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Loading crew stations...
                 </div>
-                <div className="rounded-full border border-white/10 px-3 py-1 text-slate-200/80">
-                  Stardate {stardate}
+              ) : (
+                <div className="space-y-2.5">
+                  {stations.map((station) => {
+                    const selected = station.stationKey === selectedStation?.stationKey
+                    return (
+                      <button
+                        key={station.stationKey}
+                        type="button"
+                        onClick={() => {
+                          setSelectedStationKey(station.stationKey)
+                          setMobileSection("comms")
+                        }}
+                        className={`w-full rounded-xl border px-3 py-2.5 text-left transition ${
+                          selected
+                            ? "border-cyan-300/55 bg-cyan-500/12"
+                            : "border-slate-900/15 dark:border-slate-300/20 bg-white/65 dark:bg-slate-900/40 hover:border-cyan-300/35"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">{station.callsign}</p>
+                            <p className="truncate text-[11px] uppercase tracking-[0.12em] text-slate-700 dark:text-slate-300">{station.role}</p>
+                          </div>
+                          <span
+                            className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] uppercase ${statusLabelStyles[station.status]}`}
+                          >
+                            <span className={`h-2 w-2 rounded-full ${statusStyles[station.status]}`} />
+                            {station.status}
+                          </span>
+                        </div>
+                        <p className="mt-2 line-clamp-2 text-xs text-slate-700 dark:text-slate-300">{station.focus}</p>
+                        <div className="mt-2">
+                          <div className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-[0.12em] text-slate-700 dark:text-slate-300/90">
+                            <span>Load</span>
+                            <span>{Math.round(station.load)}%</span>
+                          </div>
+                          <div className="h-1.5 w-full rounded-full bg-slate-300/70 dark:bg-slate-700/70">
+                            <div
+                              className="h-full rounded-full bg-gradient-to-r from-cyan-400 to-sky-300"
+                              style={{ width: `${Math.max(0, Math.min(100, station.load))}%` }}
+                            />
+                          </div>
+                        </div>
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          </section>
+
+          <section className={`${mobileSection === "scene" ? "block" : "hidden"} xl:block`}>
+            <div className="space-y-4">
+              <div className="bridge-cel-panel bridge-cel-outline bridge-hud-sweep pointer-events-auto relative overflow-hidden rounded-2xl p-4 sm:p-5">
+                <div className="mb-3 flex items-center justify-between gap-2">
+                  <div>
+                    <p className="text-[11px] uppercase tracking-[0.2em] text-cyan-700/80 dark:text-cyan-200/80">Immersive Bridge</p>
+                    <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">3D Command Room Online</h2>
+                  </div>
+                  {selectedStation && (
+                    <span className="rounded-full border border-cyan-300/35 bg-cyan-500/12 px-3 py-1 text-xs text-cyan-700 dark:text-cyan-100">
+                      Focus: {selectedStation.callsign}
+                    </span>
+                  )}
+                </div>
+
+                <p className="text-sm text-slate-700 dark:text-slate-300">
+                  Click any 3D station placeholder on the bridge deck to retarget comms and camera focus.
+                </p>
+
+                <div className="mt-3 grid grid-cols-3 gap-2 sm:gap-3">
+                  <div className="rounded-lg border border-cyan-300/35 bg-cyan-500/10 px-3 py-2">
+                    <div className="text-[10px] uppercase tracking-[0.14em] text-cyan-700/80 dark:text-cyan-200/80">Active</div>
+                    <div className="text-xl font-semibold text-cyan-700 dark:text-cyan-100">{missionStats.active}</div>
+                  </div>
+                  <div className="rounded-lg border border-emerald-300/35 bg-emerald-500/10 px-3 py-2">
+                    <div className="text-[10px] uppercase tracking-[0.14em] text-emerald-700 dark:text-emerald-200/80">Completed</div>
+                    <div className="text-xl font-semibold text-emerald-700 dark:text-emerald-100">{missionStats.completed}</div>
+                  </div>
+                  <div className="rounded-lg border border-rose-300/35 bg-rose-500/10 px-3 py-2">
+                    <div className="text-[10px] uppercase tracking-[0.14em] text-rose-700/80 dark:text-rose-200/80">Failed</div>
+                    <div className="text-xl font-semibold text-rose-700 dark:text-rose-100">{missionStats.failed}</div>
+                  </div>
+                </div>
+              </div>
+
+              {selectedStation && (
+                <div className="bridge-cel-panel bridge-cel-outline pointer-events-auto rounded-2xl p-4">
+                  <p className="text-[10px] uppercase tracking-[0.14em] text-cyan-700/80 dark:text-cyan-200/90">Station Focus</p>
+                  <p className="mt-1 text-sm font-semibold">{selectedStation.callsign} · {selectedStation.role}</p>
+                  <p className="mt-1 text-xs text-slate-700 dark:text-slate-300">{selectedStation.focus}</p>
+                </div>
+              )}
+
+              <div className="bridge-cel-panel bridge-cel-outline pointer-events-auto rounded-2xl p-4">
+                <p className="text-[10px] uppercase tracking-[0.14em] text-cyan-700/80 dark:text-cyan-200/90">Systems Snapshot</p>
+                <div className="mt-2 space-y-2">
+                  {systems.slice(0, 3).map((system) => (
+                    <div key={system.label} className="rounded-lg border border-slate-900/15 dark:border-slate-200/20 bg-white/60 dark:bg-slate-900/45 px-3 py-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-medium text-slate-900 dark:text-slate-100">{system.label}</span>
+                        <span className={`text-[10px] uppercase ${systemStyles[system.state]}`}>{system.state}</span>
+                      </div>
+                      <p className="mt-1 text-xs text-slate-700 dark:text-slate-300">{system.detail}</p>
+                    </div>
+                  ))}
                 </div>
               </div>
             </div>
-            <div className="grid grid-cols-1 gap-4 text-xs text-slate-300 sm:grid-cols-3">
-              <div className="flex items-center gap-2">
-                <Signal className="h-4 w-4 text-cyan-300" />
-                <span>Fleet uplink stable</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <Shield className="h-4 w-4 text-emerald-300" />
-                <span>Security posture nominal</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <Globe className="h-4 w-4 text-indigo-300" />
-                <span>Orbital sync locked</span>
-              </div>
-            </div>
-          </OrchestrationSurface>
+          </section>
 
-          <OrchestrationSurface level={4} className="bg-white/5">
-            <div className="flex items-center justify-between">
-              <h2 className="text-lg font-semibold">Bridge Map</h2>
-              <span className="text-xs text-slate-400">Interactive command topology</span>
-            </div>
-            <div className="mt-4">
-              <FlowCanvas
-                nodes={bridgeNodes}
-                edges={bridgeEdges}
-                nodeTypes={nodeTypes}
-                onNodeClick={handleBridgeNodeClick}
-                showMiniMap
-                className="h-[420px]"
-              />
-            </div>
-          </OrchestrationSurface>
-
-          <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1.1fr_1.4fr_1.1fr]">
-            <OrchestrationSurface level={3} className="bg-white/5">
-              <div className="flex items-center justify-between">
-              <h2 className="text-lg font-semibold">Crew Stations</h2>
-                <span className="text-xs text-slate-400">{stations.length} loaded</span>
+          <section className={`${mobileSection === "comms" ? "block" : "hidden"} xl:block`}>
+            <div className="bridge-cel-panel bridge-cel-outline bridge-console-frame pointer-events-auto rounded-2xl p-4">
+              <div className="mb-3 flex items-center justify-between gap-2">
+                <div>
+                  <p className="text-[11px] uppercase tracking-[0.2em] text-cyan-700/80 dark:text-cyan-200/80">Bridge Comms</p>
+                  <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">
+                    {selectedStation ? selectedStation.callsign : "No station selected"}
+                  </h2>
+                </div>
+                {isThreadLoading && <Loader2 className="h-4 w-4 animate-spin text-cyan-700 dark:text-cyan-200" />}
               </div>
-              <div className="mt-6 flex flex-col gap-3">
-                {stations.length === 0 && (
-                  <div className="rounded-xl border border-dashed border-white/20 bg-white/5 px-4 py-6 text-sm text-slate-400">
-                    No station data available yet. Ingest bridge station events or create bridge crew subagents.
+
+              <div className="mb-3 h-[310px] space-y-2 overflow-y-auto rounded-xl border border-slate-900/15 dark:border-slate-200/20 bg-white/75 dark:bg-slate-950/70 p-3 sm:h-[360px] xl:h-[460px]">
+                {!selectedStation && (
+                  <div className="rounded-lg border border-dashed border-slate-300/30 px-3 py-4 text-sm text-slate-700 dark:text-slate-300">
+                    Select a station to open bridge comms.
                   </div>
                 )}
-                {stations.map((station) => {
-                  const isSelected = station.id === selectedStation?.id
+
+                {selectedStation && threadMessages.length === 0 && !isThreadLoading && (
+                  <div className="rounded-lg border border-dashed border-cyan-300/30 bg-cyan-500/10 px-3 py-4 text-sm text-cyan-700 dark:text-cyan-100">
+                    No transcript yet. Send the first directive to {selectedStation.callsign}.
+                  </div>
+                )}
+
+                {threadMessages.map((message) => {
+                  const isUser = message.type === "user_input"
+                  const isError = message.type === "error"
+
                   return (
-                    <button
-                      key={station.id}
-                      type="button"
-                      onClick={() => setSelectedStationId(station.id)}
-                      className={`w-full text-left rounded-xl border px-4 py-3 transition ${
-                        isSelected
-                          ? "border-cyan-400/60 bg-cyan-500/10"
-                          : "border-white/10 bg-white/5 hover:border-white/30"
-                      }`}
+                    <div
+                      key={message.id}
+                      className={`rounded-lg border px-3 py-2.5 text-sm ${
+                        isUser
+                          ? "border-cyan-300/35 bg-cyan-500/12 text-cyan-800 dark:text-cyan-50"
+                          : isError
+                            ? "border-rose-300/35 bg-rose-500/10 text-rose-700 dark:text-rose-100"
+                            : "border-slate-900/15 dark:border-slate-200/20 bg-white/80 dark:bg-slate-900/65 text-slate-900 dark:text-slate-100"
+                      } ${message.pending ? "opacity-70" : ""}`}
                     >
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <p className="text-sm font-medium text-slate-100">
-                            {station.role} • {station.name}
-                          </p>
-                          <p className="text-xs text-slate-400">{station.focus}</p>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <span className={`h-2.5 w-2.5 rounded-full ${statusStyles[station.status]}`} />
-                          <ChevronRight className="h-4 w-4 text-slate-400" />
-                        </div>
+                      <div className="mb-1.5 flex items-center justify-between gap-2 text-[10px] uppercase tracking-[0.14em] text-slate-700 dark:text-slate-300/90">
+                        <span>
+                          {isUser
+                            ? `${operatorLabel}`
+                            : message.bridgePrimaryAgent || selectedStation?.callsign || "Bridge AI"}
+                        </span>
+                        <span>{new Date(message.timestamp).toLocaleTimeString()}</span>
                       </div>
-                      <div className="mt-3">
-                        <div className="flex items-center justify-between text-[11px] text-slate-400">
-                          <span>Load</span>
-                          <span>{station.load}%</span>
+                      <p className="whitespace-pre-wrap leading-relaxed">{message.content}</p>
+
+                      {!isUser && message.bridgeCameos && message.bridgeCameos.length > 0 && (
+                        <div className="mt-2 flex flex-wrap gap-1.5">
+                          {message.bridgeCameos.map((cameo) => (
+                            <span
+                              key={`${message.id}-${cameo}`}
+                              className="rounded-full border border-amber-300/30 bg-amber-500/10 px-2 py-0.5 text-[10px] uppercase tracking-[0.1em] text-amber-700 dark:text-amber-100"
+                            >
+                              cameo {cameo}
+                            </span>
+                          ))}
                         </div>
-                        <div className="mt-1 h-1.5 w-full rounded-full bg-white/10">
-                          <div
-                            className="h-full rounded-full bg-cyan-400/70"
-                            style={{ width: `${station.load}%` }}
-                          />
-                        </div>
-                      </div>
-                    </button>
+                      )}
+                    </div>
                   )
                 })}
               </div>
-            </OrchestrationSurface>
 
-            <OrchestrationSurface level={4} className="bg-white/5">
-              <div className="flex items-center justify-between">
-                <h2 className="text-lg font-semibold">Captain's Console</h2>
-                <span className="text-xs text-slate-400">Live briefing</span>
-              </div>
-
-              <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-3">
-                <div className="rounded-xl border border-white/10 bg-white/5 p-4">
-                  <div className="flex items-center gap-2 text-xs text-slate-400">
-                    <Activity className="h-4 w-4 text-cyan-300" />
-                    Active Tasks
-                  </div>
-                  <p className="mt-2 text-2xl font-semibold text-cyan-200">{missionStats.active}</p>
-                </div>
-                <div className="rounded-xl border border-white/10 bg-white/5 p-4">
-                  <div className="flex items-center gap-2 text-xs text-slate-400">
-                    <CheckCircle2 className="h-4 w-4 text-emerald-300" />
-                    Completed
-                  </div>
-                  <p className="mt-2 text-2xl font-semibold text-emerald-200">{missionStats.completed}</p>
-                </div>
-                <div className="rounded-xl border border-white/10 bg-white/5 p-4">
-                  <div className="flex items-center gap-2 text-xs text-slate-400">
-                    <AlertTriangle className="h-4 w-4 text-rose-300" />
-                    Failed
-                  </div>
-                  <p className="mt-2 text-2xl font-semibold text-rose-200">{missionStats.failed}</p>
-                </div>
-              </div>
-
-              <div className="mt-6 rounded-2xl border border-white/10 bg-gradient-to-br from-white/5 to-transparent p-5">
+              <form onSubmit={handleSend} className="space-y-2">
+                <textarea
+                  value={composer}
+                  onChange={(event) => setComposer(event.target.value)}
+                  placeholder={selectedStation ? `Issue directive to ${selectedStation.callsign}...` : "Select a station first"}
+                  disabled={!selectedStation || isSending}
+                  rows={4}
+                  className="w-full resize-none rounded-xl border border-slate-900/15 dark:border-slate-200/20 bg-white/75 dark:bg-slate-950/65 px-3 py-2.5 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:border-cyan-300/45 focus:outline-none"
+                />
                 <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Station Focus</p>
-                    <h3 className="text-xl font-semibold text-slate-100">
-                      {selectedStation?.role} • {selectedStation?.name}
-                    </h3>
-                  </div>
-                  <div className="flex items-center gap-2 text-xs text-slate-400">
-                    <Bot className="h-4 w-4 text-cyan-300" />
-                    {selectedStation?.status}
-                  </div>
+                  <span className="text-xs text-slate-700 dark:text-slate-300">Roundtable mode: primary + cameo replies</span>
+                  <button
+                    type="submit"
+                    disabled={!selectedStation || !composer.trim() || isSending}
+                    className="inline-flex items-center gap-2 rounded-lg border border-cyan-300/35 bg-cyan-500/15 px-3.5 py-2 text-sm font-medium text-cyan-700 dark:text-cyan-100 transition hover:bg-cyan-500/25 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {isSending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                    Transmit
+                  </button>
                 </div>
-                <p className="mt-3 text-sm text-slate-300">{selectedStation?.focus}</p>
-                <div className="mt-4">
-                  <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Queue</p>
-                  <div className="mt-3 flex flex-col gap-2">
-                    {selectedStation?.queue.length ? (
-                      selectedStation.queue.slice(0, 4).map((item) => (
-                        <div
-                          key={item}
-                          className="flex items-center justify-between rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200"
-                        >
-                          <span className="truncate">{item}</span>
-                          <span className="text-xs text-slate-400">Queued</span>
-                        </div>
-                      ))
-                    ) : (
-                      <div className="rounded-lg border border-dashed border-white/10 px-3 py-2 text-sm text-slate-400">
-                        No queued tasks. Standing by.
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-            </OrchestrationSurface>
-
-            <div className="flex flex-col gap-6">
-              <OrchestrationSurface level={3} className="bg-white/5">
-                <div className="flex items-center justify-between">
-                  <h2 className="text-lg font-semibold">Workload Queue</h2>
-                  <span className="text-xs text-slate-400">{workItems.length} items</span>
-                </div>
-                <div className="mt-5 flex flex-col gap-3">
-                  {workItems.map((item) => (
-                    <div
-                      key={item.id}
-                      className="rounded-xl border border-white/10 bg-white/5 p-3"
-                    >
-                      <div className="flex items-center justify-between">
-                        <p className="text-sm font-medium text-slate-100">{item.name}</p>
-                        <span
-                          className={`rounded-full border px-2 py-0.5 text-[10px] uppercase ${
-                            workItemStyles[item.status]
-                          }`}
-                        >
-                          {item.status}
-                        </span>
-                      </div>
-                      <div className="mt-2 flex items-center justify-between text-xs text-slate-400">
-                        <span>ETA {item.eta}</span>
-                        <span>Assigned {item.assignedTo.replace("station-", "")}</span>
-                      </div>
-                    </div>
-                  ))}
-                  {workItems.length === 0 && (
-                    <div className="rounded-xl border border-dashed border-white/20 bg-white/5 px-4 py-6 text-sm text-slate-400">
-                      No workload items available.
-                    </div>
-                  )}
-                </div>
-              </OrchestrationSurface>
-
-              <OrchestrationSurface level={2} className="bg-white/5">
-                <div className="flex items-center justify-between">
-                  <h2 className="text-lg font-semibold">Systems</h2>
-                  <span className="text-xs text-slate-400">Fleet core</span>
-                </div>
-                <div className="mt-4 grid grid-cols-1 gap-3">
-                  {systems.map((system) => (
-                    <div
-                      key={system.label}
-                      className="rounded-xl border border-white/10 bg-white/5 p-3"
-                    >
-                      <div className="flex items-center justify-between">
-                        <p className="text-sm font-medium text-slate-100">{system.label}</p>
-                        <span className={`text-xs ${systemStyles[system.state]}`}>{system.state}</span>
-                      </div>
-                      <p className="mt-2 text-xs text-slate-400">{system.detail}</p>
-                      <div className="mt-3 flex items-center gap-2 text-xs text-slate-400">
-                        <Square className="h-3 w-3 text-cyan-300" />
-                        <span>Signal stable</span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-                <div className="mt-4 flex items-center justify-between rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-slate-400">
-                  <div className="flex items-center gap-2">
-                    <Cpu className="h-4 w-4 text-cyan-300" />
-                    AI core balanced
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Network className="h-4 w-4 text-indigo-300" />
-                    Mesh 98% healthy
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Eye className="h-4 w-4 text-emerald-300" />
-                    Sensors aligned
-                  </div>
-                </div>
-              </OrchestrationSurface>
+              </form>
             </div>
-          </div>
+          </section>
+        </div>
+
+        <div className={`${mobileSection === "queue" ? "block" : "hidden"} grid gap-4 xl:grid xl:grid-cols-[1.25fr_1fr] xl:gap-4`}>
+          <section className="bridge-cel-panel bridge-cel-outline pointer-events-auto rounded-2xl p-4">
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-base font-semibold">Workload Queue</h2>
+              <span className="text-xs text-slate-700 dark:text-slate-300">{workItems.length} items</span>
+            </div>
+
+            <div className="space-y-2.5">
+              {workItems.length === 0 && (
+                <div className="rounded-lg border border-dashed border-slate-300/30 px-3 py-4 text-sm text-slate-700 dark:text-slate-300">
+                  No workload items available.
+                </div>
+              )}
+
+              {workItems.slice(0, 8).map((item) => (
+                <div key={item.id} className="rounded-lg border border-slate-900/15 dark:border-slate-200/20 bg-white/70 dark:bg-slate-900/50 px-3 py-2.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="truncate text-sm font-medium text-slate-900 dark:text-slate-100">{item.name}</p>
+                    <span className={`rounded-full border px-2 py-0.5 text-[10px] uppercase ${workItemStyles[item.status]}`}>
+                      {item.status}
+                    </span>
+                  </div>
+                  <div className="mt-1.5 flex items-center justify-between text-xs text-slate-700 dark:text-slate-300">
+                    <span>ETA {item.eta}</span>
+                    <span className="truncate">Station {item.assignedTo.slice(-8)}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <section className="bridge-cel-panel bridge-cel-outline pointer-events-auto rounded-2xl p-4">
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-base font-semibold">Systems Core</h2>
+              <span className="text-xs text-slate-700 dark:text-slate-300">Fleet status</span>
+            </div>
+
+            <div className="space-y-2.5">
+              {systems.map((system) => (
+                <div key={system.label} className="rounded-lg border border-slate-900/15 dark:border-slate-200/20 bg-white/70 dark:bg-slate-900/50 px-3 py-2.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-sm font-medium text-slate-900 dark:text-slate-100">{system.label}</p>
+                    <span className={`text-xs uppercase ${systemStyles[system.state]}`}>{system.state}</span>
+                  </div>
+                  <p className="mt-1.5 text-xs text-slate-700 dark:text-slate-300">{system.detail}</p>
+                </div>
+              ))}
+
+              <div className="grid grid-cols-3 gap-2">
+                <div className="rounded-lg border border-cyan-300/30 bg-cyan-500/10 px-2.5 py-2 text-center text-xs text-cyan-700 dark:text-cyan-100">
+                  <Activity className="mx-auto mb-1 h-3.5 w-3.5" />
+                  Active {missionStats.active}
+                </div>
+                <div className="rounded-lg border border-emerald-300/30 bg-emerald-500/10 px-2.5 py-2 text-center text-xs text-emerald-700 dark:text-emerald-100">
+                  <CheckCircle2 className="mx-auto mb-1 h-3.5 w-3.5" />
+                  Done {missionStats.completed}
+                </div>
+                <div className="rounded-lg border border-rose-300/30 bg-rose-500/10 px-2.5 py-2 text-center text-xs text-rose-700 dark:text-rose-100">
+                  <AlertTriangle className="mx-auto mb-1 h-3.5 w-3.5" />
+                  Failed {missionStats.failed}
+                </div>
+              </div>
+            </div>
+          </section>
         </div>
       </div>
     </main>

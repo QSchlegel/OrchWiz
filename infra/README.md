@@ -2,30 +2,42 @@
 
 This folder contains Terraform + Ansible scaffolding for two deployment profiles:
 
-- `Local Starship Build`: Minikube-first local stack with in-cluster PostgreSQL.
+- `Local Starship Build`: local Kubernetes stack with in-cluster PostgreSQL (`kind` default, `minikube` optional).
 - `Cloud Shipyard`: Provider-agnostic deployment to an existing Kubernetes cluster.
 
 ## Layout
 
 - `terraform/modules/starship-minikube`: local module (app + PostgreSQL + service).
 - `terraform/modules/shipyard-k8s`: cloud module (app resources, optional ingress).
-- `terraform/environments/starship-local`: wiring for Minikube context.
+- `terraform/environments/starship-local`: local wiring controlled by `infrastructure_kind` (`kind|minikube`).
 - `terraform/environments/shipyard-cloud`: wiring for existing cloud cluster context.
 - `ansible/playbooks/starship_local.yml`: local deploy workflow.
 - `ansible/playbooks/shipyard_cloud.yml`: cloud deploy workflow.
 
-## Quick Start: Local Starship (Minikube)
+## Quick Start: Local Starship (KIND default, Minikube optional)
 
 1. Copy vars template:
    - `cp infra/terraform/environments/starship-local/terraform.tfvars.example infra/terraform/environments/starship-local/terraform.tfvars`
-2. Fill secrets/image.
+   - If needed, copy inventory template: `cp infra/ansible/inventory/local.ini.example infra/ansible/inventory/local.ini`
+2. Fill secrets/image and choose local cluster kind:
+   - default: `infrastructure_kind = "kind"` with `kube_context = "kind-orchwiz"`
+   - alternative: `infrastructure_kind = "minikube"` with `kube_context = "minikube"`
 3. Apply with Terraform:
    - `terraform -chdir=infra/terraform/environments/starship-local init -backend=false`
    - `terraform -chdir=infra/terraform/environments/starship-local apply`
 4. Or run the Ansible wrapper:
    - `ansible-playbook -i infra/ansible/inventory/local.ini.example infra/ansible/playbooks/starship_local.yml`
-5. Get URL:
-   - `minikube service -n orchwiz-starship orchwiz --url`
+5. Access endpoint:
+   - KIND: `kubectl -n orchwiz-starship port-forward svc/orchwiz 3000:3000`
+   - Minikube: `minikube service -n orchwiz-starship orchwiz --url`
+
+### Ship Yard Local Launch Notes
+
+- The app server local-launch path is fail-fast: it requires `terraform.tfvars`, Ansible inventory, and playbook paths to exist.
+- Missing files are reported with copy-ready remediation commands; files are not auto-generated.
+- `saneBootstrap` can assist with CLI auto-install only when `ENABLE_LOCAL_INFRA_AUTO_INSTALL=true`.
+- Local provisioning command execution still requires `ENABLE_LOCAL_COMMAND_EXECUTION=true`.
+- Kube context presence is validated before provisioning; cluster auto-create/start is not performed.
 
 ## Quick Start: Cloud Shipyard (Existing Kubernetes)
 

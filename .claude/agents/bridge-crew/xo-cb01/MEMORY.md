@@ -1,0 +1,2 @@
+- Track blockers, handoffs, and current risk posture.
+

@@ -29,6 +29,7 @@ The following list endpoints support forwarded-data aggregation:
 - `GET /api/actions`
 - `GET /api/tasks`
 - `GET /api/verification`
+- `GET /api/ships`
 - `GET /api/deployments`
 - `GET /api/applications`
 
@@ -65,19 +66,30 @@ Forwarded records include metadata fields (for example `isForwarded`, `sourceNod
 - `PUT /api/subagents/[id]` update one.
 - `DELETE /api/subagents/[id]` delete one.
 
-### Deployments and Applications
+### Ships and Applications
 
-- `GET /api/deployments` list agent deployments (supports forwarding params).
-- `POST /api/deployments` create deployment and run deployment adapter transitions (`pending -> deploying -> active|failed`).
+- `GET /api/ships` list ship deployments (supports forwarding params).
+- `POST /api/ships` create ship deployment and run deployment adapter transitions (`pending -> deploying -> active|failed`).
   - New profile fields: `deploymentProfile` (`local_starship_build|cloud_shipyard`), `provisioningMode` (`terraform_ansible|terraform_only|ansible_only`).
   - Node type derivation: profile drives `nodeType` (`local_starship_build -> local`, `cloud_shipyard -> cloud`, optional advanced override to `hybrid` for shipyard).
-  - Infrastructure settings persist under `config.infrastructure` (`kubeContext`, `namespace`, `terraformWorkspace`, `terraformEnvDir`, `ansibleInventory`, `ansiblePlaybook`).
-- `GET /api/deployments/[id]` fetch deployment.
-- `PUT /api/deployments/[id]` update deployment.
-- `DELETE /api/deployments/[id]` delete deployment.
-- `GET /api/applications` list app deployments (supports forwarding params).
+  - Infrastructure settings persist under `config.infrastructure` (`kind`, `kubeContext`, `namespace`, `terraformWorkspace`, `terraformEnvDir`, `ansibleInventory`, `ansiblePlaybook`).
+  - `config.infrastructure.kind` values: `kind`, `minikube`, `existing_k8s`.
+  - Defaults/inference:
+    - local profile defaults to `kind` (`kubeContext=kind-orchwiz`)
+    - cloud profile defaults to `existing_k8s`
+    - missing legacy kind infers `minikube` when context contains `minikube`
+- `GET /api/ships/[id]` fetch ship deployment.
+- `PUT /api/ships/[id]` update ship deployment.
+- `DELETE /api/ships/[id]` delete ship deployment.
+- Legacy compatibility aliases:
+  - `GET /api/deployments` defaults to ship deployments when `deploymentType` is omitted.
+  - `deploymentType=agent` still returns agent deployments.
+  - `POST|GET|PUT|DELETE /api/deployments` remain supported while migrating clients.
+- `GET /api/applications` list application deployments (supports forwarding params).
 - `POST /api/applications` create app deployment and run deployment adapter transitions.
-  - Accepts and returns the same profile/provisioning/config infrastructure fields as deployment create.
+  - Canonical targeting is `shipDeploymentId` (required in ship-first mode).
+  - Legacy writes without `shipDeploymentId` are auto-resolved by `userId + nodeId`, creating inferred ships when needed.
+  - Responses include `shipDeploymentId` and a `ship` summary (`id`, `name`, `status`, `nodeId`, `nodeType`, `deploymentProfile`).
 - `GET /api/applications/[id]` fetch app deployment.
 - `PUT /api/applications/[id]` update app deployment.
 - `DELETE /api/applications/[id]` delete app deployment.

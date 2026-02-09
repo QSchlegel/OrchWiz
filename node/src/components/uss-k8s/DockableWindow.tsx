@@ -9,6 +9,7 @@ interface DockableWindowProps {
   title: string
   style: CSSProperties
   isActive?: boolean
+  collapsed?: boolean
   bodyClassName?: string
   onDragStart: (id: string, event: PointerEvent<HTMLDivElement>) => void
   onCollapse: (id: string) => void
@@ -25,6 +26,7 @@ export function DockableWindow({
   title,
   style,
   isActive = false,
+  collapsed = false,
   bodyClassName,
   onDragStart,
   onCollapse,
@@ -33,17 +35,18 @@ export function DockableWindow({
 }: DockableWindowProps) {
   return (
     <div
-      className={`pointer-events-auto absolute overflow-hidden transition-shadow duration-200 ${floatingPanelClass} ${
+      className={`pointer-events-auto absolute overflow-hidden transition-all duration-200 ${floatingPanelClass} ${
         isActive
           ? "ring-1 ring-cyan-500/45 shadow-[0_14px_34px_rgba(8,145,178,0.24)] dark:ring-cyan-300/35"
           : "ring-1 ring-transparent"
-      }`}
+      } ${collapsed ? "pointer-events-none scale-[0.96] opacity-0" : "scale-100 opacity-100"}`}
       style={style}
       onPointerDown={() => onFocus(id)}
+      aria-hidden={collapsed}
     >
       <div
         role="button"
-        tabIndex={0}
+        tabIndex={collapsed ? -1 : 0}
         onPointerDown={(event) => onDragStart(id, event)}
         onKeyDown={(event) => {
           if (event.key === "Enter" || event.key === " ") {
@@ -73,6 +76,7 @@ export function DockableWindow({
           <button
             data-window-control="true"
             type="button"
+            tabIndex={collapsed ? -1 : 0}
             onPointerDown={(event) => event.stopPropagation()}
             onClick={() => onCollapse(id)}
             className="flex h-6 w-6 items-center justify-center rounded border border-slate-300/70 bg-white/80 text-slate-700 transition-colors hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500/60 dark:border-white/12 dark:bg-white/[0.04] dark:text-slate-200 dark:hover:bg-white/[0.09] dark:focus-visible:ring-cyan-400/60"

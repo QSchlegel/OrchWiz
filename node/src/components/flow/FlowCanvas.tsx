@@ -4,11 +4,14 @@ import ReactFlow, {
   Background,
   Controls,
   MiniMap,
+  type Connection,
+  type ConnectionMode,
   type Edge,
   type Node,
   type NodeDragHandler,
   type NodeMouseHandler,
   type NodeTypes,
+  type OnConnect,
   type OnNodesChange,
   type ReactFlowInstance,
 } from "reactflow"
@@ -25,6 +28,11 @@ interface FlowCanvasProps {
   className?: string
   showMiniMap?: boolean
   nodesDraggable?: boolean
+  nodesConnectable?: boolean
+  onConnect?: OnConnect
+  onDrop?: (event: React.DragEvent) => void
+  onDragOver?: (event: React.DragEvent) => void
+  connectionLineStyle?: React.CSSProperties
 }
 
 export function FlowCanvas({
@@ -39,9 +47,18 @@ export function FlowCanvas({
   className = "",
   showMiniMap = false,
   nodesDraggable = true,
+  nodesConnectable = false,
+  onConnect,
+  onDrop,
+  onDragOver,
+  connectionLineStyle,
 }: FlowCanvasProps) {
   return (
-    <div className={`h-[360px] w-full ${className}`}>
+    <div
+      className={`h-[360px] w-full ${className}`}
+      onDrop={onDrop}
+      onDragOver={onDragOver}
+    >
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -51,12 +68,14 @@ export function FlowCanvas({
         onInit={onInit}
         onNodesChange={onNodesChange}
         onNodeDragStop={onNodeDragStop}
+        onConnect={onConnect}
         fitView
         fitViewOptions={{ padding: 0.18 }}
         minZoom={0.4}
         maxZoom={1.6}
         nodesDraggable={nodesDraggable}
-        nodesConnectable={false}
+        nodesConnectable={nodesConnectable}
+        connectionLineStyle={connectionLineStyle}
         panOnDrag
         zoomOnScroll
       >

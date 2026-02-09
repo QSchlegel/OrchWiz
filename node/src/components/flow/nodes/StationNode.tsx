@@ -10,6 +10,7 @@ export interface StationNodeData {
   meta?: string
   visualVariant?: "uss-k8s"
   commandTier?: number
+  buildMode?: boolean
 }
 
 const statusColors = {
@@ -76,8 +77,18 @@ export function StationNode({ data, selected }: NodeProps<StationNodeData>) {
           </div>
         )}
       </div>
-      <Handle type="target" position={Position.Left} style={{ opacity: 0 }} />
-      <Handle type="source" position={Position.Right} style={{ opacity: 0 }} />
+      <Handle
+        type="target"
+        position={Position.Left}
+        style={{ opacity: data.buildMode ? 1 : 0 }}
+        className={data.buildMode ? "!h-3 !w-3 !border-2 !border-white !bg-cyan-500 build-handle-pulse" : ""}
+      />
+      <Handle
+        type="source"
+        position={Position.Right}
+        style={{ opacity: data.buildMode ? 1 : 0 }}
+        className={data.buildMode ? "!h-3 !w-3 !border-2 !border-white !bg-cyan-500 build-handle-pulse" : ""}
+      />
     </div>
   )
 }

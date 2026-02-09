@@ -8,6 +8,7 @@ export interface K8sNodeData {
   status: "nominal" | "warning" | "critical" | "unknown"
   visualVariant?: "uss-k8s"
   commandTier?: number
+  buildMode?: boolean
 }
 
 const statusStyles = {
@@ -54,8 +55,18 @@ export function K8sNode({ data, selected }: NodeProps<K8sNodeData>) {
           </p>
         )}
       </div>
-      <Handle type="target" position={Position.Top} style={{ opacity: 0 }} />
-      <Handle type="source" position={Position.Bottom} style={{ opacity: 0 }} />
+      <Handle
+        type="target"
+        position={Position.Top}
+        style={{ opacity: data.buildMode ? 1 : 0 }}
+        className={data.buildMode ? "!h-3 !w-3 !border-2 !border-white !bg-rose-500 build-handle-pulse" : ""}
+      />
+      <Handle
+        type="source"
+        position={Position.Bottom}
+        style={{ opacity: data.buildMode ? 1 : 0 }}
+        className={data.buildMode ? "!h-3 !w-3 !border-2 !border-white !bg-rose-500 build-handle-pulse" : ""}
+      />
     </div>
   )
 }
