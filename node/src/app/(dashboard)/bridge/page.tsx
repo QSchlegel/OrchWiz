@@ -132,8 +132,8 @@ const systemStyles: Record<SystemStatus["state"], string> = {
 }
 
 const mobileSections: Array<{ id: MobileSection; label: string }> = [
-  { id: "scene", label: "Scene" },
-  { id: "crew", label: "Crew" },
+  { id: "scene", label: "Deck" },
+  { id: "crew", label: "Roster" },
   { id: "comms", label: "Comms" },
   { id: "queue", label: "Queue" },
 ]
@@ -699,6 +699,9 @@ export default function BridgePage() {
     },
   })
 
+  const panelFrameClass = "bridge-cel-panel bridge-cel-outline bridge-panel pointer-events-auto rounded-2xl"
+  const cardShellClass = "rounded-lg border border-slate-900/15 dark:border-slate-200/20 bg-white/60 dark:bg-slate-900/45"
+
   return (
     <main className="bridge-page min-h-screen overflow-hidden bg-slate-100 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
       <div className="bridge-scene-background fixed inset-0 z-0">
@@ -715,19 +718,22 @@ export default function BridgePage() {
           onStationSelect={handleSceneStationSelect}
         />
         <div className="bridge-scene-scrim absolute inset-0" />
-        <div className="bridge-halftone absolute inset-0 opacity-55" />
+        <div className="bridge-cel-bands absolute inset-0" />
+        <div className="bridge-tactical-grid absolute inset-0" />
+        <div className="bridge-halftone absolute inset-0" />
+        <div className="bridge-vignette-mask absolute inset-0" />
       </div>
 
-      <div className="relative z-10 mx-auto flex w-full max-w-[1520px] flex-col gap-4 px-4 pb-8 pt-6 pointer-events-none sm:px-6 lg:px-8">
-        <section className="bridge-cel-panel bridge-cel-outline pointer-events-auto rounded-2xl px-4 py-4 sm:px-5">
+      <div className="pointer-events-none relative z-10 mx-auto flex w-full max-w-[1520px] flex-col gap-4 px-4 pb-8 pt-6 sm:px-6 lg:px-8">
+        <section className={`${panelFrameClass} px-4 py-4 sm:px-5`}>
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <p className="text-[11px] uppercase tracking-[0.24em] text-cyan-700/80 dark:text-cyan-200/80">Bridge Command</p>
-              <h1 className="mt-1 text-2xl font-semibold tracking-tight sm:text-3xl">Cel-Shaded Orchestration Bridge</h1>
+              <p className="text-[11px] uppercase tracking-[0.24em] text-cyan-700/80 dark:text-cyan-200/80">Command Deck</p>
+              <h1 className="mt-1 text-2xl font-semibold tracking-tight sm:text-3xl">Orchestration Command Bridge</h1>
             </div>
             <div className="flex flex-wrap items-center gap-2 text-xs">
-              <label className="inline-flex items-center gap-2 rounded-full border border-slate-900/20 bg-white/70 px-3 py-1 text-slate-700 dark:border-slate-300/25 dark:bg-slate-900/55 dark:text-slate-200">
-                <span className="text-[10px] uppercase tracking-[0.16em] text-slate-500 dark:text-slate-400">Ship</span>
+              <label className="inline-flex items-center gap-2 rounded-full border border-slate-900/20 bg-white/65 px-3 py-1 text-slate-700 dark:border-slate-300/25 dark:bg-slate-900/55 dark:text-slate-200">
+                <span className="text-[10px] uppercase tracking-[0.16em] text-slate-500 dark:text-slate-400">Hull</span>
                 <select
                   value={selectedShipDeploymentId || ""}
                   onChange={(event) => setSelectedShipDeploymentId(event.target.value || null)}
@@ -737,7 +743,7 @@ export default function BridgePage() {
                     <option value="">No ships</option>
                   ) : (
                     <>
-                      <option value="">Auto-select latest active</option>
+                      <option value="">Auto-route active hull</option>
                       {availableShips.map((ship) => (
                         <option key={ship.id} value={ship.id}>
                           {ship.name} ({ship.status})
@@ -751,33 +757,33 @@ export default function BridgePage() {
                 <Users className="h-3.5 w-3.5" />
                 {operatorLabel}
               </span>
-              <span className="rounded-full border border-slate-900/20 dark:border-slate-300/25 bg-white/70 dark:bg-slate-900/55 px-3 py-1 text-slate-700 dark:text-slate-200">
+              <span className="rounded-full border border-slate-900/20 bg-white/65 px-3 py-1 text-slate-700 dark:border-slate-300/25 dark:bg-slate-900/55 dark:text-slate-200">
                 SD {stardate}
               </span>
-              <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-300/30 bg-emerald-500/10 px-3 py-1 text-emerald-700 dark:text-emerald-200">
-                <Signal className="h-3.5 w-3.5" />
-                Fleet uplink nominal
-              </span>
               {selectedShip && (
-                <span className="rounded-full border border-slate-900/20 dark:border-slate-300/25 bg-white/70 dark:bg-slate-900/55 px-3 py-1 text-slate-700 dark:text-slate-200">
+                <span className="rounded-full border border-slate-900/20 bg-white/65 px-3 py-1 text-slate-700 dark:border-slate-300/25 dark:bg-slate-900/55 dark:text-slate-200">
                   {selectedShip.name}
                 </span>
               )}
             </div>
           </div>
 
-          <div className="mt-3 grid grid-cols-1 gap-2 text-xs text-slate-700 dark:text-slate-300 sm:grid-cols-3">
-            <div className="inline-flex items-center gap-2 rounded-lg border border-slate-900/15 dark:border-slate-300/20 bg-white/65 dark:bg-slate-900/40 px-2.5 py-2">
+          <div className="mt-3 flex flex-wrap gap-2 text-xs text-slate-700 dark:text-slate-300">
+            <div className="inline-flex items-center gap-2 rounded-full border border-emerald-300/30 bg-emerald-500/10 px-3 py-1.5 text-emerald-700 dark:text-emerald-200">
               <Shield className="h-3.5 w-3.5 text-emerald-700 dark:text-emerald-300" />
               Security posture stable
             </div>
-            <div className="inline-flex items-center gap-2 rounded-lg border border-slate-900/15 dark:border-slate-300/20 bg-white/65 dark:bg-slate-900/40 px-2.5 py-2">
+            <div className="inline-flex items-center gap-2 rounded-full border border-cyan-300/35 bg-cyan-500/12 px-3 py-1.5 text-cyan-700 dark:text-cyan-100">
               <Sparkles className="h-3.5 w-3.5 text-cyan-700 dark:text-cyan-300" />
-              Runtime synchronized
+              Runtime sync nominal
             </div>
-            <div className="inline-flex items-center gap-2 rounded-lg border border-slate-900/15 dark:border-slate-300/20 bg-white/65 dark:bg-slate-900/40 px-2.5 py-2">
+            <div className="inline-flex items-center gap-2 rounded-full border border-emerald-300/30 bg-emerald-500/10 px-3 py-1.5 text-emerald-700 dark:text-emerald-200">
+              <Signal className="h-3.5 w-3.5 text-emerald-700 dark:text-emerald-300" />
+              Fleet uplink nominal
+            </div>
+            <div className="inline-flex items-center gap-2 rounded-full border border-amber-300/30 bg-amber-500/10 px-3 py-1.5 text-amber-700 dark:text-amber-100">
               <Bot className="h-3.5 w-3.5 text-amber-700 dark:text-amber-300" />
-              Roundtable ready
+              Roundtable relay armed
             </div>
           </div>
         </section>
@@ -789,7 +795,7 @@ export default function BridgePage() {
         )}
 
         <div className="pointer-events-auto xl:hidden">
-          <div className="grid grid-cols-4 gap-2 rounded-xl border border-slate-900/15 dark:border-slate-300/20 bg-white/70 dark:bg-slate-900/55 p-1 backdrop-blur-sm">
+          <div className="bridge-cel-panel bridge-cel-outline bridge-panel grid grid-cols-4 gap-2 rounded-xl p-1">
             {mobileSections.map((section) => (
               <button
                 key={section.id}
@@ -808,17 +814,17 @@ export default function BridgePage() {
         </div>
 
         <div className="grid gap-4 xl:grid-cols-[290px_minmax(0,1fr)_360px]">
-          <section className={`${mobileSection === "crew" ? "block" : "hidden"} xl:block`}>
-            <div className="bridge-cel-panel bridge-cel-outline pointer-events-auto rounded-2xl p-4">
+          <section className={`${mobileSection === "crew" ? "block" : "hidden"} xl:-ml-4 xl:block`}>
+            <div className={`${panelFrameClass} p-4`}>
               <div className="mb-3 flex items-center justify-between">
-                <h2 className="text-base font-semibold">Bridge Crew</h2>
-                <span className="text-xs text-slate-700 dark:text-slate-300">{stations.length} agents</span>
+                <h2 className="text-base font-semibold">Station Roster</h2>
+                <span className="text-xs text-slate-700 dark:text-slate-300">{stations.length} stations</span>
               </div>
 
               {isBridgeLoading ? (
                 <div className="flex items-center gap-2 rounded-lg border border-slate-900/15 dark:border-slate-300/20 bg-white/70 dark:bg-slate-900/45 px-3 py-3 text-sm text-slate-700 dark:text-slate-300">
                   <Loader2 className="h-4 w-4 animate-spin" />
-                  Loading crew stations...
+                  Syncing station roster...
                 </div>
               ) : (
                 <div className="space-y-2.5">
@@ -834,7 +840,7 @@ export default function BridgePage() {
                         }}
                         className={`w-full rounded-xl border px-3 py-2.5 text-left transition ${
                           selected
-                            ? "border-cyan-300/55 bg-cyan-500/12"
+                            ? "border-cyan-300/55 bg-cyan-500/14 shadow-[inset_0_1px_0_rgba(255,255,255,0.2)]"
                             : "border-slate-900/15 dark:border-slate-300/20 bg-white/65 dark:bg-slate-900/40 hover:border-cyan-300/35"
                         }`}
                       >
@@ -871,73 +877,15 @@ export default function BridgePage() {
             </div>
           </section>
 
-          <section className={`${mobileSection === "scene" ? "block" : "hidden"} xl:block`}>
-            <div className="space-y-4">
-              <div className="bridge-cel-panel bridge-cel-outline bridge-hud-sweep pointer-events-auto relative overflow-hidden rounded-2xl p-4 sm:p-5">
-                <div className="mb-3 flex items-center justify-between gap-2">
-                  <div>
-                    <p className="text-[11px] uppercase tracking-[0.2em] text-cyan-700/80 dark:text-cyan-200/80">Immersive Bridge</p>
-                    <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">3D Command Room Online</h2>
-                  </div>
-                  {selectedStation && (
-                    <span className="rounded-full border border-cyan-300/35 bg-cyan-500/12 px-3 py-1 text-xs text-cyan-700 dark:text-cyan-100">
-                      Focus: {selectedStation.callsign}
-                    </span>
-                  )}
-                </div>
+          <section className={`${mobileSection === "scene" ? "block" : "hidden"} xl:block`} aria-hidden />
 
-                <p className="text-sm text-slate-700 dark:text-slate-300">
-                  Click any 3D station placeholder on the bridge deck to retarget comms and camera focus.
-                </p>
-
-                <div className="mt-3 grid grid-cols-3 gap-2 sm:gap-3">
-                  <div className="rounded-lg border border-cyan-300/35 bg-cyan-500/10 px-3 py-2">
-                    <div className="text-[10px] uppercase tracking-[0.14em] text-cyan-700/80 dark:text-cyan-200/80">Active</div>
-                    <div className="text-xl font-semibold text-cyan-700 dark:text-cyan-100">{missionStats.active}</div>
-                  </div>
-                  <div className="rounded-lg border border-emerald-300/35 bg-emerald-500/10 px-3 py-2">
-                    <div className="text-[10px] uppercase tracking-[0.14em] text-emerald-700 dark:text-emerald-200/80">Completed</div>
-                    <div className="text-xl font-semibold text-emerald-700 dark:text-emerald-100">{missionStats.completed}</div>
-                  </div>
-                  <div className="rounded-lg border border-rose-300/35 bg-rose-500/10 px-3 py-2">
-                    <div className="text-[10px] uppercase tracking-[0.14em] text-rose-700/80 dark:text-rose-200/80">Failed</div>
-                    <div className="text-xl font-semibold text-rose-700 dark:text-rose-100">{missionStats.failed}</div>
-                  </div>
-                </div>
-              </div>
-
-              {selectedStation && (
-                <div className="bridge-cel-panel bridge-cel-outline pointer-events-auto rounded-2xl p-4">
-                  <p className="text-[10px] uppercase tracking-[0.14em] text-cyan-700/80 dark:text-cyan-200/90">Station Focus</p>
-                  <p className="mt-1 text-sm font-semibold">{selectedStation.callsign} · {selectedStation.role}</p>
-                  <p className="mt-1 text-xs text-slate-700 dark:text-slate-300">{selectedStation.focus}</p>
-                </div>
-              )}
-
-              <div className="bridge-cel-panel bridge-cel-outline pointer-events-auto rounded-2xl p-4">
-                <p className="text-[10px] uppercase tracking-[0.14em] text-cyan-700/80 dark:text-cyan-200/90">Systems Snapshot</p>
-                <div className="mt-2 space-y-2">
-                  {systems.slice(0, 3).map((system) => (
-                    <div key={system.label} className="rounded-lg border border-slate-900/15 dark:border-slate-200/20 bg-white/60 dark:bg-slate-900/45 px-3 py-2">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-xs font-medium text-slate-900 dark:text-slate-100">{system.label}</span>
-                        <span className={`text-[10px] uppercase ${systemStyles[system.state]}`}>{system.state}</span>
-                      </div>
-                      <p className="mt-1 text-xs text-slate-700 dark:text-slate-300">{system.detail}</p>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </section>
-
-          <section className={`${mobileSection === "comms" ? "block" : "hidden"} xl:block`}>
-            <div className="bridge-cel-panel bridge-cel-outline bridge-console-frame pointer-events-auto rounded-2xl p-4">
+          <section className={`${mobileSection === "comms" ? "block" : "hidden"} xl:ml-4 xl:block`}>
+            <div className={`${panelFrameClass} bridge-console-frame p-4`}>
               <div className="mb-3 flex items-center justify-between gap-2">
                 <div>
-                  <p className="text-[11px] uppercase tracking-[0.2em] text-cyan-700/80 dark:text-cyan-200/80">Bridge Comms</p>
+                  <p className="text-[11px] uppercase tracking-[0.2em] text-cyan-700/80 dark:text-cyan-200/80">Comms Channel</p>
                   <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">
-                    {selectedStation ? selectedStation.callsign : "No station selected"}
+                    {selectedStation ? selectedStation.callsign : "No station lock"}
                   </h2>
                 </div>
                 {isThreadLoading && <Loader2 className="h-4 w-4 animate-spin text-cyan-700 dark:text-cyan-200" />}
@@ -946,13 +894,13 @@ export default function BridgePage() {
               <div className="mb-3 h-[310px] space-y-2 overflow-y-auto rounded-xl border border-slate-900/15 dark:border-slate-200/20 bg-white/75 dark:bg-slate-950/70 p-3 sm:h-[360px] xl:h-[460px]">
                 {!selectedStation && (
                   <div className="rounded-lg border border-dashed border-slate-300/30 px-3 py-4 text-sm text-slate-700 dark:text-slate-300">
-                    Select a station to open bridge comms.
+                    Select a station to open comms.
                   </div>
                 )}
 
                 {selectedStation && threadMessages.length === 0 && !isThreadLoading && (
                   <div className="rounded-lg border border-dashed border-cyan-300/30 bg-cyan-500/10 px-3 py-4 text-sm text-cyan-700 dark:text-cyan-100">
-                    No transcript yet. Send the first directive to {selectedStation.callsign}.
+                    Channel idle. Send first directive to {selectedStation.callsign}.
                   </div>
                 )}
 
@@ -975,7 +923,7 @@ export default function BridgePage() {
                         <span>
                           {isUser
                             ? `${operatorLabel}`
-                            : message.bridgePrimaryAgent || selectedStation?.callsign || "Bridge AI"}
+                            : message.bridgePrimaryAgent || selectedStation?.callsign || "Deck AI"}
                         </span>
                         <span>{new Date(message.timestamp).toLocaleTimeString()}</span>
                       </div>
@@ -988,7 +936,7 @@ export default function BridgePage() {
                               key={`${message.id}-${cameo}`}
                               className="rounded-full border border-amber-300/30 bg-amber-500/10 px-2 py-0.5 text-[10px] uppercase tracking-[0.1em] text-amber-700 dark:text-amber-100"
                             >
-                              cameo {cameo}
+                              relay {cameo}
                             </span>
                           ))}
                         </div>
@@ -1002,20 +950,20 @@ export default function BridgePage() {
                 <textarea
                   value={composer}
                   onChange={(event) => setComposer(event.target.value)}
-                  placeholder={selectedStation ? `Issue directive to ${selectedStation.callsign}...` : "Select a station first"}
+                  placeholder={selectedStation ? `Send directive to ${selectedStation.callsign}...` : "Select a station first"}
                   disabled={!selectedStation || isSending}
                   rows={4}
                   className="w-full resize-none rounded-xl border border-slate-900/15 dark:border-slate-200/20 bg-white/75 dark:bg-slate-950/65 px-3 py-2.5 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:border-cyan-300/45 focus:outline-none"
                 />
                 <div className="flex items-center justify-between">
-                  <span className="text-xs text-slate-700 dark:text-slate-300">Roundtable mode: primary + cameo replies</span>
+                  <span className="text-xs text-slate-700 dark:text-slate-300">Response mode: lead + support relays</span>
                   <button
                     type="submit"
                     disabled={!selectedStation || !composer.trim() || isSending}
                     className="inline-flex items-center gap-2 rounded-lg border border-cyan-300/35 bg-cyan-500/15 px-3.5 py-2 text-sm font-medium text-cyan-700 dark:text-cyan-100 transition hover:bg-cyan-500/25 disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     {isSending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-                    Transmit
+                    Dispatch
                   </button>
                 </div>
               </form>
@@ -1024,21 +972,21 @@ export default function BridgePage() {
         </div>
 
         <div className={`${mobileSection === "queue" ? "block" : "hidden"} grid gap-4 xl:grid xl:grid-cols-[1.25fr_1fr] xl:gap-4`}>
-          <section className="bridge-cel-panel bridge-cel-outline pointer-events-auto rounded-2xl p-4">
+          <section className={`${panelFrameClass} p-4`}>
             <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-base font-semibold">Workload Queue</h2>
+              <h2 className="text-base font-semibold">Task Queue</h2>
               <span className="text-xs text-slate-700 dark:text-slate-300">{workItems.length} items</span>
             </div>
 
             <div className="space-y-2.5">
               {workItems.length === 0 && (
                 <div className="rounded-lg border border-dashed border-slate-300/30 px-3 py-4 text-sm text-slate-700 dark:text-slate-300">
-                  No workload items available.
+                  No queued tasks.
                 </div>
               )}
 
               {workItems.slice(0, 8).map((item) => (
-                <div key={item.id} className="rounded-lg border border-slate-900/15 dark:border-slate-200/20 bg-white/70 dark:bg-slate-900/50 px-3 py-2.5">
+                <div key={item.id} className={`${cardShellClass} px-3 py-2.5`}>
                   <div className="flex items-center justify-between gap-2">
                     <p className="truncate text-sm font-medium text-slate-900 dark:text-slate-100">{item.name}</p>
                     <span className={`rounded-full border px-2 py-0.5 text-[10px] uppercase ${workItemStyles[item.status]}`}>
@@ -1047,22 +995,22 @@ export default function BridgePage() {
                   </div>
                   <div className="mt-1.5 flex items-center justify-between text-xs text-slate-700 dark:text-slate-300">
                     <span>ETA {item.eta}</span>
-                    <span className="truncate">Station {item.assignedTo.slice(-8)}</span>
+                    <span className="truncate">Owner {item.assignedTo.slice(-8)}</span>
                   </div>
                 </div>
               ))}
             </div>
           </section>
 
-          <section className="bridge-cel-panel bridge-cel-outline pointer-events-auto rounded-2xl p-4">
+          <section className={`${panelFrameClass} p-4`}>
             <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-base font-semibold">Systems Core</h2>
-              <span className="text-xs text-slate-700 dark:text-slate-300">Fleet status</span>
+              <h2 className="text-base font-semibold">Systems Health</h2>
+              <span className="text-xs text-slate-700 dark:text-slate-300">Network posture</span>
             </div>
 
             <div className="space-y-2.5">
               {systems.map((system) => (
-                <div key={system.label} className="rounded-lg border border-slate-900/15 dark:border-slate-200/20 bg-white/70 dark:bg-slate-900/50 px-3 py-2.5">
+                <div key={system.label} className={`${cardShellClass} px-3 py-2.5`}>
                   <div className="flex items-center justify-between gap-2">
                     <p className="text-sm font-medium text-slate-900 dark:text-slate-100">{system.label}</p>
                     <span className={`text-xs uppercase ${systemStyles[system.state]}`}>{system.state}</span>
@@ -1074,15 +1022,15 @@ export default function BridgePage() {
               <div className="grid grid-cols-3 gap-2">
                 <div className="rounded-lg border border-cyan-300/30 bg-cyan-500/10 px-2.5 py-2 text-center text-xs text-cyan-700 dark:text-cyan-100">
                   <Activity className="mx-auto mb-1 h-3.5 w-3.5" />
-                  Active {missionStats.active}
+                  Live {missionStats.active}
                 </div>
                 <div className="rounded-lg border border-emerald-300/30 bg-emerald-500/10 px-2.5 py-2 text-center text-xs text-emerald-700 dark:text-emerald-100">
                   <CheckCircle2 className="mx-auto mb-1 h-3.5 w-3.5" />
-                  Done {missionStats.completed}
+                  Cleared {missionStats.completed}
                 </div>
                 <div className="rounded-lg border border-rose-300/30 bg-rose-500/10 px-2.5 py-2 text-center text-xs text-rose-700 dark:text-rose-100">
                   <AlertTriangle className="mx-auto mb-1 h-3.5 w-3.5" />
-                  Failed {missionStats.failed}
+                  Blocked {missionStats.failed}
                 </div>
               </div>
             </div>

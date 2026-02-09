@@ -13,7 +13,7 @@ interface SidebarGroupProps {
 
 export function SidebarGroup({ group }: SidebarGroupProps) {
   const pathname = usePathname()
-  const { collapsed, expandedGroups, toggleGroup } = useSidebar()
+  const { displayCollapsed, expandedGroups, toggleGroup } = useSidebar()
   const expanded = expandedGroups.has(group.key)
   const GroupIcon = group.icon
 
@@ -22,7 +22,7 @@ export function SidebarGroup({ group }: SidebarGroupProps) {
   )
 
   // In collapsed mode, show all items as icons (no group toggle)
-  if (collapsed) {
+  if (displayCollapsed) {
     return (
       <div className="space-y-0.5 px-2">
         <div className="flex justify-center py-2">

@@ -52,27 +52,27 @@ export interface BridgeSceneCommsEntry {
 const STATION_ORDER: BridgeStationKey[] = ["xo", "ops", "eng", "sec", "med", "cou"]
 
 const STATION_ANCHORS: Record<BridgeStationKey, BridgeStationAnchor> = {
-  xo: { position: [0, -0.65, -6.2], rotationY: 0 },
-  ops: { position: [-4.9, -0.65, -7.8], rotationY: 0.28 },
-  eng: { position: [4.9, -0.65, -7.8], rotationY: -0.28 },
-  sec: { position: [-8.4, -0.65, -4.9], rotationY: 0.52 },
-  med: { position: [8.4, -0.65, -4.9], rotationY: -0.52 },
-  cou: { position: [0, -0.65, -10.5], rotationY: 0 },
+  xo: { position: [0, -0.58, -6.9], rotationY: 0 },
+  ops: { position: [-5.6, -0.55, -8.9], rotationY: 0.32 },
+  eng: { position: [5.6, -0.55, -8.9], rotationY: -0.32 },
+  sec: { position: [-9.6, -0.55, -5.5], rotationY: 0.56 },
+  med: { position: [9.6, -0.55, -5.5], rotationY: -0.56 },
+  cou: { position: [0, -0.58, -11.6], rotationY: 0 },
 }
 
 const CAMERA_SHOTS: Record<BridgeStationKey, BridgeCameraShot> = {
-  xo: { position: [0, 3.5, 12.4], lookAt: [0, 0.2, -6.2], fov: 44 },
-  ops: { position: [-7.6, 3.2, 10.6], lookAt: [-4.9, -0.1, -7.8], fov: 45 },
-  eng: { position: [7.6, 3.2, 10.6], lookAt: [4.9, -0.1, -7.8], fov: 45 },
-  sec: { position: [-10.1, 3.4, 8.1], lookAt: [-8.4, -0.1, -4.9], fov: 46 },
-  med: { position: [10.1, 3.4, 8.1], lookAt: [8.4, -0.1, -4.9], fov: 46 },
-  cou: { position: [0, 4.0, 8.9], lookAt: [0, 0.0, -10.5], fov: 43 },
+  xo: { position: [0, 3.9, 13.6], lookAt: [0, 0.4, -6.9], fov: 43 },
+  ops: { position: [-8.8, 3.6, 11.4], lookAt: [-5.6, 0.0, -8.9], fov: 44 },
+  eng: { position: [8.8, 3.6, 11.4], lookAt: [5.6, 0.0, -8.9], fov: 44 },
+  sec: { position: [-11.8, 3.8, 8.8], lookAt: [-9.6, 0.0, -5.5], fov: 45 },
+  med: { position: [11.8, 3.8, 8.8], lookAt: [9.6, 0.0, -5.5], fov: 45 },
+  cou: { position: [0, 4.35, 9.2], lookAt: [0, 0.1, -11.6], fov: 42 },
 }
 
 export const BRIDGE_WIDE_SHOT: BridgeCameraShot = {
-  position: [0, 4.8, 20.5],
-  lookAt: [0, 1.9, -30],
-  fov: 47,
+  position: [0, 5.2, 22.6],
+  lookAt: [0, 1.8, -32.5],
+  fov: 46,
 }
 
 function clampNumber(value: number, min: number, max: number) {

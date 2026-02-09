@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import type { Edge, Node, NodeMouseHandler, NodeTypes } from "reactflow"
 import { MarkerType } from "reactflow"
 import { Activity, AlertTriangle, ArrowRightLeft, Focus } from "lucide-react"
@@ -21,6 +21,9 @@ interface Subagent {
 interface ContextOrchestrationBoardProps {
   subagents: Subagent[]
   className?: string
+  selectedAgentId?: string | null
+  onSelectedAgentIdChange?: (nextId: string | null) => void
+  hideAgentSelector?: boolean
 }
 
 interface NodeDetailEntry {
@@ -105,15 +108,33 @@ function toAgentMeta(analysis: SubagentContextAnalysis): string {
   return `${analysis.sections.length} layers · ${analysis.wordCount} words`
 }
 
-export function ContextOrchestrationBoard({ subagents, className = "" }: ContextOrchestrationBoardProps) {
+export function ContextOrchestrationBoard({
+  subagents,
+  className = "",
+  selectedAgentId: selectedAgentIdProp,
+  onSelectedAgentIdChange,
+  hideAgentSelector = false,
+}: ContextOrchestrationBoardProps) {
   const analyses = useMemo(() => analyzeSubagentContexts(subagents), [subagents])
   const analysisById = useMemo(
     () => new Map(analyses.map((analysis) => [analysis.subagentId, analysis])),
     [analyses]
   )
 
-  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(subagents[0]?.id || null)
-  const [focusedNodeId, setFocusedNodeId] = useState<string | null>(subagents[0] ? `agent-${subagents[0].id}` : null)
+  const isSelectionControlled = selectedAgentIdProp !== undefined
+  const [internalSelectedAgentId, setInternalSelectedAgentId] = useState<string | null>(subagents[0]?.id || null)
+  const selectedAgentId = isSelectionControlled ? selectedAgentIdProp : internalSelectedAgentId
+  const [focusedNodeId, setFocusedNodeId] = useState<string | null>(selectedAgentId ? `agent-${selectedAgentId}` : null)
+
+  const setSelectedAgentId = useCallback(
+    (nextId: string | null) => {
+      if (!isSelectionControlled) {
+        setInternalSelectedAgentId(nextId)
+      }
+      onSelectedAgentIdChange?.(nextId)
+    },
+    [isSelectionControlled, onSelectedAgentIdChange],
+  )
 
   useEffect(() => {
     if (subagents.length === 0) {
@@ -122,13 +143,12 @@ export function ContextOrchestrationBoard({ subagents, className = "" }: Context
       return
     }
 
-    setSelectedAgentId((current) => {
-      if (current && subagents.some((subagent) => subagent.id === current)) {
-        return current
-      }
-      return subagents[0].id
-    })
-  }, [subagents])
+    if (selectedAgentId && subagents.some((subagent) => subagent.id === selectedAgentId)) {
+      return
+    }
+
+    setSelectedAgentId(subagents[0].id)
+  }, [selectedAgentId, setSelectedAgentId, subagents])
 
   const graph = useMemo(() => {
     const nodes: Node<ContextFlowNodeData>[] = []
@@ -447,27 +467,29 @@ export function ContextOrchestrationBoard({ subagents, className = "" }: Context
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
-          <label htmlFor="context-focus" className="text-xs font-medium uppercase tracking-[0.16em] text-slate-500">
-            Focus Agent
-          </label>
-          <select
-            id="context-focus"
-            value={selectedAgentId || ""}
-            onChange={(event) => {
-              const nextId = event.target.value || null
-              setSelectedAgentId(nextId)
-              setFocusedNodeId(nextId ? `agent-${nextId}` : null)
-            }}
-            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
-          >
-            {subagents.map((subagent) => (
-              <option key={subagent.id} value={subagent.id}>
-                {subagent.name}
-              </option>
-            ))}
-          </select>
-        </div>
+        {!hideAgentSelector && (
+          <div className="flex items-center gap-2">
+            <label htmlFor="context-focus" className="text-xs font-medium uppercase tracking-[0.16em] text-slate-500">
+              Focus Agent
+            </label>
+            <select
+              id="context-focus"
+              value={selectedAgentId || ""}
+              onChange={(event) => {
+                const nextId = event.target.value || null
+                setSelectedAgentId(nextId)
+                setFocusedNodeId(nextId ? `agent-${nextId}` : null)
+              }}
+              className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
+            >
+              {subagents.map((subagent) => (
+                <option key={subagent.id} value={subagent.id}>
+                  {subagent.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
       </div>
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_350px]">

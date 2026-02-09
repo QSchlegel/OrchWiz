@@ -287,6 +287,7 @@ model CommandExecution {
   id          String   @id @default(cuid())
   commandId   String
   sessionId   String?
+  subagentId  String?
   userId      String
   status      ExecutionStatus @default(running)
   output      String?
@@ -297,10 +298,12 @@ model CommandExecution {
 
   command Command @relation(fields: [commandId], references: [id], onDelete: Cascade)
   session Session? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  subagent Subagent? @relation(fields: [subagentId], references: [id], onDelete: SetNull)
   user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([commandId])
   @@index([sessionId])
+  @@index([subagentId])
   @@index([userId])
 }
 
@@ -316,12 +319,15 @@ model Subagent {
   description String?
   content     String
   path        String?
+  settings    Json?
   isShared    Boolean  @default(false)
   teamId      String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
   deployments AgentDeployment[]
+  permissions Permission[]
+  commandExecutions CommandExecution[]
 
   @@unique([name, teamId])
   @@index([teamId])
@@ -388,13 +394,17 @@ model Permission {
   type         PermissionType
   status       PermissionStatus
   scope        PermissionScope
+  subagentId   String?
   sourceFile   String?
   isShared     Boolean         @default(false)
   createdAt    DateTime        @default(now())
   updatedAt    DateTime        @updatedAt
 
+  subagent     Subagent?       @relation(fields: [subagentId], references: [id], onDelete: SetNull)
+
   @@index([commandPattern])
   @@index([scope])
+  @@index([subagentId])
 }
 
 enum PermissionType {
@@ -412,6 +422,7 @@ enum PermissionScope {
   global
   workspace
   user
+  subagent
 }
 
 model AgentAction {

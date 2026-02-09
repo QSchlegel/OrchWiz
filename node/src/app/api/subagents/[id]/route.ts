@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { auth } from "@/lib/auth"
 import { prisma } from "@/lib/prisma"
 import { headers } from "next/headers"
+import { mergeSubagentSettings, normalizeSubagentSettings } from "@/lib/subagents/settings"
 
 export const dynamic = 'force-dynamic'
 
@@ -24,7 +25,10 @@ export async function GET(
       return NextResponse.json({ error: "Subagent not found" }, { status: 404 })
     }
 
-    return NextResponse.json(subagent)
+    return NextResponse.json({
+      ...subagent,
+      settings: normalizeSubagentSettings(subagent.settings),
+    })
   } catch (error) {
     console.error("Error fetching subagent:", error)
     return NextResponse.json(
@@ -46,13 +50,27 @@ export async function PUT(
 
     const { id } = await params
     const body = await request.json()
-    const { name, description, content, path, isShared, teamId } = body
+    const { name, description, content, path, settings, isShared, teamId } = body
+
+    const existing = await prisma.subagent.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        settings: true,
+      },
+    })
+    if (!existing) {
+      return NextResponse.json({ error: "Subagent not found" }, { status: 404 })
+    }
 
     const updateData: any = {}
     if (name !== undefined) updateData.name = name
     if (description !== undefined) updateData.description = description
     if (content !== undefined) updateData.content = content
     if (path !== undefined) updateData.path = path
+    if (settings !== undefined) {
+      updateData.settings = mergeSubagentSettings(existing.settings, settings)
+    }
     if (isShared !== undefined) updateData.isShared = isShared
     if (teamId !== undefined) updateData.teamId = teamId
 
@@ -61,7 +79,10 @@ export async function PUT(
       data: updateData,
     })
 
-    return NextResponse.json(subagent)
+    return NextResponse.json({
+      ...subagent,
+      settings: normalizeSubagentSettings(subagent.settings),
+    })
   } catch (error) {
     console.error("Error updating subagent:", error)
     return NextResponse.json(

@@ -8,7 +8,9 @@ const STORAGE_KEY = "orchwiz:sidebar-collapsed"
 
 export interface SidebarContextValue {
   collapsed: boolean
+  displayCollapsed: boolean
   toggleCollapsed: () => void
+  setHoverExpanded: (v: boolean) => void
   mobileOpen: boolean
   setMobileOpen: (v: boolean) => void
   expandedGroups: Set<string>
@@ -26,6 +28,7 @@ function findActiveGroupKey(pathname: string | null): string | undefined {
 export function SidebarProvider({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
   const [collapsed, setCollapsed] = useState(false)
+  const [hoverExpanded, setHoverExpanded] = useState(false)
   const [mobileOpen, setMobileOpen] = useState(false)
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => {
     const activeKey = findActiveGroupKey(pathname)
@@ -46,6 +49,13 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
       delete document.documentElement.dataset.sidebar
     }
   }, [collapsed])
+
+  // Hover expansion only applies while user preference is collapsed.
+  useEffect(() => {
+    if (!collapsed && hoverExpanded) {
+      setHoverExpanded(false)
+    }
+  }, [collapsed, hoverExpanded])
 
   // Close mobile sidebar on route change
   useEffect(() => {
@@ -74,16 +84,20 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
     })
   }, [])
 
+  const displayCollapsed = collapsed && !hoverExpanded
+
   const value = useMemo<SidebarContextValue>(
     () => ({
       collapsed,
+      displayCollapsed,
       toggleCollapsed,
+      setHoverExpanded,
       mobileOpen,
       setMobileOpen,
       expandedGroups,
       toggleGroup,
     }),
-    [collapsed, toggleCollapsed, mobileOpen, expandedGroups, toggleGroup]
+    [collapsed, displayCollapsed, toggleCollapsed, mobileOpen, expandedGroups, toggleGroup]
   )
 
   return (

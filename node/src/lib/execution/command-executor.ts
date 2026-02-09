@@ -16,6 +16,10 @@ export interface CommandExecutionResult {
   metadata: Record<string, unknown>
 }
 
+export interface CommandExecutionPolicyContext {
+  subagentId?: string | null
+}
+
 function resolveCommandCwd(pathHint: string | null): string {
   if (!pathHint) {
     return process.cwd()
@@ -39,11 +43,14 @@ function localExecutionEnabled(): boolean {
   return process.env.ENABLE_LOCAL_COMMAND_EXECUTION === "true"
 }
 
-export async function executeCommandWithPolicy(command: Command): Promise<CommandExecutionResult> {
+export async function executeCommandWithPolicy(
+  command: Command,
+  context: CommandExecutionPolicyContext = {},
+): Promise<CommandExecutionResult> {
   const started = Date.now()
 
   const candidates = [command.name, command.path || "", command.scriptContent.split("\n")[0] || ""]
-  const permission = await evaluateCommandPermission(candidates)
+  const permission = await evaluateCommandPermission(candidates, { subagentId: context.subagentId })
 
   if (!localExecutionEnabled()) {
     return {

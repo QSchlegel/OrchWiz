@@ -51,9 +51,13 @@ export async function PUT(
       type,
       status,
       scope,
+      subagentId,
       sourceFile,
       isShared,
     } = body
+
+    const normalizedSubagentId =
+      typeof subagentId === "string" && subagentId.trim().length > 0 ? subagentId.trim() : null
 
     const updateData: any = {}
     if (commandPattern !== undefined) updateData.commandPattern = commandPattern
@@ -62,6 +66,21 @@ export async function PUT(
     if (scope !== undefined) updateData.scope = scope
     if (sourceFile !== undefined) updateData.sourceFile = sourceFile
     if (isShared !== undefined) updateData.isShared = isShared
+
+    if (scope === "subagent" && !normalizedSubagentId) {
+      return NextResponse.json(
+        { error: "subagentId is required when scope is subagent" },
+        { status: 400 },
+      )
+    }
+
+    if (scope === "subagent") {
+      updateData.subagentId = normalizedSubagentId
+    } else if (scope !== undefined) {
+      updateData.subagentId = null
+    } else if (subagentId !== undefined) {
+      updateData.subagentId = normalizedSubagentId
+    }
 
     const permission = await prisma.permission.update({
       where: { id },

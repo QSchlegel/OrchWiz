@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { auth } from "@/lib/auth"
 import { prisma } from "@/lib/prisma"
 import { headers } from "next/headers"
+import { normalizeSubagentSettings } from "@/lib/subagents/settings"
 
 export const dynamic = 'force-dynamic'
 
@@ -34,7 +35,12 @@ export async function GET(request: NextRequest) {
       },
     })
 
-    return NextResponse.json(subagents)
+    return NextResponse.json(
+      subagents.map((subagent) => ({
+        ...subagent,
+        settings: normalizeSubagentSettings(subagent.settings),
+      })),
+    )
   } catch (error) {
     console.error("Error fetching subagents:", error)
     return NextResponse.json(
@@ -52,7 +58,7 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json()
-    const { name, description, content, path, isShared, teamId } = body
+    const { name, description, content, path, settings, isShared, teamId } = body
 
     if (!name || !content) {
       return NextResponse.json(
@@ -67,6 +73,7 @@ export async function POST(request: NextRequest) {
         description,
         content,
         path,
+        settings: normalizeSubagentSettings(settings),
         isShared: isShared || false,
         teamId: teamId || null,
       },

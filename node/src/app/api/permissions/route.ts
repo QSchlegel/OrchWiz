@@ -16,6 +16,7 @@ export async function GET(request: NextRequest) {
     const status = searchParams.get("status")
     const scope = searchParams.get("scope")
     const type = searchParams.get("type")
+    const subagentId = searchParams.get("subagentId")
 
     const where: any = {}
     if (status) {
@@ -26,6 +27,9 @@ export async function GET(request: NextRequest) {
     }
     if (type) {
       where.type = type
+    }
+    if (subagentId) {
+      where.subagentId = subagentId
     }
 
     const permissions = await prisma.permission.findMany({
@@ -58,6 +62,7 @@ export async function POST(request: NextRequest) {
       type,
       status,
       scope,
+      subagentId,
       sourceFile,
       isShared,
     } = body
@@ -71,6 +76,12 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       )
     }
+    if (scope === "subagent" && (!subagentId || typeof subagentId !== "string" || !subagentId.trim())) {
+      return NextResponse.json(
+        { error: "subagentId is required when scope is subagent" },
+        { status: 400 },
+      )
+    }
 
     const permission = await prisma.permission.create({
       data: {
@@ -78,6 +89,7 @@ export async function POST(request: NextRequest) {
         type,
         status,
         scope,
+        subagentId: scope === "subagent" ? subagentId.trim() : null,
         sourceFile: sourceFile || null,
         isShared: isShared || false,
       },

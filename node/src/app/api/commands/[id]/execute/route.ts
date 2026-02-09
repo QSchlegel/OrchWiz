@@ -19,7 +19,8 @@ export async function POST(
 
     const { id } = await params
     const body = await request.json()
-    const { sessionId } = body
+    const sessionId = typeof body?.sessionId === "string" && body.sessionId.trim() ? body.sessionId.trim() : null
+    const subagentId = typeof body?.subagentId === "string" && body.subagentId.trim() ? body.subagentId.trim() : null
 
     const command = await prisma.command.findUnique({
       where: { id },
@@ -33,14 +34,15 @@ export async function POST(
     const execution = await prisma.commandExecution.create({
       data: {
         commandId: id,
-        sessionId: sessionId || null,
+        sessionId,
+        subagentId,
         userId: session.user.id,
         status: "running",
         startedAt,
       },
     })
 
-    const result = await executeCommandWithPolicy(command)
+    const result = await executeCommandWithPolicy(command, { subagentId })
     const completedAt = new Date()
     const duration = Math.max(result.durationMs, completedAt.getTime() - startedAt.getTime())
 
@@ -64,7 +66,8 @@ export async function POST(
       payload: {
         executionId: updatedExecution.id,
         commandId: id,
-        sessionId: sessionId || null,
+        sessionId,
+        subagentId,
         status: updatedExecution.status,
       },
     })

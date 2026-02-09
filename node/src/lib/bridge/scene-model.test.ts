@@ -1,6 +1,7 @@
 import test from "node:test"
 import assert from "node:assert/strict"
 import {
+  BRIDGE_WIDE_SHOT,
   formatBridgeTelemetry,
   getBridgeCameraShot,
   getBridgeStationAnchors,
@@ -16,7 +17,12 @@ test("getBridgeCameraShot returns deterministic station shot", () => {
   const first = getBridgeCameraShot("eng")
   const second = getBridgeCameraShot("eng")
   assert.deepEqual(first, second)
-  assert.deepEqual(first.position, [7.6, 3.2, 10.6])
+  assert.deepEqual(first.position, [8.8, 3.6, 11.4])
+})
+
+test("getBridgeCameraShot falls back to canonical wide shot for null key", () => {
+  const fallback = getBridgeCameraShot(null)
+  assert.deepEqual(fallback, BRIDGE_WIDE_SHOT)
 })
 
 test("interpolateBridgeCameraPose converges and stays finite with unsafe inputs", () => {

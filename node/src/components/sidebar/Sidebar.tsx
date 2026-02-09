@@ -7,7 +7,7 @@ import { useSidebar } from "./useSidebar"
 import { SidebarGroup } from "./SidebarGroup"
 
 export function Sidebar() {
-  const { collapsed, toggleCollapsed, mobileOpen, setMobileOpen } = useSidebar()
+  const { collapsed, displayCollapsed, toggleCollapsed, setHoverExpanded, mobileOpen, setMobileOpen } = useSidebar()
 
   const sidebarContent = (
     <>
@@ -16,11 +16,11 @@ export function Sidebar() {
         <Link
           href="/sessions"
           className={`inline-flex items-center gap-2 rounded-lg px-1 py-1 text-sm font-semibold text-slate-900 hover:bg-slate-100 dark:text-slate-100 dark:hover:bg-white/[0.06] ${
-            collapsed ? "justify-center w-full" : ""
+            displayCollapsed ? "justify-center w-full" : ""
           }`}
         >
           <WandSparkles className="h-4 w-4 shrink-0 text-violet-500 dark:text-violet-300" />
-          {!collapsed && <span>OrchWiz</span>}
+          {!displayCollapsed && <span>OrchWiz</span>}
         </Link>
       </div>
 
@@ -37,7 +37,7 @@ export function Sidebar() {
           type="button"
           onClick={toggleCollapsed}
           className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700 dark:text-slate-500 dark:hover:bg-white/[0.06] dark:hover:text-slate-300 ${
-            collapsed ? "justify-center" : ""
+            displayCollapsed ? "justify-center" : ""
           }`}
         >
           {collapsed ? (
@@ -57,8 +57,14 @@ export function Sidebar() {
     <>
       {/* Desktop sidebar */}
       <aside
-        className={`fixed inset-y-0 left-0 z-40 hidden flex-col border-r border-slate-200/80 bg-white/90 backdrop-blur-sm transition-[width] duration-300 ease-in-out md:flex dark:border-white/10 dark:bg-slate-900/90 ${
-          collapsed ? "w-16" : "w-60"
+        onMouseEnter={() => {
+          if (collapsed) {
+            setHoverExpanded(true)
+          }
+        }}
+        onMouseLeave={() => setHoverExpanded(false)}
+        className={`fixed inset-y-0 left-0 z-40 hidden flex-col border-r border-slate-200/80 bg-white/90 backdrop-blur-sm transition-[width,box-shadow] duration-300 ease-in-out md:flex dark:border-white/10 dark:bg-slate-900/90 ${
+          displayCollapsed ? "w-16" : "w-60 shadow-xl shadow-slate-900/20 dark:shadow-black/40"
         }`}
       >
         {sidebarContent}

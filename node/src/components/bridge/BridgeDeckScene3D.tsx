@@ -33,6 +33,8 @@ interface BridgeDeckScene3DProps {
 
 interface StationVisual {
   ringMaterial: THREE.MeshBasicMaterial
+  haloMaterial: THREE.MeshBasicMaterial
+  beamMaterial: THREE.MeshBasicMaterial
   holoMaterial: THREE.MeshToonMaterial
   labelContext: CanvasRenderingContext2D | null
   labelTexture: THREE.CanvasTexture
@@ -71,20 +73,22 @@ const STATION_ACCENT_COLORS: Record<BridgeStationKey, number> = {
 }
 
 const LIGHT_PALETTE = {
-  background: 0xd7dde8,
-  fog: 0xd0d7e1,
-  ambient: 0xecfeff,
+  background: 0xcfd8e8,
+  fog: 0xbec9dc,
+  ambient: 0xf0f9ff,
   keyLight: 0xffffff,
-  rimLight: 0x7dd3fc,
-  fillLight: 0x38bdf8,
+  rimLight: 0x67e8f9,
+  fillLight: 0x0ea5e9,
   outline: 0x0f172a,
-  floorMain: 0x7788a3,
-  floorInset: 0x4f607a,
-  trim: 0x1e293b,
-  wall: 0x5b6b84,
-  wallDark: 0x384660,
-  console: 0x5d6d87,
-  viewportFrame: 0x1f2d46,
+  floorMain: 0x60738e,
+  floorInset: 0x3f5270,
+  trim: 0x0f172a,
+  wall: 0x536784,
+  wallDark: 0x2d3d57,
+  console: 0x526783,
+  viewportFrame: 0x1a2940,
+  viewportAccent: 0x22d3ee,
+  deckLane: 0x93c5fd,
   starsFar: 0xffffff,
   starsNear: 0xfef3c7,
   nebulaA: 0x60a5fa,
@@ -94,20 +98,22 @@ const LIGHT_PALETTE = {
 }
 
 const DARK_PALETTE = {
-  background: 0x020617,
-  fog: 0x020617,
-  ambient: 0x94a3b8,
-  keyLight: 0xe2e8f0,
-  rimLight: 0x22d3ee,
-  fillLight: 0x0ea5e9,
+  background: 0x02060f,
+  fog: 0x01040c,
+  ambient: 0x8aa0bc,
+  keyLight: 0xcbd5e1,
+  rimLight: 0x67e8f9,
+  fillLight: 0x0284c7,
   outline: 0x020617,
-  floorMain: 0x334155,
-  floorInset: 0x1e293b,
+  floorMain: 0x2a3c57,
+  floorInset: 0x19293e,
   trim: 0x0f172a,
-  wall: 0x1e293b,
-  wallDark: 0x0f172a,
-  console: 0x1f2d46,
+  wall: 0x1b2a40,
+  wallDark: 0x0b1422,
+  console: 0x1a2b43,
   viewportFrame: 0x020617,
+  viewportAccent: 0x22d3ee,
+  deckLane: 0x38bdf8,
   starsFar: 0xe2e8f0,
   starsNear: 0xfef08a,
   nebulaA: 0x818cf8,
@@ -125,12 +131,14 @@ function normalizeStationKey(value: BridgeStationKey | null | undefined): Bridge
 
 function createToonGradientTexture() {
   const data = new Uint8Array([
-    16, 20, 28, 255,
-    64, 78, 102, 255,
-    135, 160, 194, 255,
-    220, 236, 255, 255,
+    10, 14, 22, 255,
+    32, 46, 64, 255,
+    56, 76, 102, 255,
+    96, 122, 154, 255,
+    156, 190, 224, 255,
+    236, 246, 255, 255,
   ])
-  const texture = new THREE.DataTexture(data, 4, 1, THREE.RGBAFormat)
+  const texture = new THREE.DataTexture(data, 6, 1, THREE.RGBAFormat)
   texture.needsUpdate = true
   texture.minFilter = THREE.NearestFilter
   texture.magFilter = THREE.NearestFilter
@@ -180,12 +188,19 @@ function drawScanBackdrop(context: CanvasRenderingContext2D, width: number, heig
   context.clearRect(0, 0, width, height)
 
   const gradient = context.createLinearGradient(0, 0, 0, height)
-  gradient.addColorStop(0, "rgba(2, 6, 23, 0.95)")
-  gradient.addColorStop(1, "rgba(15, 23, 42, 0.92)")
+  gradient.addColorStop(0, "rgba(2, 6, 23, 0.98)")
+  gradient.addColorStop(0.35, "rgba(8, 18, 38, 0.95)")
+  gradient.addColorStop(1, "rgba(4, 12, 28, 0.98)")
   context.fillStyle = gradient
   context.fillRect(0, 0, width, height)
 
-  context.strokeStyle = "rgba(148, 163, 184, 0.14)"
+  const vignette = context.createRadialGradient(width * 0.5, height * 0.5, 24, width * 0.5, height * 0.5, width * 0.64)
+  vignette.addColorStop(0, "rgba(34, 211, 238, 0.08)")
+  vignette.addColorStop(1, "rgba(2, 6, 23, 0)")
+  context.fillStyle = vignette
+  context.fillRect(0, 0, width, height)
+
+  context.strokeStyle = "rgba(148, 163, 184, 0.17)"
   context.lineWidth = 1
   for (let row = 0; row < height; row += 24) {
     context.beginPath()
@@ -194,18 +209,30 @@ function drawScanBackdrop(context: CanvasRenderingContext2D, width: number, heig
     context.stroke()
   }
 
+  context.strokeStyle = "rgba(34, 211, 238, 0.12)"
+  for (let column = 0; column < width; column += 46) {
+    context.beginPath()
+    context.moveTo(column, 0)
+    context.lineTo(column, height)
+    context.stroke()
+  }
+
   const sweepX = ((time * 90) % (width + 220)) - 110
   const sweep = context.createLinearGradient(sweepX - 60, 0, sweepX + 60, 0)
   sweep.addColorStop(0, "rgba(34, 211, 238, 0)")
-  sweep.addColorStop(0.5, "rgba(34, 211, 238, 0.16)")
+  sweep.addColorStop(0.45, "rgba(34, 211, 238, 0.13)")
+  sweep.addColorStop(0.5, "rgba(34, 211, 238, 0.2)")
   sweep.addColorStop(1, "rgba(34, 211, 238, 0)")
   context.fillStyle = sweep
   context.fillRect(0, 0, width, height)
 
   context.strokeStyle = accent
-  context.globalAlpha = 0.4
-  context.lineWidth = 2
+  context.globalAlpha = 0.55
+  context.lineWidth = 2.2
   context.strokeRect(10, 10, width - 20, height - 20)
+  context.globalAlpha = 0.22
+  context.lineWidth = 1
+  context.strokeRect(18, 18, width - 36, height - 36)
   context.globalAlpha = 1
 }
 
@@ -222,14 +249,14 @@ function drawTextBlock(
 ) {
   drawScanBackdrop(context, options.width, options.height, options.accent, options.time)
 
-  context.font = "700 32px 'JetBrains Mono', monospace"
+  context.font = "800 31px 'JetBrains Mono', monospace"
   context.fillStyle = options.accent
-  context.fillText(options.title, 24, 46)
+  context.fillText(options.title, 24, 44)
 
-  context.font = "500 22px 'JetBrains Mono', monospace"
+  context.font = "500 21px 'JetBrains Mono', monospace"
   context.fillStyle = "rgba(226, 232, 240, 0.94)"
   lines.forEach((line, index) => {
-    context.fillText(line, 24, 86 + index * 30)
+    context.fillText(line, 24, 84 + index * 30)
   })
 
   context.fillStyle = "rgba(34, 211, 238, 0.75)"
@@ -368,16 +395,34 @@ function drawPlaceholderLabel(
   height: number,
 ) {
   context.clearRect(0, 0, width, height)
-  context.fillStyle = active ? "rgba(34, 211, 238, 0.95)" : "rgba(148, 163, 184, 0.82)"
+  const bg = context.createLinearGradient(0, 0, width, 0)
+  if (active) {
+    bg.addColorStop(0, "rgba(34, 211, 238, 0.94)")
+    bg.addColorStop(1, "rgba(56, 189, 248, 0.9)")
+  } else {
+    bg.addColorStop(0, "rgba(148, 163, 184, 0.8)")
+    bg.addColorStop(1, "rgba(100, 116, 139, 0.84)")
+  }
+  context.fillStyle = bg
   context.fillRect(0, 0, width, height)
-  context.strokeStyle = active ? "rgba(6, 182, 212, 1)" : "rgba(51, 65, 85, 0.8)"
-  context.lineWidth = 3
+
+  context.strokeStyle = active ? "rgba(8, 145, 178, 0.98)" : "rgba(30, 41, 59, 0.88)"
+  context.lineWidth = 2.5
   context.strokeRect(1.5, 1.5, width - 3, height - 3)
-  context.font = "700 28px 'JetBrains Mono', monospace"
-  context.fillStyle = active ? "rgba(2, 6, 23, 0.96)" : "rgba(15, 23, 42, 0.94)"
+
+  context.fillStyle = active ? "rgba(2, 6, 23, 0.18)" : "rgba(2, 6, 23, 0.2)"
+  context.beginPath()
+  context.moveTo(width - 54, 0)
+  context.lineTo(width, 0)
+  context.lineTo(width, 54)
+  context.closePath()
+  context.fill()
+
+  context.font = "800 28px 'JetBrains Mono', monospace"
+  context.fillStyle = active ? "rgba(2, 6, 23, 0.98)" : "rgba(2, 6, 23, 0.9)"
   context.textAlign = "center"
   context.textBaseline = "middle"
-  context.fillText(callsign, width / 2, height / 2 + 1)
+  context.fillText(callsign, width * 0.49, height / 2 + 1)
 }
 
 function resolveStationFromObject(object: THREE.Object3D | null): BridgeStationKey | null {
@@ -588,69 +633,114 @@ export function BridgeDeckScene3D({
       return mesh
     }
 
-    const ambient = new THREE.AmbientLight(palette.ambient, 0.8)
+    const ambient = new THREE.AmbientLight(palette.ambient, 0.72)
     scene.add(ambient)
 
-    const keyLight = new THREE.DirectionalLight(palette.keyLight, 1.25)
-    keyLight.position.set(12, 15, 10)
+    const keyLight = new THREE.DirectionalLight(palette.keyLight, 1.46)
+    keyLight.position.set(10, 16, 14)
     scene.add(keyLight)
 
-    const rimLight = new THREE.DirectionalLight(palette.rimLight, 0.95)
-    rimLight.position.set(-15, 10, -24)
+    const rimLight = new THREE.DirectionalLight(palette.rimLight, 1.08)
+    rimLight.position.set(-16, 11, -26)
     scene.add(rimLight)
 
-    const fill = new THREE.PointLight(palette.fillLight, 0.7, 90, 2)
-    fill.position.set(0, 5, 3)
+    const fill = new THREE.PointLight(palette.fillLight, 0.82, 92, 2)
+    fill.position.set(0, 5.2, 5.5)
     scene.add(fill)
+
+    const viewportGlow = new THREE.PointLight(palette.viewportAccent, 0.45, 110, 2)
+    viewportGlow.position.set(0, 4.8, -30)
+    scene.add(viewportGlow)
 
     const roomGroup = new THREE.Group()
     scene.add(roomGroup)
 
-    const floorMain = makeOutlinedMesh(
-      trackGeometry(new THREE.CylinderGeometry(24, 28, 2.4, 32)),
+    const deckBase = makeOutlinedMesh(
+      trackGeometry(new THREE.CylinderGeometry(26.8, 29.4, 2.8, 42)),
       makeToonMaterial(palette.floorMain),
       palette.outline,
       1.02,
     )
-    floorMain.position.set(0, -3.4, -8.8)
-    roomGroup.add(floorMain)
+    deckBase.position.set(0, -3.8, -8.8)
+    roomGroup.add(deckBase)
 
-    const floorUpper = makeOutlinedMesh(
-      trackGeometry(new THREE.CylinderGeometry(14, 16.8, 1.2, 28)),
+    const commandDais = makeOutlinedMesh(
+      trackGeometry(new THREE.CylinderGeometry(11.2, 13.6, 1.3, 36)),
       makeToonMaterial(palette.floorInset),
       palette.outline,
       1.02,
     )
-    floorUpper.position.set(0, -1.95, -8.8)
-    roomGroup.add(floorUpper)
+    commandDais.position.set(0, -2.0, -8.8)
+    roomGroup.add(commandDais)
 
-    const floorRing = makeOutlinedMesh(
-      trackGeometry(new THREE.TorusGeometry(15.3, 0.3, 12, 52)),
+    const upperDais = makeOutlinedMesh(
+      trackGeometry(new THREE.CylinderGeometry(7.1, 8.2, 0.72, 30)),
       makeToonMaterial(palette.trim),
       palette.outline,
       1.03,
     )
-    floorRing.rotation.x = Math.PI / 2
-    floorRing.position.set(0, -1.3, -8.8)
-    roomGroup.add(floorRing)
+    upperDais.position.set(0, -1.15, -8.8)
+    roomGroup.add(upperDais)
 
-    const addBeam = (width: number, height: number, depth: number, x: number, y: number, z: number, dark = false) => {
-      const beam = makeOutlinedMesh(
+    const outerRing = makeOutlinedMesh(
+      trackGeometry(new THREE.TorusGeometry(14.3, 0.34, 12, 68)),
+      makeToonMaterial(palette.trim),
+      palette.outline,
+      1.03,
+    )
+    outerRing.rotation.x = Math.PI / 2
+    outerRing.position.set(0, -1.48, -8.8)
+    roomGroup.add(outerRing)
+
+    const innerRing = makeOutlinedMesh(
+      trackGeometry(new THREE.TorusGeometry(8.66, 0.24, 10, 52)),
+      makeToonMaterial(palette.deckLane),
+      palette.outline,
+      1.02,
+    )
+    innerRing.rotation.x = Math.PI / 2
+    innerRing.position.set(0, -1.08, -8.8)
+    roomGroup.add(innerRing)
+
+    for (let laneIndex = 0; laneIndex < 8; laneIndex += 1) {
+      const lane = makeOutlinedMesh(
+        trackGeometry(new THREE.BoxGeometry(0.28, 0.06, 9.4)),
+        makeToonMaterial(palette.deckLane),
+        palette.outline,
+        1.01,
+      )
+      const angle = (laneIndex / 8) * Math.PI * 2
+      lane.position.set(Math.sin(angle) * 7.4, -1.07, -8.8 + Math.cos(angle) * 2.2)
+      lane.rotation.y = angle
+      roomGroup.add(lane)
+    }
+
+    const addHullBlock = (
+      width: number,
+      height: number,
+      depth: number,
+      x: number,
+      y: number,
+      z: number,
+      dark = false,
+      outlineScale = 1.02,
+    ) => {
+      const block = makeOutlinedMesh(
         trackGeometry(new THREE.BoxGeometry(width, height, depth)),
         makeToonMaterial(dark ? palette.wallDark : palette.wall),
         palette.outline,
-        1.02,
+        outlineScale,
       )
-      beam.position.set(x, y, z)
-      roomGroup.add(beam)
+      block.position.set(x, y, z)
+      roomGroup.add(block)
     }
 
-    addBeam(39, 2.2, 1.2, 0, 9.2, -41)
-    addBeam(39, 2.2, 1.2, 0, -0.2, -41, true)
-    addBeam(2.4, 9.2, 1.2, -18.2, 4.45, -41)
-    addBeam(2.4, 9.2, 1.2, 18.2, 4.45, -41)
-    addBeam(2.4, 10.2, 1.4, -22, 2.8, -19)
-    addBeam(2.4, 10.2, 1.4, 22, 2.8, -19)
+    addHullBlock(41, 2.2, 1.4, 0, 9.5, -41.8, true)
+    addHullBlock(41, 2.4, 1.4, 0, -0.7, -41.8, true)
+    addHullBlock(2.8, 10.4, 1.4, -19.2, 4.25, -41.8, false)
+    addHullBlock(2.8, 10.4, 1.4, 19.2, 4.25, -41.8, false)
+    addHullBlock(2.8, 11.0, 1.6, -23.2, 2.6, -20.8, true)
+    addHullBlock(2.8, 11.0, 1.6, 23.2, 2.6, -20.8, true)
 
     for (let index = 0; index < 5; index += 1) {
       const offset = -12 + index * 6
@@ -665,26 +755,78 @@ export function BridgeDeckScene3D({
       roomGroup.add(rib)
     }
 
-    const viewportFrame = makeOutlinedMesh(
-      trackGeometry(new THREE.BoxGeometry(29, 9.2, 1.4)),
+    for (const side of [-1, 1] as const) {
+      const bayShell = makeOutlinedMesh(
+        trackGeometry(new THREE.BoxGeometry(5.8, 5.6, 6.4)),
+        makeToonMaterial(palette.wallDark),
+        palette.outline,
+        1.024,
+      )
+      bayShell.position.set(side * 16.6, 1.2, -13.3)
+      bayShell.rotation.y = side * 0.22
+      roomGroup.add(bayShell)
+
+      const bayTop = makeOutlinedMesh(
+        trackGeometry(new THREE.BoxGeometry(6.2, 0.58, 6.8)),
+        makeToonMaterial(palette.trim),
+        palette.outline,
+        1.024,
+      )
+      bayTop.position.set(side * 16.7, 4.12, -13.5)
+      bayTop.rotation.y = side * 0.22
+      roomGroup.add(bayTop)
+
+      const bayRail = makeOutlinedMesh(
+        trackGeometry(new THREE.BoxGeometry(0.36, 3.8, 6.5)),
+        makeToonMaterial(palette.wall),
+        palette.outline,
+        1.02,
+      )
+      bayRail.position.set(side * 13.5, 1.1, -13.1)
+      bayRail.rotation.y = side * 0.22
+      roomGroup.add(bayRail)
+    }
+
+    const viewportOuter = makeOutlinedMesh(
+      trackGeometry(new THREE.BoxGeometry(31.2, 11.0, 1.9)),
       makeToonMaterial(palette.viewportFrame),
       palette.outline,
       1.025,
     )
-    viewportFrame.position.set(0, 4.4, -39.8)
-    roomGroup.add(viewportFrame)
+    viewportOuter.position.set(0, 4.55, -40.5)
+    roomGroup.add(viewportOuter)
+
+    const viewportMid = makeOutlinedMesh(
+      trackGeometry(new THREE.BoxGeometry(28.8, 8.9, 1.0)),
+      makeToonMaterial(palette.wall),
+      palette.outline,
+      1.02,
+    )
+    viewportMid.position.set(0, 4.48, -39.72)
+    roomGroup.add(viewportMid)
 
     const viewportInner = makeOutlinedMesh(
-      trackGeometry(new THREE.BoxGeometry(26.4, 6.6, 0.3)),
+      trackGeometry(new THREE.BoxGeometry(26.1, 6.35, 0.28)),
       makeToonMaterial(0x0f172a, 0.95),
       palette.outline,
       1.018,
     )
-    viewportInner.position.set(0, 4.4, -39.1)
+    viewportInner.position.set(0, 4.42, -39.06)
     roomGroup.add(viewportInner)
 
+    for (let shutterIndex = 0; shutterIndex < 6; shutterIndex += 1) {
+      const shutter = makeOutlinedMesh(
+        trackGeometry(new THREE.BoxGeometry(0.46, 6.2, 0.25)),
+        makeToonMaterial(palette.trim),
+        palette.outline,
+        1.02,
+      )
+      shutter.position.set(-10.8 + shutterIndex * 4.32, 4.42, -39.0)
+      roomGroup.add(shutter)
+    }
+
     const spaceGroup = new THREE.Group()
-    spaceGroup.position.set(0, 4.6, -45)
+    spaceGroup.position.set(0, 4.62, -45.2)
     scene.add(spaceGroup)
 
     const compact = window.innerWidth < 960 || prefersReducedMotion
@@ -928,8 +1070,8 @@ export function BridgeDeckScene3D({
         transparent: false,
       }),
     )
-    const mainScreenPlane = new THREE.Mesh(trackGeometry(new THREE.PlaneGeometry(24.4, 5.8)), mainScreenMaterial)
-    mainScreenPlane.position.set(0, 4.4, -38.8)
+    const mainScreenPlane = new THREE.Mesh(trackGeometry(new THREE.PlaneGeometry(23.9, 5.75)), mainScreenMaterial)
+    mainScreenPlane.position.set(0, 4.42, -38.76)
     roomGroup.add(mainScreenPlane)
 
     const systemsScreen = createCanvasTexture(768, 352)
@@ -939,9 +1081,9 @@ export function BridgeDeckScene3D({
         transparent: false,
       }),
     )
-    const systemsScreenPlane = new THREE.Mesh(trackGeometry(new THREE.PlaneGeometry(8.1, 3.75)), systemsScreenMaterial)
-    systemsScreenPlane.position.set(-10.4, 4.0, -30.4)
-    systemsScreenPlane.rotation.y = 0.4
+    const systemsScreenPlane = new THREE.Mesh(trackGeometry(new THREE.PlaneGeometry(8.4, 3.9)), systemsScreenMaterial)
+    systemsScreenPlane.position.set(-10.8, 4.05, -29.9)
+    systemsScreenPlane.rotation.y = 0.36
     roomGroup.add(systemsScreenPlane)
 
     const queueScreen = createCanvasTexture(768, 352)
@@ -951,9 +1093,9 @@ export function BridgeDeckScene3D({
         transparent: false,
       }),
     )
-    const queueScreenPlane = new THREE.Mesh(trackGeometry(new THREE.PlaneGeometry(8.1, 3.75)), queueScreenMaterial)
-    queueScreenPlane.position.set(10.4, 4.0, -30.4)
-    queueScreenPlane.rotation.y = -0.4
+    const queueScreenPlane = new THREE.Mesh(trackGeometry(new THREE.PlaneGeometry(8.4, 3.9)), queueScreenMaterial)
+    queueScreenPlane.position.set(10.8, 4.05, -29.9)
+    queueScreenPlane.rotation.y = -0.36
     roomGroup.add(queueScreenPlane)
 
     const tickerScreen = createCanvasTexture(1024, 96)
@@ -963,9 +1105,9 @@ export function BridgeDeckScene3D({
         transparent: false,
       }),
     )
-    const tickerPlane = new THREE.Mesh(trackGeometry(new THREE.PlaneGeometry(15.8, 0.92)), tickerMaterial)
-    tickerPlane.position.set(0, 1.08, -5.2)
-    tickerPlane.rotation.x = -0.12
+    const tickerPlane = new THREE.Mesh(trackGeometry(new THREE.PlaneGeometry(16.4, 0.96)), tickerMaterial)
+    tickerPlane.position.set(0, 1.18, -4.75)
+    tickerPlane.rotation.x = -0.1
     roomGroup.add(tickerPlane)
 
     const interactiveMeshes: THREE.Object3D[] = []
@@ -992,7 +1134,7 @@ export function BridgeDeckScene3D({
       const accent = stationColorByKey[stationKey]
 
       const stationConsole = makeOutlinedMesh(
-        trackGeometry(new THREE.BoxGeometry(3.9, 1.7, 2.7)),
+        trackGeometry(new THREE.BoxGeometry(4.6, 1.45, 3.4)),
         makeToonMaterial(palette.console),
         palette.outline,
         1.03,
@@ -1001,6 +1143,24 @@ export function BridgeDeckScene3D({
       stationConsole.rotation.y = anchor.rotationY
       roomGroup.add(stationConsole)
 
+      const stationConsoleWing = makeOutlinedMesh(
+        trackGeometry(new THREE.BoxGeometry(5.2, 0.28, 4.1)),
+        makeToonMaterial(palette.trim),
+        palette.outline,
+        1.02,
+      )
+      stationConsoleWing.position.set(0, 0.94, 0)
+      stationConsole.add(stationConsoleWing)
+
+      const stationConsoleBack = makeOutlinedMesh(
+        trackGeometry(new THREE.BoxGeometry(3.1, 1.15, 0.44)),
+        makeToonMaterial(palette.wallDark),
+        palette.outline,
+        1.03,
+      )
+      stationConsoleBack.position.set(0, 0.56, -1.7)
+      stationConsole.add(stationConsoleBack)
+
       const screen = createCanvasTexture(448, 192)
       const screenMaterial = trackMaterial(
         new THREE.MeshBasicMaterial({
@@ -1008,19 +1168,19 @@ export function BridgeDeckScene3D({
           transparent: false,
         }),
       )
-      const screenPlane = new THREE.Mesh(trackGeometry(new THREE.PlaneGeometry(2.6, 1.08)), screenMaterial)
-      screenPlane.position.set(0, 0.66, -1.36)
-      screenPlane.rotation.x = -0.32
+      const screenPlane = new THREE.Mesh(trackGeometry(new THREE.PlaneGeometry(3.0, 1.24)), screenMaterial)
+      screenPlane.position.set(0, 0.7, -1.48)
+      screenPlane.rotation.x = -0.28
       stationConsole.add(screenPlane)
 
       const placeholderGroup = new THREE.Group()
-      placeholderGroup.position.set(anchor.position[0], anchor.position[1] + 1.3, anchor.position[2] - 0.2)
+      placeholderGroup.position.set(anchor.position[0], anchor.position[1] + 1.24, anchor.position[2] - 0.18)
       placeholderGroup.rotation.y = anchor.rotationY
       placeholderGroup.userData.stationKey = stationKey
       roomGroup.add(placeholderGroup)
 
       const pedestal = makeOutlinedMesh(
-        trackGeometry(new THREE.CylinderGeometry(0.65, 0.8, 0.45, 14)),
+        trackGeometry(new THREE.CylinderGeometry(0.72, 0.94, 0.54, 16)),
         makeToonMaterial(palette.trim),
         palette.outline,
         1.03,
@@ -1028,16 +1188,45 @@ export function BridgeDeckScene3D({
       pedestal.userData.stationKey = stationKey
       placeholderGroup.add(pedestal)
 
+      const beamMaterial = trackMaterial(
+        new THREE.MeshBasicMaterial({
+          color: accent,
+          transparent: true,
+          opacity: 0.22,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+        }),
+      )
+      const beam = new THREE.Mesh(trackGeometry(new THREE.CylinderGeometry(0.18, 0.34, 1.9, 18, 1, true)), beamMaterial)
+      beam.position.y = 1.08
+      beam.userData.stationKey = stationKey
+      placeholderGroup.add(beam)
+
       const holoMaterial = makeToonMaterial(accent.getHex(), 0.48)
       const holoBody = makeOutlinedMesh(
-        trackGeometry(new THREE.CapsuleGeometry(0.24, 0.86, 6, 12)),
+        trackGeometry(new THREE.CapsuleGeometry(0.28, 1.04, 6, 14)),
         holoMaterial,
         palette.outline,
         1.04,
       )
-      holoBody.position.y = 0.76
+      holoBody.position.y = 0.78
       holoBody.userData.stationKey = stationKey
       placeholderGroup.add(holoBody)
+
+      const haloMaterial = trackMaterial(
+        new THREE.MeshBasicMaterial({
+          color: accent,
+          transparent: true,
+          opacity: 0.26,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+        }),
+      )
+      const halo = new THREE.Mesh(trackGeometry(new THREE.TorusGeometry(0.86, 0.06, 10, 44)), haloMaterial)
+      halo.rotation.x = Math.PI / 2
+      halo.position.y = 0.94
+      halo.userData.stationKey = stationKey
+      placeholderGroup.add(halo)
 
       const ringMaterial = trackMaterial(
         new THREE.MeshBasicMaterial({
@@ -1048,11 +1237,28 @@ export function BridgeDeckScene3D({
           depthWrite: false,
         }),
       )
-      const ring = new THREE.Mesh(trackGeometry(new THREE.TorusGeometry(0.64, 0.08, 10, 40)), ringMaterial)
+      const ring = new THREE.Mesh(trackGeometry(new THREE.TorusGeometry(0.7, 0.09, 12, 42)), ringMaterial)
       ring.rotation.x = Math.PI / 2
-      ring.position.y = 0.1
+      ring.position.y = 0.14
       ring.userData.stationKey = stationKey
       placeholderGroup.add(ring)
+
+      const pulseRing = new THREE.Mesh(
+        trackGeometry(new THREE.TorusGeometry(1.08, 0.05, 10, 48)),
+        trackMaterial(
+          new THREE.MeshBasicMaterial({
+            color: accent,
+            transparent: true,
+            opacity: 0.18,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+          }),
+        ),
+      )
+      pulseRing.rotation.x = Math.PI / 2
+      pulseRing.position.y = 0.1
+      pulseRing.userData.stationKey = stationKey
+      placeholderGroup.add(pulseRing)
 
       const labelCanvas = createCanvasTexture(320, 88)
       const labelMaterial = trackMaterial(
@@ -1064,13 +1270,13 @@ export function BridgeDeckScene3D({
         }),
       )
       const label = new THREE.Sprite(labelMaterial)
-      label.position.set(0, 1.78, 0)
-      label.scale.set(1.78, 0.48, 1)
+      label.position.set(0, 2.06, 0)
+      label.scale.set(1.96, 0.54, 1)
       label.userData.stationKey = stationKey
       placeholderGroup.add(label)
 
       const hitArea = new THREE.Mesh(
-        trackGeometry(new THREE.SphereGeometry(0.85, 14, 14)),
+        trackGeometry(new THREE.SphereGeometry(0.95, 14, 14)),
         trackMaterial(
           new THREE.MeshBasicMaterial({
             transparent: true,
@@ -1080,13 +1286,15 @@ export function BridgeDeckScene3D({
           }),
         ),
       )
-      hitArea.position.set(0, 0.74, 0)
+      hitArea.position.set(0, 0.94, 0)
       hitArea.userData.stationKey = stationKey
       placeholderGroup.add(hitArea)
       interactiveMeshes.push(hitArea)
 
       stationVisuals[stationKey] = {
         ringMaterial,
+        haloMaterial,
+        beamMaterial,
         holoMaterial,
         labelContext: labelCanvas.context,
         labelTexture: labelCanvas.texture,
@@ -1230,17 +1438,31 @@ export function BridgeDeckScene3D({
 
         visual.holoMaterial.color.copy(stationColorByKey[stationKey])
         visual.holoMaterial.opacity = isActive
-          ? 0.72 + Math.sin(elapsed * 4.8) * 0.12
+          ? 0.76 + Math.sin(elapsed * 5.1) * 0.12
           : isHovered
-            ? 0.5
-            : 0.33
+            ? 0.55
+            : 0.31
 
         visual.ringMaterial.color.copy(stationColorByKey[stationKey])
         visual.ringMaterial.opacity = isActive
-          ? 0.86 + Math.sin(elapsed * 5.2) * 0.1
+          ? 0.84 + Math.sin(elapsed * 5.4) * 0.12
           : isHovered
-            ? 0.56
-            : 0.28
+            ? 0.58
+            : 0.26
+
+        visual.haloMaterial.color.copy(stationColorByKey[stationKey])
+        visual.haloMaterial.opacity = isActive
+          ? 0.42 + Math.sin(elapsed * 4.6) * 0.08
+          : isHovered
+            ? 0.32
+            : 0.16
+
+        visual.beamMaterial.color.copy(stationColorByKey[stationKey])
+        visual.beamMaterial.opacity = isActive
+          ? 0.28 + Math.sin(elapsed * 3.8) * 0.06
+          : isHovered
+            ? 0.2
+            : 0.1
       }
 
       const sceneData = sceneDataRef.current
