@@ -54,3 +54,20 @@ This folder contains Terraform + Ansible scaffolding for two deployment profiles
 
 - These templates are additive scaffolding and expect you to provide production-ready secrets and image tags.
 - `Cloud Shipyard` assumes the cluster already exists and is reachable from your kubeconfig context.
+
+## Wallet Enclave Sidecar Pattern
+
+Bridge-agent message signing and private-memory encryption use a local wallet enclave process.
+
+- Deploy the enclave as a sidecar in the same pod as the agent/runtime container.
+- Agent container calls `http://127.0.0.1:3377` only.
+- Mnemonic and wallet provider secrets must be mounted only in enclave container.
+- Optional shared-secret header (`x-wallet-enclave-token`) should be enabled with `WALLET_ENCLAVE_SHARED_SECRET`.
+- No external ingress/service exposure is required for enclave endpoints.
+
+### Sidecar Hardening Checklist
+
+1. Keep enclave service `ClusterIP` internal-only (or sidecar-only with no Service).
+2. Use NetworkPolicy to deny cross-pod access to enclave port.
+3. Mount `CARDANO_MNEMONIC` and `WALLET_ENCLAVE_MASTER_SECRET` in enclave container only.
+4. Do not set mnemonic/env secrets in app deployment container.

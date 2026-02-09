@@ -18,6 +18,13 @@ function asStatus(value: unknown): "active" | "inactive" | null {
   return null
 }
 
+function asBoolean(value: unknown): boolean | null {
+  if (value === true || value === false) {
+    return value
+  }
+  return null
+}
+
 export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
@@ -31,6 +38,9 @@ export async function PUT(
     const { id } = await params
     const body = await request.json()
     const hasDescription = Object.prototype.hasOwnProperty.call(body ?? {}, "description")
+    const hasWalletAddress = Object.prototype.hasOwnProperty.call(body ?? {}, "walletAddress")
+    const hasWalletKeyRef = Object.prototype.hasOwnProperty.call(body ?? {}, "walletKeyRef")
+    const hasWalletEnclaveUrl = Object.prototype.hasOwnProperty.call(body ?? {}, "walletEnclaveUrl")
 
     const existing = await prisma.bridgeCrew.findFirst({
       where: {
@@ -49,11 +59,19 @@ export async function PUT(
     const description = hasDescription ? asString(body?.description) : undefined
     const content = asString(body?.content)
     const status = asStatus(body?.status)
+    const walletEnabled = asBoolean(body?.walletEnabled)
+    const walletAddress = hasWalletAddress ? asString(body?.walletAddress) : undefined
+    const walletKeyRef = hasWalletKeyRef ? asString(body?.walletKeyRef) : undefined
+    const walletEnclaveUrl = hasWalletEnclaveUrl ? asString(body?.walletEnclaveUrl) : undefined
 
     if (name !== null) updateData.name = name
     if (hasDescription) updateData.description = description
     if (content !== null) updateData.content = content
     if (status !== null) updateData.status = status
+    if (walletEnabled !== null) updateData.walletEnabled = walletEnabled
+    if (hasWalletAddress) updateData.walletAddress = walletAddress
+    if (hasWalletKeyRef) updateData.walletKeyRef = walletKeyRef
+    if (hasWalletEnclaveUrl) updateData.walletEnclaveUrl = walletEnclaveUrl
     if (body?.metadata !== undefined) updateData.metadata = body.metadata
 
     const bridgeCrew = await prisma.bridgeCrew.update({

@@ -52,6 +52,15 @@ export interface VaultFileResponse {
   originVaultId?: PhysicalVaultId
 }
 
+export interface VaultSaveResponse {
+  vaultId: VaultId
+  path: string
+  size: number
+  mtime: string
+  encrypted: boolean
+  originVaultId?: PhysicalVaultId
+}
+
 export interface VaultSearchResult {
   vaultId: VaultId
   path: string

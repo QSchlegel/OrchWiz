@@ -20,6 +20,7 @@ Orchwiz uses PostgreSQL with Prisma ORM. The schema is defined in `node/prisma/s
 - Tracks all interactions within a session
 - Types: user_input, ai_response, tool_use, error
 - Timestamped for timeline visualization
+- Bridge-agent `ai_response` metadata may include `signature` (Cardano CIP-8 bundle + payload hash)
 
 ### Command
 - Slash commands that can be executed
@@ -91,6 +92,15 @@ Orchwiz uses PostgreSQL with Prisma ORM. The schema is defined in `node/prisma/s
 - Existing flexible JSON fields remain:
   - `config` (includes `config.infrastructure.kind` = `kind|minikube|existing_k8s` plus Terraform/Ansible settings)
   - `metadata`
+
+### BridgeCrew
+
+- Bridge station role records tied to ship deployments.
+- Wallet binding fields for per-agent identity:
+  - `walletEnabled`
+  - `walletAddress`
+  - `walletKeyRef`
+  - `walletEnclaveUrl`
 
 ## Relationships
 

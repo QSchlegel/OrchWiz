@@ -67,7 +67,7 @@ function VaultTopologyView() {
         <div className="rounded-xl border border-slate-200/70 bg-slate-50/70 p-3 text-xs text-slate-700 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-300">
           <div className="inline-flex items-center gap-2">
             <ShieldCheck className="h-4 w-4 text-emerald-500" />
-            <span>Private Agent Vault is treated as encrypted-managed externally.</span>
+            <span>Private Agent Vault is encrypted through the wallet-enclave boundary.</span>
           </div>
         </div>
 

@@ -29,6 +29,7 @@ interface BridgeStation {
   load: number
   focus: string
   queue: string[]
+  bridgeCrewId?: string
   subagentId?: string
   subagentName?: string
   subagentDescription?: string
@@ -342,6 +343,7 @@ export default function BridgePage() {
                 queue: Array.isArray(station.queue)
                   ? station.queue.filter((entry): entry is string => typeof entry === "string")
                   : [],
+                bridgeCrewId: typeof station.bridgeCrewId === "string" ? station.bridgeCrewId : undefined,
                 subagentId: typeof station.subagentId === "string" ? station.subagentId : undefined,
                 subagentName: typeof station.subagentName === "string" ? station.subagentName : undefined,
                 subagentDescription:
@@ -529,6 +531,7 @@ export default function BridgePage() {
               callsign: station.callsign,
               role: station.role,
               name: station.name,
+              bridgeCrewId: station.bridgeCrewId || station.subagentId,
             },
           },
         }),
@@ -602,6 +605,7 @@ export default function BridgePage() {
                 role: selectedStation.role,
                 name: selectedStation.name,
                 focus: selectedStation.focus,
+                bridgeCrewId: selectedStation.bridgeCrewId || selectedStation.subagentId,
                 cameoCandidates,
                 missionContext: {
                   operator: operatorLabel,

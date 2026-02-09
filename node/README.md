@@ -37,6 +37,8 @@ Copy `node/.env.example`. Key groups:
 - GitHub auth/webhooks: `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_WEBHOOK_SECRET`, `ENABLE_GITHUB_WEBHOOK_COMMENTS`, `GITHUB_TOKEN`
 - Command execution policy: `ENABLE_LOCAL_COMMAND_EXECUTION`, `LOCAL_COMMAND_TIMEOUT_MS`, `COMMAND_EXECUTION_SHELL`, `ENABLE_LOCAL_INFRA_AUTO_INSTALL`, `LOCAL_INFRA_COMMAND_TIMEOUT_MS`
 - Runtime provider: `OPENCLAW_*`, `ENABLE_OPENAI_RUNTIME_FALLBACK`, `OPENAI_API_KEY`, `OPENAI_RUNTIME_FALLBACK_MODEL`
+- Bridge chat compatibility auth: `BRIDGE_ADMIN_TOKEN`
+- Wallet enclave: `WALLET_ENCLAVE_ENABLED`, `WALLET_ENCLAVE_URL`, `WALLET_ENCLAVE_TIMEOUT_MS`, `WALLET_ENCLAVE_REQUIRE_BRIDGE_SIGNATURES`, `WALLET_ENCLAVE_REQUIRE_PRIVATE_MEMORY_ENCRYPTION`, `WALLET_ENCLAVE_SHARED_SECRET`
 - Deployment connector: `DEPLOYMENT_CONNECTOR_URL`, `DEPLOYMENT_CONNECTOR_API_KEY`, `DEPLOYMENT_AGENT_PATH`, `DEPLOYMENT_APPLICATION_PATH`
 - Forwarding ingest/source defaults: `ENABLE_FORWARDING_INGEST`, `FORWARDING_RATE_LIMIT`, `FORWARDING_RATE_WINDOW_MS`, `DEFAULT_FORWARDING_API_KEY`, `DEFAULT_SOURCE_NODE_ID`, `DEFAULT_SOURCE_NODE_NAME`, `FORWARD_TARGET_URL`, `FORWARD_API_KEY`, `FORWARDING_FEATURE_ENABLED`
 - Realtime toggle: `ENABLE_SSE_EVENTS`
@@ -81,6 +83,7 @@ Profile behavior:
 ## Key APIs
 
 - Core: `/api/sessions`, `/api/commands`, `/api/subagents`, `/api/tasks`, `/api/verification`, `/api/actions`
+- Bridge chat compatibility: `/api/threads`, `/api/threads/:threadId/messages`
 - Deployments: `/api/deployments`, `/api/applications`
 - Docs: `/api/docs/claude`, `/api/docs/guidance`
 - GitHub: `/api/github/prs`, `/api/github/webhook`
@@ -91,6 +94,11 @@ Forwarded aggregate list endpoints support:
 
 - `includeForwarded=true`
 - `sourceNodeId=<node-id>`
+
+Bridge chat mobile utility:
+
+- `/bridge-chat` is a mobile-first utility route with station tabs, sticky composer, and quick directives.
+- `GET /api/threads?view=station` lazily ensures canonical station threads are available and linked to bridge sessions.
 
 ## Scripts
 

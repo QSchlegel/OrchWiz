@@ -48,6 +48,8 @@ Forwarded records include metadata fields (for example `isForwarded`, `sourceNod
 - `POST /api/sessions` create a session.
 - `GET /api/sessions/[id]` fetch a session.
 - `POST /api/sessions/[id]/prompt` append prompt + run runtime adapter (OpenClaw-first, fallback provider/local fallback).
+  - Bridge-agent responses include `metadata.signature` when wallet-enclave signing succeeds.
+  - When `WALLET_ENCLAVE_REQUIRE_BRIDGE_SIGNATURES=true`, bridge-agent responses fail closed if no valid signature can be produced.
 - `POST /api/sessions/[id]/mode` update mode.
 
 ### Commands
@@ -166,6 +168,25 @@ Forwarded records include metadata fields (for example `isForwarded`, `sourceNod
 - `GET /api/bridge/state` operational bridge state for dashboard.
   - Optional `includeForwarded=true` to merge forwarded bridge/system events.
 - `GET /api/uss-k8s/topology` USS/K8s topology data for dashboard.
+- `GET /api/bridge-crew?deploymentId=<ship-id>` list bridge crew records.
+- `PUT /api/bridge-crew/[id]` update bridge crew prompt/status + wallet binding fields:
+  - `walletEnabled`
+  - `walletAddress`
+  - `walletKeyRef`
+  - `walletEnclaveUrl`
+
+### Vault
+
+- `GET /api/vaults` list vault summaries.
+- `GET /api/vaults/tree?vault=<id>` fetch tree for vault.
+- `GET /api/vaults/file?vault=<id>&path=<path.md>` fetch note preview/links.
+  - `agent-private` notes are decrypted on read.
+  - Plaintext `agent-private` notes are lazily migrated to encrypted envelopes on direct read.
+- `POST /api/vaults/file` upsert a note.
+  - Request: `{ vault, path, content }`
+  - Response: `{ vaultId, path, size, mtime, encrypted, originVaultId }`
+- `GET /api/vaults/search?vault=<id>&q=<query>` search notes.
+  - `agent-private` encrypted notes are decrypted for indexing/search.
 
 ### Projects
 

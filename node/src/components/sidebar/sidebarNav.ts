@@ -66,6 +66,7 @@ export const sidebarNav: NavGroup[] = [
     icon: Radio,
     items: [
       { href: "/bridge", label: "Bridge", icon: Network },
+      { href: "/bridge-chat", label: "Bridge Chat", icon: Radio },
       { href: "/uss-k8s", label: "USS-K8S", icon: Ship },
       { href: "/vault", label: "Vault", icon: Database },
     ],

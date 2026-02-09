@@ -104,6 +104,37 @@ See the [[../cloudflare-local/README|cloudflare-local README]] for Docker Compos
    ansible-playbook -i infra/ansible/inventory/cloud.ini.example infra/ansible/playbooks/shipyard_cloud.yml
    ```
 
+## Wallet Enclave Sidecar Deployment
+
+Bridge-agent signing and `agent-private` vault encryption rely on a local wallet enclave.
+
+### Required runtime env (app container)
+
+- `WALLET_ENCLAVE_ENABLED=true`
+- `WALLET_ENCLAVE_URL=http://127.0.0.1:3377`
+- `WALLET_ENCLAVE_TIMEOUT_MS=4000`
+- `WALLET_ENCLAVE_REQUIRE_BRIDGE_SIGNATURES=true`
+- `WALLET_ENCLAVE_REQUIRE_PRIVATE_MEMORY_ENCRYPTION=true`
+- `WALLET_ENCLAVE_SHARED_SECRET=<optional-shared-secret>`
+
+### Required enclave env (enclave container)
+
+- `WALLET_ENCLAVE_HOST=0.0.0.0`
+- `WALLET_ENCLAVE_PORT=3377`
+- `WALLET_ENCLAVE_DATA_DIR=/data`
+- `WALLET_ENCLAVE_MASTER_SECRET=<required>`
+- `CARDANO_NETWORK=<preview|preprod|mainnet>`
+- `CARDANO_PROVIDER_TYPE=blockfrost`
+- `CARDANO_PROVIDER_API_KEY=<blockfrost-key>`
+- `CARDANO_MNEMONIC=<required (or per-keyRef CARDANO_MNEMONIC_<KEYREF>)>`
+
+### Security controls
+
+- Keep enclave traffic local to pod (`127.0.0.1` from agent container).
+- Do not expose enclave over public ingress.
+- Keep mnemonic and provider secrets scoped to enclave container only.
+- Add NetworkPolicy deny-by-default on enclave port if a Service is used.
+
 ## Environment Variables
 
 Required environment variables:

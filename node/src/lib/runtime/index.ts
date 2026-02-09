@@ -1,4 +1,47 @@
-import type { RuntimeRequest, RuntimeResult } from "@/lib/types/runtime"
+import type { RuntimeRequest, RuntimeResult, RuntimeSignatureBundle } from "@/lib/types/runtime"
+
+function asRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object") {
+    return {}
+  }
+  return value as Record<string, unknown>
+}
+
+function asSignatureBundle(value: unknown): RuntimeSignatureBundle | undefined {
+  const record = asRecord(value)
+  const keyRef = typeof record.keyRef === "string" ? record.keyRef.trim() : ""
+  const signature = typeof record.signature === "string" ? record.signature.trim() : ""
+  const algorithm = typeof record.algorithm === "string" ? record.algorithm.trim() : ""
+  const payloadHash = typeof record.payloadHash === "string" ? record.payloadHash.trim() : ""
+  const signedAt = typeof record.signedAt === "string" ? record.signedAt.trim() : ""
+  const address = typeof record.address === "string" ? record.address : undefined
+  const key = typeof record.key === "string" ? record.key : undefined
+
+  if (!keyRef || !signature || !algorithm || !payloadHash || !signedAt) {
+    return undefined
+  }
+
+  return {
+    keyRef,
+    signature,
+    algorithm,
+    payloadHash,
+    signedAt,
+    address,
+    key,
+  }
+}
+
+function extractRuntimeSignatureBundle(payload: unknown): RuntimeSignatureBundle | undefined {
+  const root = asRecord(payload)
+  const direct = asSignatureBundle(root.signatureBundle || root.signature)
+  if (direct) {
+    return direct
+  }
+
+  const dataRecord = asRecord(root.data)
+  return asSignatureBundle(dataRecord.signatureBundle || dataRecord.signature)
+}
 
 function openClawConfigured(): boolean {
   return Boolean(process.env.OPENCLAW_GATEWAY_URL)
@@ -53,6 +96,7 @@ async function runOpenClawRuntime(request: RuntimeRequest): Promise<RuntimeResul
       provider: "openclaw",
       output,
       fallbackUsed: false,
+      signatureBundle: extractRuntimeSignatureBundle(payload),
       metadata: {
         gateway,
         path,

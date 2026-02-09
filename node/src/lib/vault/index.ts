@@ -12,14 +12,27 @@ import {
   collectMarkdownFilePaths,
   countMarkdownFiles,
   directoryExists,
+  readMarkdownFile,
   readMarkdownFileWithLimit,
+  writeMarkdownFile,
 } from "./fs"
 import { sanitizeRelativeVaultPath } from "./path"
+import {
+  parsePrivateVaultEncryptedEnvelope,
+  serializePrivateVaultEncryptedEnvelope,
+} from "./private-encryption"
+import {
+  decryptPrivateVaultContent,
+  encryptPrivateVaultContent,
+  privateMemoryEncryptionRequired,
+  PrivateVaultEncryptionError,
+} from "./private-enclave-client"
 import type {
   PhysicalVaultId,
   VaultFileResponse,
   VaultId,
   VaultLinkRef,
+  VaultSaveResponse,
   VaultSearchResponse,
   VaultSummary,
   VaultTreeNode,
@@ -32,6 +45,7 @@ const PREVIEW_MAX_BYTES = Number.isFinite(Number(process.env.VAULT_MAX_PREVIEW_B
 const SEARCH_MAX_BYTES = Number.isFinite(Number(process.env.VAULT_SEARCH_MAX_BYTES))
   ? Number(process.env.VAULT_SEARCH_MAX_BYTES)
   : 128 * 1024
+const PRIVATE_VAULT_ID: PhysicalVaultId = "agent-private"
 
 interface RawVaultLink {
   kind: "wiki" | "markdown"
@@ -55,6 +69,13 @@ interface RequestedNoteTarget {
   requestedPath: string
   physicalVaultId: PhysicalVaultId
   physicalPath: string
+}
+
+interface ResolvedVaultContent {
+  content: string
+  size: number
+  mtime: Date
+  truncated: boolean
 }
 
 export class VaultRequestError extends Error {
@@ -91,6 +112,103 @@ function createExcerpt(content: string, query: string): string {
   const start = Math.max(0, matchIndex - 80)
   const end = Math.min(compact.length, matchIndex + lowerQuery.length + 100)
   return compact.slice(start, end)
+}
+
+function clipContentByByteLimit(content: string, maxBytes: number): { content: string; truncated: boolean } {
+  const encoded = Buffer.from(content, "utf8")
+  if (encoded.length <= maxBytes) {
+    return { content, truncated: false }
+  }
+
+  return {
+    content: encoded.subarray(0, maxBytes).toString("utf8"),
+    truncated: true,
+  }
+}
+
+function isPrivatePhysicalVault(vaultId: PhysicalVaultId): boolean {
+  return vaultId === PRIVATE_VAULT_ID
+}
+
+function throwPrivateEncryptionVaultError(error: unknown): never {
+  if (error instanceof PrivateVaultEncryptionError) {
+    throw new VaultRequestError(error.message, error.status >= 400 ? error.status : 503)
+  }
+  throw new VaultRequestError("Private vault encryption/decryption failed.", 503)
+}
+
+async function readPrivateVaultContent(input: {
+  vaultRootPath: string
+  physicalPath: string
+  maxBytes: number
+  allowMigration: boolean
+}): Promise<ResolvedVaultContent> {
+  const rawFile = await readMarkdownFile(input.vaultRootPath, input.physicalPath)
+  const envelope = parsePrivateVaultEncryptedEnvelope(rawFile.content)
+
+  let plaintext: string
+  let size = rawFile.size
+  let mtime = rawFile.mtime
+
+  if (envelope) {
+    try {
+      plaintext = await decryptPrivateVaultContent({ envelope })
+    } catch (error) {
+      if (!privateMemoryEncryptionRequired()) {
+        plaintext = rawFile.content
+      } else {
+        throwPrivateEncryptionVaultError(error)
+      }
+    }
+  } else {
+    plaintext = rawFile.content
+    if (input.allowMigration) {
+      try {
+        const encrypted = await encryptPrivateVaultContent({
+          relativePath: input.physicalPath,
+          plaintext,
+        })
+        const saved = await writeMarkdownFile(
+          input.vaultRootPath,
+          input.physicalPath,
+          serializePrivateVaultEncryptedEnvelope(encrypted),
+        )
+        size = saved.size
+        mtime = saved.mtime
+      } catch (error) {
+        if (privateMemoryEncryptionRequired()) {
+          throwPrivateEncryptionVaultError(error)
+        }
+      }
+    }
+  }
+
+  const clipped = clipContentByByteLimit(plaintext, input.maxBytes)
+  return {
+    content: clipped.content,
+    size,
+    mtime,
+    truncated: clipped.truncated,
+  }
+}
+
+async function readVaultContent(input: {
+  physicalVaultId: PhysicalVaultId
+  physicalPath: string
+  maxBytes: number
+  allowPrivateMigration: boolean
+}): Promise<ResolvedVaultContent> {
+  const vaultRootPath = resolveVaultAbsolutePath(input.physicalVaultId)
+  if (isPrivatePhysicalVault(input.physicalVaultId)) {
+    return readPrivateVaultContent({
+      vaultRootPath,
+      physicalPath: input.physicalPath,
+      maxBytes: input.maxBytes,
+      allowMigration: input.allowPrivateMigration,
+    })
+  }
+
+  return readMarkdownFileWithLimit(vaultRootPath, input.physicalPath, input.maxBytes)
 }
 
 function isExternalTarget(target: string): boolean {
@@ -427,10 +545,18 @@ export async function getVaultFile(vaultId: VaultId, notePathInput: string): Pro
     throw new VaultRequestError("Vault directory does not exist.", 404)
   }
 
-  let fileData: Awaited<ReturnType<typeof readMarkdownFileWithLimit>>
+  let fileData: ResolvedVaultContent
   try {
-    fileData = await readMarkdownFileWithLimit(vaultRootPath, requested.physicalPath, PREVIEW_MAX_BYTES)
-  } catch {
+    fileData = await readVaultContent({
+      physicalVaultId: requested.physicalVaultId,
+      physicalPath: requested.physicalPath,
+      maxBytes: PREVIEW_MAX_BYTES,
+      allowPrivateMigration: true,
+    })
+  } catch (error) {
+    if (error instanceof VaultRequestError) {
+      throw error
+    }
     throw new VaultRequestError("Vault note not found.", 404)
   }
 
@@ -464,8 +590,6 @@ export async function getVaultFile(vaultId: VaultId, notePathInput: string): Pro
   const requestedLookupPath = normalizeLookupKey(requested.physicalPath)
 
   for (const [sourcePhysicalVaultId, sourcePaths] of catalog.entriesByVault.entries()) {
-    const sourceVaultRootPath = resolveVaultAbsolutePath(sourcePhysicalVaultId)
-
     for (const sourcePhysicalPath of sourcePaths) {
       if (
         sourcePhysicalVaultId === requested.physicalVaultId &&
@@ -476,7 +600,12 @@ export async function getVaultFile(vaultId: VaultId, notePathInput: string): Pro
 
       let sourceContent = ""
       try {
-        const sourceFile = await readMarkdownFileWithLimit(sourceVaultRootPath, sourcePhysicalPath, SEARCH_MAX_BYTES)
+        const sourceFile = await readVaultContent({
+          physicalVaultId: sourcePhysicalVaultId,
+          physicalPath: sourcePhysicalPath,
+          maxBytes: SEARCH_MAX_BYTES,
+          allowPrivateMigration: false,
+        })
         sourceContent = sourceFile.content
       } catch {
         continue
@@ -524,6 +653,47 @@ export async function getVaultFile(vaultId: VaultId, notePathInput: string): Pro
   }
 }
 
+export async function saveVaultFile(
+  vaultId: VaultId,
+  notePathInput: string,
+  contentInput: string,
+): Promise<VaultSaveResponse> {
+  const requested = resolveRequestedNoteTarget(vaultId, notePathInput)
+  const vaultRootPath = resolveVaultAbsolutePath(requested.physicalVaultId)
+
+  let persistContent = contentInput
+  let encrypted = false
+
+  if (isPrivatePhysicalVault(requested.physicalVaultId)) {
+    try {
+      const envelope = await encryptPrivateVaultContent({
+        relativePath: requested.physicalPath,
+        plaintext: contentInput,
+      })
+      persistContent = serializePrivateVaultEncryptedEnvelope(envelope)
+      encrypted = true
+    } catch (error) {
+      if (privateMemoryEncryptionRequired()) {
+        throwPrivateEncryptionVaultError(error)
+      }
+    }
+  }
+
+  try {
+    const saved = await writeMarkdownFile(vaultRootPath, requested.physicalPath, persistContent)
+    return {
+      vaultId,
+      path: requested.requestedPath,
+      size: saved.size,
+      mtime: saved.mtime.toISOString(),
+      encrypted,
+      originVaultId: requested.physicalVaultId,
+    }
+  } catch {
+    throw new VaultRequestError("Unable to save vault note.", 500)
+  }
+}
+
 export async function searchVaultNotes(vaultId: VaultId, queryInput: string): Promise<VaultSearchResponse> {
   const query = queryInput.trim()
   const catalog = await buildCatalogForScope(vaultId)
@@ -548,12 +718,15 @@ export async function searchVaultNotes(vaultId: VaultId, queryInput: string): Pr
   const results: VaultSearchResponse["results"] = []
 
   for (const [physicalVaultId, paths] of catalog.entriesByVault.entries()) {
-    const rootPath = resolveVaultAbsolutePath(physicalVaultId)
-
     for (const physicalPath of paths) {
       let content = ""
       try {
-        const fileData = await readMarkdownFileWithLimit(rootPath, physicalPath, SEARCH_MAX_BYTES)
+        const fileData = await readVaultContent({
+          physicalVaultId,
+          physicalPath,
+          maxBytes: SEARCH_MAX_BYTES,
+          allowPrivateMigration: false,
+        })
         content = fileData.content
       } catch {
         continue

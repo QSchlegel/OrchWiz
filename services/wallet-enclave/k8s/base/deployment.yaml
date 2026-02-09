@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wallet-enclave
+  labels:
+    app: wallet-enclave
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: wallet-enclave
+  template:
+    metadata:
+      labels:
+        app: wallet-enclave
+    spec:
+      containers:
+        - name: wallet-enclave
+          image: ghcr.io/qschlegel/wallet-enclave:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3377
+          env:
+            - name: WALLET_ENCLAVE_HOST
+              value: "0.0.0.0"
+            - name: WALLET_ENCLAVE_PORT
+              value: "3377"
+            - name: WALLET_ENCLAVE_DATA_DIR
+              value: "/data"
+          envFrom:
+            - secretRef:
+                name: wallet-enclave-secrets
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+      volumes:
+        - name: data
+          emptyDir: {}

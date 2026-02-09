@@ -1,4 +1,5 @@
 import { promises as fs } from "node:fs"
+import { dirname } from "node:path"
 import type { PhysicalVaultId, VaultTreeNode } from "./types"
 import { resolvePathWithinRoot, sanitizeRelativeVaultPath } from "./path"
 
@@ -149,5 +150,50 @@ export async function readMarkdownFileWithLimit(
     }
   } finally {
     await fileHandle.close()
+  }
+}
+
+export async function readMarkdownFile(
+  vaultRootPath: string,
+  relativePathInput: string,
+): Promise<{ content: string; size: number; mtime: Date }> {
+  const relativePath = sanitizeRelativeVaultPath(relativePathInput, { requireMarkdown: true })
+  const absolutePath = resolvePathWithinRoot(vaultRootPath, relativePath)
+  const fileStats = await fs.stat(absolutePath)
+
+  if (!fileStats.isFile()) {
+    throw new Error("Not a file.")
+  }
+
+  if (!relativePath.toLowerCase().endsWith(".md")) {
+    throw new Error("Only markdown notes are supported.")
+  }
+
+  const content = await fs.readFile(absolutePath, "utf8")
+  return {
+    content,
+    size: fileStats.size,
+    mtime: fileStats.mtime,
+  }
+}
+
+export async function writeMarkdownFile(
+  vaultRootPath: string,
+  relativePathInput: string,
+  content: string,
+): Promise<{ size: number; mtime: Date }> {
+  const relativePath = sanitizeRelativeVaultPath(relativePathInput, { requireMarkdown: true })
+  const absolutePath = resolvePathWithinRoot(vaultRootPath, relativePath)
+  const parentDirectory = dirname(absolutePath)
+  await fs.mkdir(parentDirectory, { recursive: true })
+
+  const tempPath = `${absolutePath}.tmp-${process.pid}-${Date.now()}`
+  await fs.writeFile(tempPath, content, "utf8")
+  await fs.rename(tempPath, absolutePath)
+
+  const stats = await fs.stat(absolutePath)
+  return {
+    size: stats.size,
+    mtime: stats.mtime,
   }
 }

@@ -40,7 +40,7 @@ const VAULT_DEFINITIONS: VaultDefinition[] = [
     namespace: "agent-private",
     relativePath: "Agent-Vault/private",
     isPrivate: true,
-    encryptedLabel: "Encrypted-managed externally",
+    encryptedLabel: "Encrypted via wallet-enclave",
   },
 ]
 

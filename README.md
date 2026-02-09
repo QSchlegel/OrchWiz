@@ -171,6 +171,7 @@ graph LR
 ### Core Features
 
 - **🔄 Session Management**: Create, view, and manage Agent Ops sessions with plan/auto-accept modes
+- **📱 Bridge Chat Utility**: Mobile-first `/bridge-chat` console with station tabs, sticky composer, and quick directives backed by `/api/threads`
 - **⚡ Slash Commands**: Define and execute custom commands with execution tracking
 - **🤖 Subagents**: Create and manage specialized AI subagents for specific tasks
 - **📝 CLAUDE.md Editor**: Edit and version control project documentation with markdown support
@@ -286,6 +287,7 @@ The runtime harness provides a control surface for observability and governance:
    OPENCLAW_API_KEY=
    ENABLE_OPENAI_RUNTIME_FALLBACK=true
    OPENAI_API_KEY=
+   BRIDGE_ADMIN_TOKEN=
 
    # Command execution safety gate
    ENABLE_LOCAL_COMMAND_EXECUTION=false

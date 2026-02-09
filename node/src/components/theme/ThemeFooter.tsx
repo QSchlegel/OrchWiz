@@ -23,6 +23,7 @@ const options: { mode: ThemeMode; label: string; icon: ElementType }[] = [
 export function ThemeFooter() {
   const { mode, resolvedTheme, setMode } = useTheme()
   const pathname = usePathname()
+  const hiddenForPath = pathname === "/bridge-chat" || pathname?.startsWith("/bridge-chat/")
   const [dockItems, setDockItems] = useState<DockWindowItem[]>([])
   const dockScope = useMemo<DockScope | null>(() => {
     return pathname?.startsWith("/uss-k8s") ? "uss-k8s" : null
@@ -44,6 +45,10 @@ export function ThemeFooter() {
       window.removeEventListener(WINDOW_DOCK_UPDATED_EVENT, syncDockItems as EventListener)
     }
   }, [dockScope])
+
+  if (hiddenForPath) {
+    return null
+  }
 
   return (
     <footer className="theme-footer fixed inset-x-0 bottom-0 z-[60] border-t border-slate-300/70 bg-white/92 backdrop-blur dark:border-white/12 dark:bg-slate-950/86">

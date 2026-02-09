@@ -30,6 +30,7 @@ model User {
   projects              Project[]
   forwardingConfigs     ForwardingConfig[]
   shipTopologies        ShipTopology[]
+  bridgeThreads         BridgeThread[]       @relation("BridgeThreadUser")
 }
 
 model AuthSession {
@@ -124,6 +125,8 @@ model Session {
   hooks             HookExecution[]
   tasks             Task[]
   verificationRuns  VerificationRun[]
+  bridgeThread      BridgeThread?            @relation("BridgeThreadSession")
+  bridgeMirrorJobs  BridgeMirrorJob[]        @relation("BridgeMirrorJobSession")
 }
 
 enum SessionStatus {
@@ -155,6 +158,8 @@ model SessionInteraction {
   timestamp DateTime @default(now())
 
   session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  bridgeMirrorLink BridgeMirrorLink?
+  bridgeMirrorJobs BridgeMirrorJob[] @relation("BridgeMirrorJobInteraction")
 
   @@index([sessionId])
   @@index([timestamp])
@@ -165,6 +170,100 @@ enum InteractionType {
   ai_response
   tool_use
   error
+}
+
+enum BridgeChatRole {
+  user
+  assistant
+  system
+}
+
+enum BridgeMirrorDirection {
+  thread_to_session
+  session_to_thread
+}
+
+enum BridgeMirrorJobStatus {
+  pending
+  processing
+  completed
+  failed
+}
+
+model BridgeThread {
+  id         String         @id @default(uuid())
+  title      String
+  userId     String?
+  stationKey BridgeCrewRole?
+  sessionId  String?        @unique
+  createdAt  DateTime       @default(now())
+  updatedAt  DateTime       @updatedAt
+
+  user       User?          @relation("BridgeThreadUser", fields: [userId], references: [id], onDelete: SetNull)
+  session    Session?       @relation("BridgeThreadSession", fields: [sessionId], references: [id], onDelete: SetNull)
+  messages   BridgeMessage[]
+  mirrorJobs BridgeMirrorJob[]
+
+  @@unique([userId, stationKey])
+  @@index([userId])
+  @@index([stationKey])
+  @@index([updatedAt])
+}
+
+model BridgeMessage {
+  id         String           @id @default(uuid())
+  threadId   String
+  role       BridgeChatRole
+  content    String
+  createdAt  DateTime         @default(now())
+
+  thread      BridgeThread    @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  mirrorLink  BridgeMirrorLink?
+  mirrorJobs  BridgeMirrorJob[]
+
+  @@index([threadId, createdAt])
+  @@index([createdAt])
+}
+
+model BridgeMirrorLink {
+  id            String             @id @default(cuid())
+  messageId     String             @unique
+  interactionId String             @unique
+  createdAt     DateTime           @default(now())
+
+  message       BridgeMessage      @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  interaction   SessionInteraction @relation(fields: [interactionId], references: [id], onDelete: Cascade)
+
+  @@index([createdAt])
+}
+
+model BridgeMirrorJob {
+  id            String               @id @default(cuid())
+  dedupeKey     String               @unique
+  direction     BridgeMirrorDirection
+  status        BridgeMirrorJobStatus @default(pending)
+  attempts      Int                  @default(0)
+  nextAttemptAt DateTime?
+  lastError     String?
+  threadId      String?
+  sessionId     String?
+  messageId     String?
+  interactionId String?
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
+
+  thread        BridgeThread?        @relation(fields: [threadId], references: [id], onDelete: SetNull)
+  session       Session?             @relation("BridgeMirrorJobSession", fields: [sessionId], references: [id], onDelete: SetNull)
+  message       BridgeMessage?       @relation(fields: [messageId], references: [id], onDelete: SetNull)
+  interaction   SessionInteraction?  @relation("BridgeMirrorJobInteraction", fields: [interactionId], references: [id], onDelete: SetNull)
+
+  @@index([status, nextAttemptAt])
+  @@index([direction])
+  @@index([threadId])
+  @@index([sessionId])
+  @@index([messageId])
+  @@index([interactionId])
+  @@index([createdAt])
 }
 
 model Command {
@@ -508,6 +607,10 @@ model BridgeCrew {
   description   String?
   content       String
   status        BridgeCrewStatus @default(active)
+  walletEnabled Boolean         @default(false)
+  walletAddress String?
+  walletKeyRef  String?
+  walletEnclaveUrl String?
   metadata      Json?
   createdAt     DateTime        @default(now())
   updatedAt     DateTime        @updatedAt
@@ -516,6 +619,8 @@ model BridgeCrew {
 
   @@unique([deploymentId, role])
   @@index([deploymentId])
+  @@index([walletEnabled])
+  @@index([walletKeyRef])
 }
 
 enum BridgeCrewRole {
