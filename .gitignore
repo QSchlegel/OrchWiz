@@ -56,3 +56,11 @@ next-env.d.ts
 # Misc
 *.pem
 coverage/
+
+# Terraform / Ansible
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+*.retry

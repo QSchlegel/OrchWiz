@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server"
 import { auth } from "@/lib/auth"
 import { prisma } from "@/lib/prisma"
 import { headers } from "next/headers"
+import { publishRealtimeEvent } from "@/lib/realtime/events"
+import { normalizeDeploymentProfileInput } from "@/lib/deployment/profile"
 
 export const dynamic = 'force-dynamic'
 
@@ -52,16 +54,41 @@ export async function PUT(
 
     const { id } = await params
     const body = await request.json()
+    const updateData = {
+      ...body,
+      updatedAt: new Date(),
+    }
+
+    const shouldNormalizeProfileInput =
+      "deploymentProfile" in body ||
+      "provisioningMode" in body ||
+      "nodeType" in body ||
+      "advancedNodeTypeOverride" in body ||
+      "config" in body
+
+    if (shouldNormalizeProfileInput) {
+      const normalizedProfile = normalizeDeploymentProfileInput({
+        deploymentProfile: body.deploymentProfile,
+        provisioningMode: body.provisioningMode,
+        nodeType: body.nodeType,
+        advancedNodeTypeOverride: body.advancedNodeTypeOverride,
+        config: body.config,
+      })
+
+      updateData.deploymentProfile = normalizedProfile.deploymentProfile
+      updateData.provisioningMode = normalizedProfile.provisioningMode
+      updateData.nodeType = normalizedProfile.nodeType
+      updateData.config = normalizedProfile.config
+    }
+
+    delete updateData.advancedNodeTypeOverride
 
     const deployment = await prisma.agentDeployment.update({
       where: {
         id,
         userId: session.user.id,
       },
-      data: {
-        ...body,
-        updatedAt: new Date(),
-      },
+      data: updateData,
       include: {
         subagent: {
           select: {
@@ -70,6 +97,15 @@ export async function PUT(
             description: true,
           },
         },
+      },
+    })
+
+    publishRealtimeEvent({
+      type: "deployment.updated",
+      payload: {
+        deploymentId: deployment.id,
+        status: deployment.status,
+        nodeId: deployment.nodeId,
       },
     })
 
@@ -99,6 +135,14 @@ export async function DELETE(
       where: {
         id,
         userId: session.user.id,
+      },
+    })
+
+    publishRealtimeEvent({
+      type: "deployment.updated",
+      payload: {
+        deploymentId: id,
+        status: "deleted",
       },
     })
 

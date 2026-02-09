@@ -5,6 +5,35 @@ import { headers } from "next/headers"
 
 export const dynamic = 'force-dynamic'
 
+export async function GET(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const session = await auth.api.getSession({ headers: await headers() })
+    if (!session) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+    }
+
+    const { id } = await params
+    const permission = await prisma.permission.findUnique({
+      where: { id },
+    })
+
+    if (!permission) {
+      return NextResponse.json({ error: "Permission not found" }, { status: 404 })
+    }
+
+    return NextResponse.json(permission)
+  } catch (error) {
+    console.error("Error fetching permission:", error)
+    return NextResponse.json(
+      { error: "Internal server error" },
+      { status: 500 }
+    )
+  }
+}
+
 export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }

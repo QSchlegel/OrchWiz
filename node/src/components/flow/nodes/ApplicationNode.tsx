@@ -7,6 +7,8 @@ export interface ApplicationNodeData {
   status: string
   appType?: string
   nodeType?: string
+  deploymentProfile?: string
+  provisioningMode?: string
 }
 
 const statusColor = (status: string) => {
@@ -44,6 +46,12 @@ export function ApplicationNode({ data, selected }: NodeProps<ApplicationNodeDat
         {data.appType && <span>{data.appType}</span>}
         {data.nodeType && <span>{data.nodeType}</span>}
       </div>
+      {(data.deploymentProfile || data.provisioningMode) && (
+        <div className="mt-1 text-[10px] text-slate-500">
+          {data.deploymentProfile && <span>{data.deploymentProfile}</span>}
+          {data.provisioningMode && <span className="ml-2">{data.provisioningMode}</span>}
+        </div>
+      )}
       <Handle type="target" position={Position.Left} style={{ opacity: 0 }} />
       <Handle type="source" position={Position.Right} style={{ opacity: 0 }} />
     </div>

@@ -2,7 +2,7 @@
 
 ## What is Orchwiz?
 
-Orchwiz (Orchestration Wizard) is a distributed orchestration platform for managing and visualizing AI coding assistant workflows. The platform consists of multiple nodes that can be deployed locally or in the cloud.
+Orchwiz (Orchestration Wizard) is a command deck for Agent Ops: orchestration sessions with passkeys, agent deployment across distributed nodes, and full decision traceability. The platform consists of multiple nodes that can be deployed locally or in the cloud.
 
 ## Core Concept
 
@@ -12,7 +12,7 @@ Orchwiz has at least 1 deployed node. Each node can:
 
 ## Key Features
 
-- **Session Management**: Create, view, and manage AI coding sessions with plan/auto-accept modes
+- **Session Management**: Create, view, and manage Agent Ops sessions with plan/auto-accept modes
 - **Slash Commands**: Define and execute custom commands
 - **Subagents**: Create and manage specialized AI subagents
 - **CLAUDE.md Editor**: Edit and version control project documentation

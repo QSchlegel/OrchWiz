@@ -1,6 +1,5 @@
 "use client"
 
-import { WandSparkles } from "lucide-react"
 import { ReactNode } from "react"
 
 interface OrchestrationSurfaceProps {
@@ -10,24 +9,24 @@ interface OrchestrationSurfaceProps {
   onClick?: () => void
 }
 
-export function OrchestrationSurface({ 
-  children, 
+export function OrchestrationSurface({
+  children,
   level = 2,
   className = "",
   onClick
 }: OrchestrationSurfaceProps) {
   const stackClass = `stack-${level}`
-  
+
   return (
-    <div 
+    <div
       className={`
-        glass dark:glass-dark 
+        glass
         ${stackClass}
-        rounded-2xl 
-        p-6 
-        transition-all 
-        duration-300 
-        hover:scale-[1.02]
+        rounded-2xl
+        p-6
+        transition-all
+        duration-300
+        hover:scale-[1.01]
         ${onClick ? "cursor-pointer" : ""}
         ${className}
       `}
@@ -55,21 +54,21 @@ export function OrchestrationCard({
   onClick
 }: OrchestrationCardProps) {
   return (
-    <OrchestrationSurface 
+    <OrchestrationSurface
       level={level}
       className={onClick ? "cursor-pointer" : ""}
       onClick={onClick}
     >
       <div className="flex items-start gap-4">
         {icon && (
-          <div className="flex-shrink-0 p-3 rounded-xl bg-white/10 dark:bg-white/5">
+          <div className="flex-shrink-0 p-3 rounded-xl bg-slate-900/[0.05] dark:bg-white/[0.05]">
             {icon}
           </div>
         )}
         <div className="flex-1">
-          <h3 className="text-xl font-semibold mb-2">{title}</h3>
+          <h3 className="text-lg font-semibold text-slate-900 dark:text-white mb-1.5">{title}</h3>
           {description && (
-            <p className="text-sm text-gray-600 dark:text-gray-400">
+            <p className="text-sm text-slate-600 dark:text-gray-500 leading-relaxed">
               {description}
             </p>
           )}

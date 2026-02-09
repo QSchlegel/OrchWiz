@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { auth } from "@/lib/auth"
 import { prisma } from "@/lib/prisma"
 import { headers } from "next/headers"
+import { publishRealtimeEvent } from "@/lib/realtime/events"
 
 export const dynamic = 'force-dynamic'
 
@@ -108,6 +109,14 @@ export async function PUT(
       data: updateData,
     })
 
+    publishRealtimeEvent({
+      type: "session.prompted",
+      payload: {
+        sessionId: updatedSession.id,
+        status: updatedSession.status,
+      },
+    })
+
     return NextResponse.json(updatedSession)
   } catch (error) {
     console.error("Error updating session:", error)
@@ -133,6 +142,14 @@ export async function DELETE(
       where: {
         id,
         userId: session.user.id,
+      },
+    })
+
+    publishRealtimeEvent({
+      type: "session.prompted",
+      payload: {
+        sessionId: id,
+        status: "deleted",
       },
     })
 

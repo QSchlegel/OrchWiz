@@ -1,146 +1,95 @@
-# OrchWiz - Orchestration Wizard
+# OrchWiz Node App
 
-A comprehensive Next.js application for orchestrating and visualizing AI coding assistant workflows across distributed nodes.
+This directory contains the main Next.js application (`node/`) for OrchWiz.
 
-## Features
+## Current Status
 
-- **Session Management**: Create, view, and manage AI coding sessions with plan/auto-accept modes
-- **Slash Commands**: Define and execute custom commands
-- **Subagents**: Create and manage specialized AI subagents
-- **CLAUDE.md Editor**: Edit and version control project documentation
-- **GitHub Integration**: Track PRs with @claude tags and manage documentation updates
-- **PostToolUse Hooks**: Automate actions after tool usage
-- **Permissions Management**: Control command execution permissions
-- **Agent Actions Tracking**: Monitor Slack, BigQuery, Sentry, and other integrations
-- **Pluggable Agent Runtime**: Execute sessions via OpenClaw and future runtimes
-- **Observability Harness**: Capture traces, tool calls, and metrics for runtime visibility
-- **Long-Running Tasks**: Track and monitor background tasks
-- **Verification Workflows**: Track browser, bash, and test suite verification runs
+- Runtime path is implemented with OpenClaw-first selection and fallback provider/local fallback.
+- Command execution is implemented behind explicit safety gating + permission matching.
+- Forwarding ingest/config/test routes are implemented with auth/signature/replay/rate-limit checks.
+- Forwarded aggregate reads are implemented across sessions, commands, actions, tasks, verification, deployments, and applications.
+- SSE realtime stream is implemented at `/api/events/stream` and used by dashboard pages.
 
-## Agent Runtime & Observability
-
-OrchWiz supports a pluggable agent runtime layer. OpenClaw is the initial runtime for executing sessions and tool calls, while the harness exposes standard controls for trace correlation, tool-call capture, sampling, redaction, and cost/latency metrics. [Langfuse](https://langfuse.com/docs/tracing/overview) acts as the tracing backend for runtime observability.
-
-## Tech Stack
-
-- **Framework**: Next.js 14+ (App Router)
-- **Database**: PostgreSQL with Prisma ORM
-- **Authentication**: Better Auth with GitHub OAuth
-- **UI**: React with Tailwind CSS
-- **Real-time**: Server-Sent Events ready (implementation pending)
-
-## Getting Started
-
-### Prerequisites
+## Prerequisites
 
 - Node.js 18+
-- PostgreSQL database
-- GitHub OAuth app credentials
+- PostgreSQL
 
-### Installation
+## Setup
 
-1. Clone the repository:
 ```bash
-git clone <repository-url>
-cd orchwiz
-```
-
-2. Install dependencies:
-```bash
-npm install
-```
-
-3. Set up environment variables:
-```bash
+cd node
 cp .env.example .env
-```
-
-Edit `.env` and add your configuration:
-```
-DATABASE_URL="postgresql://user:password@localhost:5432/orchwiz?schema=public"
-GITHUB_CLIENT_ID=your_github_client_id
-GITHUB_CLIENT_SECRET=your_github_client_secret
-BETTER_AUTH_SECRET=your_random_secret
-BETTER_AUTH_URL=http://localhost:3000
-NEXT_PUBLIC_APP_URL=http://localhost:3000
-```
-
-4. Set up the database:
-```bash
-npx prisma generate
-npx prisma db push
-```
-
-5. Run the development server:
-```bash
+npm install
+npm run db:migrate
+npm run db:generate
+npm run db:seed
 npm run dev
 ```
 
-6. Open [http://localhost:3000](http://localhost:3000) in your browser.
+Open [http://localhost:3000](http://localhost:3000).
 
-## Project Structure
+## Environment
 
-```
-orchwiz/
-├── prisma/
-│   └── schema.prisma          # Database schema
-├── src/
-│   ├── app/
-│   │   ├── (auth)/            # Authentication routes
-│   │   ├── (dashboard)/      # Protected dashboard routes
-│   │   │   ├── sessions/      # Session management
-│   │   │   ├── commands/      # Slash commands
-│   │   │   ├── subagents/     # Subagents
-│   │   │   ├── docs/          # CLAUDE.md editor
-│   │   │   ├── hooks/         # PostToolUse hooks
-│   │   │   ├── permissions/   # Permissions management
-│   │   │   ├── actions/       # Agent actions tracking
-│   │   │   ├── tasks/         # Long-running tasks
-│   │   │   └── verification/  # Verification workflows
-│   │   ├── api/               # API routes
-│   │   └── layout.tsx         # Root layout
-│   ├── components/            # React components
-│   ├── lib/                   # Utilities and configurations
-│   └── types/                 # TypeScript types
-└── package.json
-```
+Copy `node/.env.example`. Key groups:
 
-## Roadmap
+- Core auth/db: `DATABASE_URL`, `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`, `NEXT_PUBLIC_APP_URL`
+- GitHub auth/webhooks: `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_WEBHOOK_SECRET`, `ENABLE_GITHUB_WEBHOOK_COMMENTS`, `GITHUB_TOKEN`
+- Command execution policy: `ENABLE_LOCAL_COMMAND_EXECUTION`, `LOCAL_COMMAND_TIMEOUT_MS`, `COMMAND_EXECUTION_SHELL`
+- Runtime provider: `OPENCLAW_*`, `ENABLE_OPENAI_RUNTIME_FALLBACK`, `OPENAI_API_KEY`, `OPENAI_RUNTIME_FALLBACK_MODEL`
+- Deployment connector: `DEPLOYMENT_CONNECTOR_URL`, `DEPLOYMENT_CONNECTOR_API_KEY`, `DEPLOYMENT_AGENT_PATH`, `DEPLOYMENT_APPLICATION_PATH`
+- Forwarding ingest/source defaults: `ENABLE_FORWARDING_INGEST`, `FORWARDING_RATE_LIMIT`, `FORWARDING_RATE_WINDOW_MS`, `DEFAULT_FORWARDING_API_KEY`, `DEFAULT_SOURCE_NODE_ID`, `DEFAULT_SOURCE_NODE_NAME`, `FORWARD_TARGET_URL`, `FORWARD_API_KEY`, `FORWARDING_FEATURE_ENABLED`
+- Realtime toggle: `ENABLE_SSE_EVENTS`
 
-Candidate runtime integrations:
-- **[OpenAI Agents SDK](https://platform.openai.com/docs/guides/agents-sdk)**: Agentic app SDK with tool use and tracing.
-- **[LangGraph](https://docs.langchain.com/oss/python/concepts/products)**: Runtime for stateful agent orchestration.
-- **[AutoGen](https://microsoft.github.io/autogen/0.7.2/user-guide/core-user-guide/framework/agent-and-agent-runtime.html)**: Multi-agent framework with explicit runtime concepts.
-- **[CrewAI](https://docs.crewai.com/en/concepts/agents)**: Multi-agent framework with agent/task abstractions.
-- **[Cursor CLI](https://cursor.com/cli)**: Terminal-first agent workflows via Cursor.
-- **[Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview)**: Terminal-based coding agent runtime from Anthropic.
+Optional magic-link email config used by auth in non-local environments:
 
-## Maintenance Automation
+- `RESEND_API_KEY`
+- `RESEND_FROM_EMAIL`
 
-A scheduled dependency-upkeep agent reviews npm updates in `node/`, refreshes lockfiles, and updates setup/docs if requirements change. Major version updates are flagged for review.
+## Deployment Profiles
 
-## Development
+Create flows for both agent and application deployments support profile-aware fields:
 
-### Database Migrations
+- `deploymentProfile`: `local_starship_build` or `cloud_shipyard`
+- `provisioningMode`: `terraform_ansible`, `terraform_only`, or `ansible_only`
+- `config.infrastructure`:
+  - `kubeContext`
+  - `namespace`
+  - `terraformWorkspace`
+  - `terraformEnvDir`
+  - `ansibleInventory`
+  - `ansiblePlaybook`
 
-```bash
-# Create a new migration
-npm run db:migrate
+Profile behavior:
 
-# Push schema changes without migration
-npm run db:push
+- `local_starship_build` derives node type `local`
+- `cloud_shipyard` derives node type `cloud` (advanced UI override can select `hybrid`)
 
-# Open Prisma Studio
-npm run db:studio
-```
+## Key APIs
 
-### Building for Production
+- Core: `/api/sessions`, `/api/commands`, `/api/subagents`, `/api/tasks`, `/api/verification`, `/api/actions`
+- Deployments: `/api/deployments`, `/api/applications`
+- Docs: `/api/docs/claude`, `/api/docs/guidance`
+- GitHub: `/api/github/prs`, `/api/github/webhook`
+- Forwarding: `/api/forwarding/config`, `/api/forwarding/events`, `/api/forwarding/test`
+- Realtime: `/api/events/stream`
+
+Forwarded aggregate list endpoints support:
+
+- `includeForwarded=true`
+- `sourceNodeId=<node-id>`
+
+## Scripts
 
 ```bash
+npm run dev
+npm run lint
+npm run test
 npm run build
-npm start
+npm run start
+npm run db:migrate
+npm run db:generate
+npm run db:push
+npm run db:studio
+npm run db:seed
 ```
-
-## License
-
-MIT

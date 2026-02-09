@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { SessionCard } from "@/components/shared/SessionCard"
 import { authClient, useSession } from "@/lib/auth-client"
 import Link from "next/link"
@@ -12,6 +12,8 @@ import { SessionNode, TaskNode } from "@/components/flow/nodes"
 import { layoutTimeline } from "@/lib/flow/layout"
 import { buildTaskToSessionEdges, mapSessionsToNodes, mapTasksToNodes } from "@/lib/flow/mappers"
 import type { Node } from "reactflow"
+import { useEventStream } from "@/lib/realtime/useEventStream"
+import { PageLayout, SurfaceCard, FilterBar, EmptyState, InlineNotice } from "@/components/dashboard/PageLayout"
 
 type SessionWithCount = Session & {
   _count: {
@@ -41,33 +43,25 @@ export default function SessionsPage() {
     status?: string
     mode?: string
   }>({})
+  const [includeForwarded, setIncludeForwarded] = useState(false)
+  const [sourceNodeId, setSourceNodeId] = useState("")
   const [passkeyCount, setPasskeyCount] = useState<number | null>(null)
   const [isPasskeyLoading, setIsPasskeyLoading] = useState(false)
   const [isPasskeyActionLoading, setIsPasskeyActionLoading] = useState(false)
   const [passkeyError, setPasskeyError] = useState<string | null>(null)
 
-  useEffect(() => {
-    if (session) {
-      fetchSessions()
-    }
-  }, [session, filter])
-
-  useEffect(() => {
-    if (session) {
-      fetchPasskeys()
-    }
-  }, [session])
-
-  const fetchSessions = async () => {
+  const fetchSessions = useCallback(async () => {
     setIsLoading(true)
     try {
       const params = new URLSearchParams()
       if (filter.status) params.append("status", filter.status)
       if (filter.mode) params.append("mode", filter.mode)
+      if (includeForwarded) params.append("includeForwarded", "true")
+      if (sourceNodeId.trim()) params.append("sourceNodeId", sourceNodeId.trim())
 
       const [sessionResponse, taskResponse] = await Promise.all([
         fetch(`/api/sessions?${params.toString()}`),
-        fetch("/api/tasks"),
+        fetch(`/api/tasks?${params.toString()}`),
       ])
       if (sessionResponse.ok) {
         const data = await sessionResponse.json()
@@ -84,7 +78,27 @@ export default function SessionsPage() {
     } finally {
       setIsLoading(false)
     }
-  }
+  }, [filter, includeForwarded, sourceNodeId])
+
+  useEffect(() => {
+    if (session) {
+      fetchSessions()
+    }
+  }, [session, fetchSessions])
+
+  useEffect(() => {
+    if (session) {
+      fetchPasskeys()
+    }
+  }, [session])
+
+  useEventStream({
+    enabled: Boolean(session),
+    types: ["session.prompted", "task.updated", "forwarding.received"],
+    onEvent: () => {
+      fetchSessions()
+    },
+  })
 
   const handleCreateSession = async () => {
     try {
@@ -133,8 +147,10 @@ export default function SessionsPage() {
     setIsPasskeyActionLoading(true)
     setPasskeyError(null)
     try {
+      const userEmail = session?.user.email?.trim()
+      const passkeyName = userEmail ? `${userEmail} Passkey` : "OrchWiz Passkey"
       const { error } = await authClient.passkey.addPasskey({
-        name: "OrchWiz Passkey",
+        name: passkeyName,
       })
       if (error) {
         setPasskeyError("Passkey registration failed. Please try again.")
@@ -216,10 +232,10 @@ export default function SessionsPage() {
     return (
       <div className="flex min-h-screen items-center justify-center">
         <div className="text-center">
-          <p className="mb-4">Please sign in to view your sessions.</p>
+          <p className="mb-4 text-slate-600 dark:text-slate-400">Please sign in to view your sessions.</p>
           <Link
             href="/login"
-            className="text-blue-600 hover:text-blue-800 underline"
+            className="text-blue-600 hover:text-blue-800 underline dark:text-blue-400 dark:hover:text-blue-300"
           >
             Sign In
           </Link>
@@ -229,65 +245,62 @@ export default function SessionsPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-900 p-8">
-      <div className="max-w-7xl mx-auto">
-        <div className="flex items-center justify-between mb-8">
-          <h1 className="text-3xl font-bold text-gray-900 dark:text-white">
-            Sessions
-          </h1>
-          <button
-            onClick={handleCreateSession}
-            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-          >
-            New Session
-          </button>
-        </div>
-
-        {passkeyError && (
-          <div className="mb-6 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-600 dark:text-red-400">
-            {passkeyError}
-          </div>
-        )}
+    <PageLayout
+      title="Sessions"
+      description="Manage orchestration sessions and tasks."
+      actions={
+        <button
+          onClick={handleCreateSession}
+          className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-black dark:bg-white dark:text-slate-900"
+        >
+          New Session
+        </button>
+      }
+    >
+      <div className="space-y-4">
+        {passkeyError && <InlineNotice variant="error">{passkeyError}</InlineNotice>}
 
         {!isPasskeyLoading && passkeyCount === 0 && (
-          <div className="mb-6 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 rounded-2xl border border-purple-500/20 bg-purple-500/10 p-6">
-            <div className="flex items-start gap-3">
-              <div className="p-2 rounded-lg bg-purple-500/20">
-                <KeyRound className="w-5 h-5 text-purple-400" />
+          <SurfaceCard>
+            <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+              <div className="flex items-start gap-3">
+                <div className="rounded-lg border border-slate-300 bg-slate-100 p-2 dark:border-white/15 dark:bg-white/[0.06]">
+                  <KeyRound className="h-5 w-5 text-slate-700 dark:text-slate-200" />
+                </div>
+                <div>
+                  <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">
+                    Add a passkey for one-tap sign-in
+                  </h3>
+                  <p className="text-sm text-slate-600 dark:text-slate-400">
+                    Secure your account and skip passwords on future logins.
+                  </p>
+                </div>
               </div>
-              <div>
-                <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
-                  Add a passkey for one-tap sign-in
-                </h3>
-                <p className="text-sm text-gray-600 dark:text-gray-400">
-                  Secure your account and skip passwords on future logins.
-                </p>
-              </div>
+              <button
+                onClick={handleAddPasskey}
+                disabled={isPasskeyActionLoading}
+                className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-black disabled:opacity-50 dark:bg-white dark:text-slate-900"
+              >
+                {isPasskeyActionLoading ? "Adding passkey..." : "Add passkey"}
+              </button>
             </div>
-            <button
-              onClick={handleAddPasskey}
-              disabled={isPasskeyActionLoading}
-              className="px-4 py-2 bg-gradient-to-r from-purple-600 to-pink-600 text-white rounded-lg hover:from-purple-700 hover:to-pink-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {isPasskeyActionLoading ? "Adding passkey..." : "Add passkey"}
-            </button>
-          </div>
+          </SurfaceCard>
         )}
 
         {!isPasskeyLoading && passkeyCount && passkeyCount > 0 && (
-          <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-4 py-2 text-sm text-emerald-600 dark:text-emerald-400">
-            <ShieldCheck className="w-4 h-4" />
+          <div className="inline-flex items-center gap-2 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-4 py-2 text-sm text-emerald-700 dark:text-emerald-300">
+            <ShieldCheck className="h-4 w-4" />
             Passkeys enabled
           </div>
         )}
 
-        <div className="mb-6 flex gap-4">
+        <FilterBar>
           <select
             value={filter.status || ""}
             onChange={(e) =>
               setFilter({ ...filter, status: e.target.value || undefined })
             }
-            className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white"
+            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
           >
             <option value="">All Statuses</option>
             <option value="planning">Planning</option>
@@ -302,18 +315,35 @@ export default function SessionsPage() {
             onChange={(e) =>
               setFilter({ ...filter, mode: e.target.value || undefined })
             }
-            className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white"
+            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
           >
             <option value="">All Modes</option>
             <option value="plan">Plan</option>
             <option value="auto_accept">Auto-accept</option>
           </select>
-        </div>
 
-        <OrchestrationSurface level={3} className="mb-8 bg-white/5">
+          <label className="inline-flex items-center gap-2 rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 dark:border-white/15 dark:text-slate-300">
+            <input
+              type="checkbox"
+              checked={includeForwarded}
+              onChange={(e) => setIncludeForwarded(e.target.checked)}
+            />
+            Include forwarded
+          </label>
+
+          <input
+            type="text"
+            value={sourceNodeId}
+            onChange={(e) => setSourceNodeId(e.target.value)}
+            placeholder="Source node filter"
+            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
+          />
+        </FilterBar>
+
+        <OrchestrationSurface level={3} className="bg-white/5">
           <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Mission Timeline</h2>
-            <span className="text-xs text-gray-500 dark:text-gray-400">Interactive session flow</span>
+            <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Mission Timeline</h2>
+            <span className="text-xs text-slate-500 dark:text-slate-400">Interactive session flow</span>
           </div>
           <div className="mt-4">
             <FlowCanvas
@@ -328,15 +358,11 @@ export default function SessionsPage() {
         </OrchestrationSurface>
 
         {isLoading ? (
-          <div className="text-center py-12 text-gray-500 dark:text-gray-400">
-            Loading sessions...
-          </div>
+          <SurfaceCard>Loading sessions...</SurfaceCard>
         ) : sessions.length === 0 ? (
-          <div className="text-center py-12 text-gray-500 dark:text-gray-400">
-            No sessions found. Create your first session to get started!
-          </div>
+          <EmptyState title="No sessions found" description="Create your first session to get started." />
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
             {sessions.map((session) => (
               <SessionCard
                 key={session.id}
@@ -348,6 +374,6 @@ export default function SessionsPage() {
           </div>
         )}
       </div>
-    </div>
+    </PageLayout>
   )
 }

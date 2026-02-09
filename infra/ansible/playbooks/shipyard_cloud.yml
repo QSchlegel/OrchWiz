@@ -1,0 +1,35 @@
+---
+- name: Deploy OrchWiz Cloud Shipyard to Existing Kubernetes
+  hosts: local
+  gather_facts: false
+  vars:
+    terraform_dir: "{{ lookup('env', 'TF_DIR') | default('../../terraform/environments/shipyard-cloud', true) }}"
+    orchwiz_namespace: "{{ lookup('env', 'ORCHWIZ_NAMESPACE') | default('orchwiz-shipyard', true) }}"
+    app_name: "{{ lookup('env', 'ORCHWIZ_APP_NAME') | default('orchwiz', true) }}"
+
+  tasks:
+    - name: Check prerequisites
+      ansible.builtin.command: "which {{ item }}"
+      loop:
+        - terraform
+        - kubectl
+      changed_when: false
+
+    - name: Terraform init
+      ansible.builtin.command: terraform -chdir={{ terraform_dir }} init -backend=false
+      changed_when: false
+
+    - name: Terraform plan
+      ansible.builtin.command: terraform -chdir={{ terraform_dir }} plan -out=tfplan
+      changed_when: false
+
+    - name: Terraform apply
+      ansible.builtin.command: terraform -chdir={{ terraform_dir }} apply -auto-approve tfplan
+
+    - name: Wait for deployment rollout
+      ansible.builtin.command: kubectl -n {{ orchwiz_namespace }} rollout status deploy/{{ app_name }} --timeout=300s
+      changed_when: false
+
+    - name: Print service check command
+      ansible.builtin.debug:
+        msg: "Check service endpoint with: kubectl -n {{ orchwiz_namespace }} get svc {{ app_name }}"

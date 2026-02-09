@@ -1,16 +1,25 @@
 {
   "name": "orchwiz",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint",
+    "lint": "eslint .",
+    "test": "tsx --test src/**/*.test.ts",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
     "db:migrate": "prisma migrate dev",
-    "db:studio": "prisma studio"
+    "db:studio": "prisma studio",
+    "db:seed": "npx tsx prisma/seed.ts"
+  },
+  "prisma": {
+    "seed": "npx tsx prisma/seed.ts"
+  },
+  "overrides": {
+    "hono": ">=4.11.7",
+    "lodash": ">=4.17.23"
   },
   "dependencies": {
     "@better-auth/passkey": "^1.4.15",
@@ -38,6 +47,7 @@
     "postcss": "^8.4.38",
     "prisma": "^7.3.0",
     "tailwindcss": "^4.1.18",
+    "tsx": "^4.20.6",
     "typescript": "^5.7.3"
   }
 }

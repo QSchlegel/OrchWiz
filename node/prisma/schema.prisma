@@ -28,6 +28,7 @@ model User {
   agentDeployments  AgentDeployment[]
   applicationDeployments ApplicationDeployment[]
   projects              Project[]
+  forwardingConfigs     ForwardingConfig[]
 }
 
 model AuthSession {
@@ -439,6 +440,8 @@ model AgentDeployment {
   subagentId    String?
   nodeId        String
   nodeType      NodeType
+  deploymentProfile DeploymentProfile @default(local_starship_build)
+  provisioningMode ProvisioningMode @default(terraform_ansible)
   nodeUrl       String?
   status        DeploymentStatus    @default(pending)
   config        Json?
@@ -457,6 +460,18 @@ model AgentDeployment {
   @@index([status])
   @@index([userId])
   @@index([subagentId])
+  @@index([deploymentProfile])
+}
+
+enum DeploymentProfile {
+  local_starship_build
+  cloud_shipyard
+}
+
+enum ProvisioningMode {
+  terraform_ansible
+  terraform_only
+  ansible_only
 }
 
 enum NodeType {
@@ -488,6 +503,8 @@ model ApplicationDeployment {
   environment   Json?
   nodeId        String
   nodeType      NodeType
+  deploymentProfile DeploymentProfile @default(local_starship_build)
+  provisioningMode ProvisioningMode @default(terraform_ansible)
   nodeUrl       String?
   status        DeploymentStatus    @default(pending)
   config        Json?
@@ -506,6 +523,7 @@ model ApplicationDeployment {
   @@index([status])
   @@index([userId])
   @@index([applicationType])
+  @@index([deploymentProfile])
 }
 
 enum ApplicationType {
@@ -549,4 +567,118 @@ enum ProjectCategory {
   library
   application
   other
+}
+
+model NodeSource {
+  id         String   @id @default(cuid())
+  nodeId     String   @unique
+  name       String?
+  nodeType   NodeType?
+  nodeUrl    String?
+  apiKeyHash String
+  isActive   Boolean  @default(true)
+  lastSeenAt DateTime?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  events          ForwardingEvent[]
+  nonces          ForwardingNonce[]
+  sourceConfigs   ForwardingConfig[] @relation("ForwardingConfigSource")
+}
+
+model ForwardingEvent {
+  id          String               @id @default(cuid())
+  sourceNodeId String
+  dedupeKey   String               @unique
+  eventType   ForwardingEventType
+  payload     Json
+  metadata    Json?
+  occurredAt  DateTime
+  receivedAt  DateTime             @default(now())
+  status      ForwardingEventStatus @default(received)
+
+  sourceNode NodeSource @relation(fields: [sourceNodeId], references: [id], onDelete: Cascade)
+
+  @@index([sourceNodeId])
+  @@index([eventType])
+  @@index([occurredAt])
+  @@index([status])
+}
+
+model ForwardingNonce {
+  id          String   @id @default(cuid())
+  sourceNodeId String
+  nonce       String
+  timestamp   DateTime
+  createdAt   DateTime @default(now())
+
+  sourceNode NodeSource @relation(fields: [sourceNodeId], references: [id], onDelete: Cascade)
+
+  @@unique([sourceNodeId, nonce])
+  @@index([timestamp])
+}
+
+model ForwardingConfig {
+  id          String               @id @default(cuid())
+  userId      String
+  sourceNodeId String?
+  targetUrl   String
+  targetApiKey String?
+  enabled     Boolean              @default(false)
+  eventTypes  ForwardingEventType[]
+  status      ForwardingTargetStatus @default(paused)
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sourceNode NodeSource? @relation("ForwardingConfigSource", fields: [sourceNodeId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([enabled])
+}
+
+enum ForwardingEventType {
+  session
+  task
+  command_execution
+  verification
+  action
+  deployment
+  application
+  bridge_station
+  system_status
+}
+
+enum ForwardingEventStatus {
+  received
+  projected
+  duplicate
+  rejected
+}
+
+enum ForwardingTargetStatus {
+  active
+  paused
+  failed
+}
+
+model GitHubWebhookEvent {
+  id                String   @id @default(cuid())
+  eventType         String
+  action            String?
+  repository        String?
+  pullRequestNumber Int?
+  commentId         Int?
+  commentBody       String?
+  payload           Json
+  status            String   @default("received")
+  responseBody      Json?
+  error             String?
+  createdAt         DateTime @default(now())
+  processedAt       DateTime?
+
+  @@index([eventType])
+  @@index([action])
+  @@index([repository])
+  @@index([createdAt])
 }

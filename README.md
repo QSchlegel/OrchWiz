@@ -2,7 +2,7 @@
 
 <div align="center">
 
-**A distributed orchestration platform for managing and visualizing AI coding assistant workflows**
+**A command deck for Agent Ops: orchestration sessions with passkeys, deploy agents across distributed nodes, every decision traceable**
 
 [![Next.js](https://img.shields.io/badge/Next.js-16.1-black)](https://nextjs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7-blue)](https://www.typescriptlang.org/)
@@ -28,14 +28,14 @@
 
 ## 🎯 Overview
 
-OrchWiz (Orchestration Wizard) is a comprehensive platform for orchestrating and visualizing AI coding assistant workflows across distributed nodes. Each node is a self-contained deployment that can operate independently or forward data to other nodes for aggregate visualization.
+OrchWiz (Orchestration Wizard) is a command deck for Agent Ops: orchestration sessions with passkeys, deploying agents across distributed nodes, with full traceability of every decision. Each node is a self-contained deployment that can operate independently or forward data to other nodes for aggregate visualization.
 
 ### Key Concepts
 
 - **Distributed Nodes**: Deploy OrchWiz nodes locally or in the cloud
 - **State Visualization**: Each node visualizes its own operational state
 - **Data Forwarding**: Nodes can forward data to other nodes for unified views
-- **Session Management**: Track and manage AI coding sessions with different modes
+- **Session Management**: Track and manage Agent Ops sessions with different modes
 - **Command Orchestration**: Define and execute custom commands across nodes
 
 ## 🏗️ Architecture
@@ -50,7 +50,7 @@ graph TB
     
     subgraph "Application Layer"
         API[Next.js API Routes<br/>RESTful Endpoints]
-        AUTH[Better Auth<br/>GitHub OAuth]
+        AUTH[Better Auth<br/>Email Link + Passkey<br/>GitHub Connect]
     end
 
     subgraph "Agent Runtime Layer"
@@ -150,7 +150,7 @@ graph LR
         HN --> HNDB
     end
     
-    LN -.->|HTTP/WebSocket| CN
+    LN -.->|Signed HTTP Forwarding| CN
     CN -.->|Aggregate Data| LN
     HN -.->|Bidirectional| CN
     HN -.->|Bidirectional| LN
@@ -164,7 +164,7 @@ graph LR
 
 ### Core Features
 
-- **🔄 Session Management**: Create, view, and manage AI coding sessions with plan/auto-accept modes
+- **🔄 Session Management**: Create, view, and manage Agent Ops sessions with plan/auto-accept modes
 - **⚡ Slash Commands**: Define and execute custom commands with execution tracking
 - **🤖 Subagents**: Create and manage specialized AI subagents for specific tasks
 - **📝 CLAUDE.md Editor**: Edit and version control project documentation with markdown support
@@ -176,6 +176,8 @@ graph LR
 - **🔭 Observability Harness**: Capture traces, tool calls, and metrics for runtime visibility
 - **⏳ Long-Running Tasks**: Track and monitor background tasks with status updates
 - **✅ Verification Workflows**: Track browser, bash, and test suite verification runs
+- **📦 Forwarded Aggregate Views**: Merge remote node events into list APIs and dashboards with source filters
+- **📡 SSE Realtime Updates**: Stream operational updates via `/api/events/stream` with typed event filtering
 
 ## 🧠 Agent Runtime & Observability
 
@@ -213,7 +215,7 @@ The runtime harness provides a control surface for observability and governance:
 ### Backend
 - **Runtime**: Node.js 18+
 - **API**: Next.js API Routes (RESTful)
-- **Authentication**: [Better Auth](https://www.better-auth.com/) with GitHub OAuth
+- **Authentication**: [Better Auth](https://www.better-auth.com/) with email verification and passkeys (GitHub connect after login)
 - **ORM**: [Prisma 7.3](https://www.prisma.io/)
 - **Database**: PostgreSQL 15+
 
@@ -230,7 +232,7 @@ The runtime harness provides a control surface for observability and governance:
 - **Node.js** 18+ and npm
 - **Docker** and Docker Compose (for local database)
 - **PostgreSQL** 15+ (or use Docker)
-- **GitHub OAuth App** (for authentication)
+- **GitHub OAuth App** (for optional GitHub account connection)
 
 ### Installation
 
@@ -262,14 +264,35 @@ The runtime harness provides a control surface for observability and governance:
    BETTER_AUTH_URL="http://localhost:3000"
    NEXT_PUBLIC_APP_URL="http://localhost:3000"
    
-   # GitHub OAuth (get from https://github.com/settings/developers)
+   # GitHub OAuth (for optional GitHub account connection)
    GITHUB_CLIENT_ID="your_github_client_id"
    GITHUB_CLIENT_SECRET="your_github_client_secret"
-   NEXT_PUBLIC_GITHUB_AUTH_ENABLED="true" # show GitHub login in the UI
 
    # Magic Link Email (Resend)
    RESEND_API_KEY="your_resend_api_key"
    RESEND_FROM_EMAIL="OrchWiz <login@yourdomain.com>"
+   ```
+
+   Optional runtime, forwarding, and realtime configuration:
+   ```env
+   # Runtime adapters
+   OPENCLAW_GATEWAY_URL=
+   OPENCLAW_API_KEY=
+   ENABLE_OPENAI_RUNTIME_FALLBACK=true
+   OPENAI_API_KEY=
+
+   # Command execution safety gate
+   ENABLE_LOCAL_COMMAND_EXECUTION=false
+
+   # Forwarding
+   ENABLE_FORWARDING_INGEST=true
+   DEFAULT_FORWARDING_API_KEY=orchwiz-dev-forwarding-key
+   FORWARD_TARGET_URL=
+   FORWARD_API_KEY=
+   FORWARDING_FEATURE_ENABLED=true
+
+   # Realtime (SSE)
+   ENABLE_SSE_EVENTS=true
    ```
 
 4. **Install dependencies:**
@@ -291,10 +314,10 @@ The runtime harness provides a control surface for observability and governance:
 7. **Open your browser:**
    Navigate to [http://localhost:3000](http://localhost:3000)
 
-### GitHub OAuth Setup
+### GitHub Connect Setup
 
 1. Go to [GitHub Developer Settings](https://github.com/settings/developers)
-2. Create a new OAuth App
+2. Create a new OAuth App (used for post-login account linking)
 3. Set **Authorization callback URL** to: `http://localhost:3000/api/auth/callback/github`
 4. Copy the Client ID and Client Secret to your `.env` file
 
@@ -308,6 +331,7 @@ npm run dev          # Start development server
 npm run build        # Build for production
 npm run start        # Start production server
 npm run lint         # Run ESLint
+npm run test         # Run focused unit tests
 
 # Database
 npm run db:generate  # Generate Prisma Client
@@ -390,12 +414,14 @@ OrchWiz uses a distributed node architecture where each node is an independent d
 - **Database**: Local PostgreSQL
 - **Network**: Localhost or private network
 - **Security**: Development-level (HTTP, local auth)
+- **Profile**: `Local Starship Build` (Terraform + Ansible, Minikube-first)
 
 #### Cloud Node
 - **Use Case**: Production, team collaboration, high availability
 - **Database**: Managed PostgreSQL (e.g., AWS RDS, Supabase)
 - **Network**: Public HTTPS endpoint
 - **Security**: Production-level (HTTPS, OAuth, encryption)
+- **Profile**: `Cloud Shipyard` (Terraform + Ansible on existing Kubernetes)
 
 #### Hybrid Node
 - **Use Case**: Staging, CI/CD, multi-region deployments
@@ -414,9 +440,9 @@ Each node can:
 ### Node Communication
 
 Nodes communicate via:
-- **HTTP/HTTPS**: RESTful API calls for data forwarding
-- **WebSocket**: Real-time updates (planned)
-- **Message Queue**: Async data forwarding (planned)
+- **Signed HTTP/HTTPS**: Forwarding ingest over `/api/forwarding/events`
+- **Server-Sent Events (SSE)**: Real-time updates over `/api/events/stream`
+- **Transport Abstraction**: SSE-first with a WebSocket-compatible event model for future adapters
 
 ## 🧭 Roadmap
 
@@ -434,6 +460,31 @@ Planned runtime integrations to keep OrchWiz adaptable:
 
 See [dev-local/README.md](dev-local/README.md) for detailed local setup instructions.
 
+### Starship/Shipyard Profiles (Terraform + Ansible)
+
+Infrastructure scaffolding lives in [`infra/`](infra/README.md) and supports two explicit profiles:
+
+- **Local Starship Build**: Minikube + in-cluster PostgreSQL + app service access via `minikube service --url`.
+- **Cloud Shipyard**: Provider-agnostic deployment to an existing Kubernetes cluster (app resources + optional ingress).
+
+Quick local starship flow:
+
+```bash
+cp infra/terraform/environments/starship-local/terraform.tfvars.example infra/terraform/environments/starship-local/terraform.tfvars
+terraform -chdir=infra/terraform/environments/starship-local init -backend=false
+terraform -chdir=infra/terraform/environments/starship-local apply
+minikube service -n orchwiz-starship orchwiz --url
+```
+
+Quick cloud shipyard flow:
+
+```bash
+cp infra/terraform/environments/shipyard-cloud/terraform.tfvars.example infra/terraform/environments/shipyard-cloud/terraform.tfvars
+terraform -chdir=infra/terraform/environments/shipyard-cloud init -backend=false
+terraform -chdir=infra/terraform/environments/shipyard-cloud apply
+kubectl -n orchwiz-shipyard get svc orchwiz
+```
+
 ### Production Deployment
 
 1. **Set up production database:**
@@ -448,7 +499,6 @@ See [dev-local/README.md](dev-local/README.md) for detailed local setup instruct
    NEXT_PUBLIC_APP_URL="https://your-domain.com"
    GITHUB_CLIENT_ID="production-client-id"
    GITHUB_CLIENT_SECRET="production-client-secret"
-   NEXT_PUBLIC_GITHUB_AUTH_ENABLED="true"
    RESEND_API_KEY="production-resend-api-key"
    RESEND_FROM_EMAIL="OrchWiz <login@yourdomain.com>"
    ```

@@ -11,7 +11,7 @@ Orchwiz uses PostgreSQL with Prisma ORM. The schema is defined in `node/prisma/s
 - Links to sessions, command executions, and guidance revisions
 
 ### Session
-- AI coding sessions with status tracking (planning, executing, completed, paused, failed)
+- Agent Ops sessions with status tracking (planning, executing, completed, paused, failed)
 - Modes: plan or auto_accept
 - Sources: local, web, ios, terminal_handoff
 - Supports session forking (parent/child relationships)
@@ -80,6 +80,15 @@ Orchwiz uses PostgreSQL with Prisma ORM. The schema is defined in `node/prisma/s
 - Verification workflow runs
 - Types: browser, bash, test_suite, app_test
 - Tracks iterations and feedback
+
+### AgentDeployment / ApplicationDeployment
+- Deployment records for agents and applications
+- Typed deployment profile fields:
+  - `deploymentProfile`: `local_starship_build` or `cloud_shipyard`
+  - `provisioningMode`: `terraform_ansible`, `terraform_only`, or `ansible_only`
+- Existing flexible JSON fields remain:
+  - `config` (includes `config.infrastructure` for Terraform/Ansible settings)
+  - `metadata`
 
 ## Relationships
 

@@ -5,19 +5,7 @@ import { github } from "better-auth/social-providers"
 import { passkey } from "@better-auth/passkey"
 import { prisma } from "./prisma"
 
-const appUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.BETTER_AUTH_URL
-let origin: string | undefined
-let rpID: string | undefined
-
-if (appUrl) {
-  try {
-    const parsedUrl = new URL(appUrl)
-    origin = parsedUrl.origin
-    rpID = parsedUrl.hostname
-  } catch (error) {
-    console.warn("Invalid app URL for passkey config:", error)
-  }
-}
+const appUrlFromEnv = process.env.BETTER_AUTH_URL || process.env.NEXT_PUBLIC_APP_URL
 const githubClientId = process.env.GITHUB_CLIENT_ID
 const githubClientSecret = process.env.GITHUB_CLIENT_SECRET
 const githubProvider =
@@ -30,32 +18,62 @@ const githubProvider =
 
 const socialProviders = githubProvider ? { github: githubProvider } : undefined
 
-export const auth = betterAuth({
-  database: prismaAdapter(prisma, {
-    provider: "postgresql"
-  }),
-  emailAndPassword: {
-    enabled: true,
-  },
-  ...(socialProviders ? { socialProviders } : {}),
-  plugins: [
-    passkey({
-      rpID,
-      origin,
-      rpName: "OrchWiz",
+function getPasskeyConfig(appUrl?: string) {
+  if (!appUrl) {
+    return {}
+  }
+
+  try {
+    const parsedUrl = new URL(appUrl)
+    return {
+      origin: parsedUrl.origin,
+      rpID: parsedUrl.hostname,
+    }
+  } catch (error) {
+    console.warn("Invalid app URL for passkey config:", error)
+    return {}
+  }
+}
+
+export function createAuth(resolvedAppUrl?: string) {
+  const appUrl = resolvedAppUrl || appUrlFromEnv
+  const passkeyConfig = getPasskeyConfig(appUrl)
+
+  return betterAuth({
+    database: prismaAdapter(prisma, {
+      provider: "postgresql"
     }),
-    magicLink({
-      expiresIn: 60 * 15,
-      sendMagicLink: async ({ email, url }) => {
-        const apiKey = process.env.RESEND_API_KEY
-        const fromEmail = process.env.RESEND_FROM_EMAIL
+    emailAndPassword: {
+      enabled: true,
+      requireEmailVerification: false,
+    },
+    account: {
+      accountLinking: {
+        disableImplicitLinking: true,
+      },
+    },
+    ...(socialProviders ? { socialProviders } : {}),
+    plugins: [
+      passkey({
+        ...passkeyConfig,
+        rpName: "OrchWiz",
+      }),
+      magicLink({
+        expiresIn: 60 * 15,
+        sendMagicLink: async ({ email, url }) => {
+          const apiKey = process.env.RESEND_API_KEY
+          const fromEmail = process.env.RESEND_FROM_EMAIL
 
-        if (!apiKey || !fromEmail) {
-          throw new Error("Missing RESEND_API_KEY or RESEND_FROM_EMAIL")
-        }
+          if (!apiKey || !fromEmail) {
+            if (process.env.NODE_ENV !== "production") {
+              console.warn("Magic link email provider not configured. Generated link:", url)
+              return
+            }
+            throw new Error("Missing RESEND_API_KEY or RESEND_FROM_EMAIL")
+          }
 
-        const subject = "Your OrchWiz sign-in link"
-        const html = `
+          const subject = "Your OrchWiz sign-in link"
+          const html = `
           <div style="font-family: Arial, sans-serif; line-height: 1.6;">
             <h2 style="margin: 0 0 12px;">Welcome to OrchWiz</h2>
             <p>Use the secure link below to finish signing in:</p>
@@ -69,40 +87,43 @@ export const auth = betterAuth({
             </p>
           </div>
         `
-        const text = `Sign in to OrchWiz: ${url}`
+          const text = `Sign in to OrchWiz: ${url}`
 
-        const response = await fetch("https://api.resend.com/emails", {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            from: fromEmail,
-            to: [email],
-            subject,
-            html,
-            text,
-          }),
-        })
+          const response = await fetch("https://api.resend.com/emails", {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${apiKey}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              from: fromEmail,
+              to: [email],
+              subject,
+              html,
+              text,
+            }),
+          })
 
-        if (!response.ok) {
-          const errorText = await response.text()
-          throw new Error(`Failed to send magic link email: ${errorText}`)
-        }
+          if (!response.ok) {
+            const errorText = await response.text()
+            throw new Error(`Failed to send magic link email: ${errorText}`)
+          }
+        },
+      }),
+    ],
+    user: {
+      fields: {
+        image: "avatarUrl",
       },
-    }),
-  ],
-  user: {
-    fields: {
-      image: "avatarUrl",
     },
-  },
-  session: {
-    modelName: "authSession",
-  },
-  secret: process.env.BETTER_AUTH_SECRET!,
-  baseURL: process.env.BETTER_AUTH_URL || process.env.NEXT_PUBLIC_APP_URL,
-})
+    session: {
+      modelName: "authSession",
+    },
+    secret: process.env.BETTER_AUTH_SECRET!,
+    baseURL: appUrl,
+  })
+}
+
+export const auth = createAuth()
 
 export type Session = typeof auth.$Infer.Session

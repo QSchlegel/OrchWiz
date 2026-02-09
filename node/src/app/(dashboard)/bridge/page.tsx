@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { useSession } from "@/lib/auth-client"
 import {
   Activity,
@@ -23,6 +23,7 @@ import { StationNode, TaskNode, SystemNode } from "@/components/flow/nodes"
 import { layoutRadial } from "@/lib/flow/layout"
 import { buildTaskToStationEdges, mapStationsToNodes, mapTasksToNodes } from "@/lib/flow/mappers"
 import type { Edge, Node } from "reactflow"
+import { useEventStream } from "@/lib/realtime/useEventStream"
 
 interface BridgeStation {
   id: string
@@ -47,109 +48,6 @@ interface SystemStatus {
   state: "nominal" | "warning" | "critical"
   detail: string
 }
-
-const roleList = ["Helm", "Ops", "Science", "Engineering", "Tactical", "Comms"]
-
-const mockStations: BridgeStation[] = [
-  {
-    id: "station-helm",
-    name: "Vector",
-    role: "Helm",
-    status: "online",
-    load: 62,
-    focus: "Trajectory alignment",
-    queue: ["Course correction", "Orbit lock"],
-  },
-  {
-    id: "station-ops",
-    name: "Relay",
-    role: "Ops",
-    status: "busy",
-    load: 81,
-    focus: "Resource allocation",
-    queue: ["Compute balancing", "Cache warmup", "Priority re-route"],
-  },
-  {
-    id: "station-science",
-    name: "Nova",
-    role: "Science",
-    status: "online",
-    load: 48,
-    focus: "Signal analysis",
-    queue: ["Trace anomaly", "Context sync"],
-  },
-  {
-    id: "station-engineering",
-    name: "Forge",
-    role: "Engineering",
-    status: "busy",
-    load: 73,
-    focus: "Throughput tuning",
-    queue: ["Queue flush", "Model upgrade"],
-  },
-  {
-    id: "station-tactical",
-    name: "Aegis",
-    role: "Tactical",
-    status: "online",
-    load: 39,
-    focus: "Risk assessment",
-    queue: ["Policy review"],
-  },
-  {
-    id: "station-comms",
-    name: "Beacon",
-    role: "Comms",
-    status: "offline",
-    load: 12,
-    focus: "Link pending",
-    queue: ["Handshake retry"],
-  },
-]
-
-const mockWorkItems: WorkItem[] = [
-  {
-    id: "work-1",
-    name: "Align request routing",
-    status: "active",
-    eta: "T+4m",
-    assignedTo: "station-ops",
-  },
-  {
-    id: "work-2",
-    name: "Compile mission brief",
-    status: "completed",
-    eta: "Complete",
-    assignedTo: "station-science",
-  },
-  {
-    id: "work-3",
-    name: "Stabilize inference load",
-    status: "active",
-    eta: "T+7m",
-    assignedTo: "station-engineering",
-  },
-  {
-    id: "work-4",
-    name: "Inspect command queue",
-    status: "pending",
-    eta: "T+12m",
-    assignedTo: "station-helm",
-  },
-  {
-    id: "work-5",
-    name: "Audit permissions",
-    status: "failed",
-    eta: "Review",
-    assignedTo: "station-tactical",
-  },
-]
-
-const mockSystems: SystemStatus[] = [
-  { label: "Comms Array", state: "warning", detail: "1 relay drifting" },
-  { label: "Sensor Grid", state: "nominal", detail: "Calibrated" },
-  { label: "Core Systems", state: "nominal", detail: "Stable output" },
-]
 
 const statusStyles = {
   online: "bg-emerald-400",
@@ -183,116 +81,58 @@ function formatStardate(date: Date) {
   return `${date.getFullYear()}.${String(day).padStart(3, "0")}`
 }
 
-function mapTaskStatus(status?: string): WorkItem["status"] {
-  switch (status) {
-    case "completed":
-      return "completed"
-    case "failed":
-      return "failed"
-    case "running":
-    case "thinking":
-      return "active"
-    default:
-      return "pending"
-  }
-}
-
 export default function BridgePage() {
   const { data: session } = useSession()
-  const [stations, setStations] = useState<BridgeStation[]>(mockStations)
-  const [workItems, setWorkItems] = useState<WorkItem[]>(mockWorkItems)
-  const [systems] = useState<SystemStatus[]>(mockSystems)
-  const [selectedStationId, setSelectedStationId] = useState<string>(mockStations[0]?.id)
+  const [stations, setStations] = useState<BridgeStation[]>([])
+  const [workItems, setWorkItems] = useState<WorkItem[]>([])
+  const [systems, setSystems] = useState<SystemStatus[]>([])
+  const [selectedStationId, setSelectedStationId] = useState<string>("")
   const [selectedTaskId, setSelectedTaskId] = useState<string | undefined>(undefined)
+  const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
-  useEffect(() => {
-    let cancelled = false
-
-    const loadData = async () => {
-      try {
-        const [subagentsResponse, tasksResponse] = await Promise.all([
-          fetch("/api/subagents"),
-          fetch("/api/tasks"),
-        ])
-
-        let nextStations = mockStations
-        let nextWorkItems = mockWorkItems
-
-        if (subagentsResponse.ok) {
-          const subagents = await subagentsResponse.json()
-          if (Array.isArray(subagents) && subagents.length > 0) {
-            nextStations = subagents.slice(0, roleList.length).map((agent: any, index: number) => {
-              const role = roleList[index % roleList.length]
-              const statusIndex = index % 3
-              const status = statusIndex === 0 ? "online" : statusIndex === 1 ? "busy" : "offline"
-              const load = 35 + (index * 11) % 60
-              return {
-                id: agent.id ?? `station-${role.toLowerCase()}`,
-                name: agent.name || role,
-                role,
-                status,
-                load,
-                focus: agent.description || "Awaiting orders",
-                queue: [],
-              }
-            })
-          }
-        }
-
-        if (tasksResponse.ok) {
-          const tasks = await tasksResponse.json()
-          if (Array.isArray(tasks) && tasks.length > 0) {
-            nextWorkItems = tasks.slice(0, 12).map((task: any, index: number) => {
-              const assignedStation = nextStations[index % nextStations.length]
-              const status = mapTaskStatus(task.status)
-              const eta = task.completedAt
-                ? "Complete"
-                : status === "failed"
-                  ? "Review"
-                  : `T+${(index + 1) * 3}m`
-              return {
-                id: task.id ?? `work-${index}`,
-                name: task.name || "Untitled task",
-                status,
-                eta,
-                assignedTo: assignedStation?.id ?? "station-ops",
-              }
-            })
-          }
-        }
-
-        const stationsWithQueues = nextStations.map((station) => {
-          const queue = nextWorkItems
-            .filter((item) => item.assignedTo === station.id)
-            .map((item) => item.name)
-          return {
-            ...station,
-            queue,
-            focus: queue[0] || station.focus,
-          }
-        })
-
-        if (!cancelled) {
-          setStations(stationsWithQueues)
-          setWorkItems(nextWorkItems)
-          setSelectedStationId((current) => {
-            if (current && stationsWithQueues.some((station) => station.id === current)) {
-              return current
-            }
-            return stationsWithQueues[0]?.id ?? current
-          })
-        }
-      } catch (error) {
-        console.error("Bridge data load failed:", error)
+  const loadData = useCallback(async () => {
+    setIsLoading(true)
+    setError(null)
+    try {
+      const response = await fetch("/api/bridge/state?includeForwarded=true")
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`)
       }
-    }
 
-    loadData()
+      const data = await response.json()
+      const nextStations = Array.isArray(data?.stations) ? data.stations : []
+      const nextWorkItems = Array.isArray(data?.workItems) ? data.workItems : []
+      const nextSystems = Array.isArray(data?.systems) ? data.systems : []
 
-    return () => {
-      cancelled = true
+      setStations(nextStations)
+      setWorkItems(nextWorkItems)
+      setSystems(nextSystems)
+      setSelectedStationId((current) => {
+        if (current && nextStations.some((station: BridgeStation) => station.id === current)) {
+          return current
+        }
+        return nextStations[0]?.id || ""
+      })
+    } catch (loadError) {
+      console.error("Bridge data load failed:", loadError)
+      setError("Unable to load bridge state")
+    } finally {
+      setIsLoading(false)
     }
   }, [])
+
+  useEffect(() => {
+    loadData()
+  }, [loadData])
+
+  useEventStream({
+    enabled: Boolean(session),
+    types: ["task.updated", "forwarding.received", "bridge.updated"],
+    onEvent: () => {
+      loadData()
+    },
+  })
 
   const selectedStation = useMemo(() => {
     return stations.find((station) => station.id === selectedStationId) || stations[0]
@@ -377,6 +217,18 @@ export default function BridgePage() {
 
       <div className="relative z-10 min-h-screen px-6 py-10 sm:px-10">
         <div className="mx-auto flex w-full max-w-6xl flex-col gap-8">
+          {error && (
+            <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">
+              {error}
+            </div>
+          )}
+
+          {isLoading && (
+            <div className="rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-300">
+              Loading bridge state...
+            </div>
+          )}
+
           <OrchestrationSurface level={4} className="flex flex-col gap-6 bg-white/5">
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div>
@@ -429,10 +281,15 @@ export default function BridgePage() {
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1.1fr_1.4fr_1.1fr]">
             <OrchestrationSurface level={3} className="bg-white/5">
               <div className="flex items-center justify-between">
-                <h2 className="text-lg font-semibold">Crew Stations</h2>
-                <span className="text-xs text-slate-400">{stations.length} active</span>
+              <h2 className="text-lg font-semibold">Crew Stations</h2>
+                <span className="text-xs text-slate-400">{stations.length} loaded</span>
               </div>
               <div className="mt-6 flex flex-col gap-3">
+                {stations.length === 0 && (
+                  <div className="rounded-xl border border-dashed border-white/20 bg-white/5 px-4 py-6 text-sm text-slate-400">
+                    No station data available yet. Ingest bridge station events or create bridge crew subagents.
+                  </div>
+                )}
                 {stations.map((station) => {
                   const isSelected = station.id === selectedStation?.id
                   return (
@@ -571,6 +428,11 @@ export default function BridgePage() {
                       </div>
                     </div>
                   ))}
+                  {workItems.length === 0 && (
+                    <div className="rounded-xl border border-dashed border-white/20 bg-white/5 px-4 py-6 text-sm text-slate-400">
+                      No workload items available.
+                    </div>
+                  )}
                 </div>
               </OrchestrationSurface>
 

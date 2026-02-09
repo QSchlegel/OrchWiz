@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { auth } from "@/lib/auth"
 import { prisma } from "@/lib/prisma"
 import { headers } from "next/headers"
+import { mapForwardedAction } from "@/lib/forwarding/projections"
 
 export const dynamic = 'force-dynamic'
 
@@ -16,8 +17,14 @@ export async function GET(request: NextRequest) {
     const sessionId = searchParams.get("sessionId")
     const type = searchParams.get("type")
     const status = searchParams.get("status")
+    const includeForwarded = searchParams.get("includeForwarded") === "true"
+    const sourceNodeId = searchParams.get("sourceNodeId")
 
-    const where: any = {}
+    const where: any = {
+      session: {
+        userId: session.user.id,
+      },
+    }
     if (sessionId) {
       where.sessionId = sessionId
     }
@@ -44,7 +51,38 @@ export async function GET(request: NextRequest) {
       take: 100,
     })
 
-    return NextResponse.json(actions)
+    if (!includeForwarded) {
+      return NextResponse.json(actions)
+    }
+
+    const forwardedEvents = await prisma.forwardingEvent.findMany({
+      where: {
+        eventType: "action",
+        ...(sourceNodeId
+          ? {
+              sourceNode: {
+                nodeId: sourceNodeId,
+              },
+            }
+          : {}),
+      },
+      include: {
+        sourceNode: true,
+      },
+      orderBy: {
+        occurredAt: "desc",
+      },
+      take: 100,
+    })
+
+    const forwardedActions = forwardedEvents.map(mapForwardedAction)
+    const combined = [...actions, ...forwardedActions].sort((a: any, b: any) => {
+      const aDate = new Date(a.timestamp || a.forwardingOccurredAt || 0).getTime()
+      const bDate = new Date(b.timestamp || b.forwardingOccurredAt || 0).getTime()
+      return bDate - aDate
+    })
+
+    return NextResponse.json(combined)
   } catch (error) {
     console.error("Error fetching actions:", error)
     return NextResponse.json(

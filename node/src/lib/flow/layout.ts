@@ -45,3 +45,30 @@ export function layoutTimeline<T extends Node>(nodes: T[], spacing = 260, start:
     },
   }))
 }
+
+/**
+ * Lay out groups as horizontal rows stacked vertically.
+ * Each group's nodes are spread along the X axis and centered.
+ */
+export function layoutRows<T extends Node>(
+  groups: { key: string; nodes: T[] }[],
+  rowGap = 200,
+  columnGap = 220,
+  start: XYPosition = { x: 0, y: 0 }
+): T[] {
+  const arranged: T[] = []
+  groups.forEach((group, rowIndex) => {
+    const groupWidth = group.nodes.length * columnGap
+    const startX = start.x - groupWidth / 2 + columnGap / 2
+    group.nodes.forEach((node, colIndex) => {
+      arranged.push({
+        ...node,
+        position: {
+          x: startX + colIndex * columnGap,
+          y: start.y + rowIndex * rowGap,
+        },
+      })
+    })
+  })
+  return arranged
+}

@@ -1,0 +1,41 @@
+---
+- name: Deploy OrchWiz Local Starship Build on Minikube
+  hosts: local
+  gather_facts: false
+  vars:
+    terraform_dir: "{{ lookup('env', 'TF_DIR') | default('../../terraform/environments/starship-local', true) }}"
+    orchwiz_namespace: "{{ lookup('env', 'ORCHWIZ_NAMESPACE') | default('orchwiz-starship', true) }}"
+    app_name: "{{ lookup('env', 'ORCHWIZ_APP_NAME') | default('orchwiz', true) }}"
+
+  tasks:
+    - name: Check prerequisites
+      ansible.builtin.command: "which {{ item }}"
+      loop:
+        - terraform
+        - kubectl
+        - minikube
+      changed_when: false
+
+    - name: Terraform init
+      ansible.builtin.command: terraform -chdir={{ terraform_dir }} init -backend=false
+      changed_when: false
+
+    - name: Terraform plan
+      ansible.builtin.command: terraform -chdir={{ terraform_dir }} plan -out=tfplan
+      changed_when: false
+
+    - name: Terraform apply
+      ansible.builtin.command: terraform -chdir={{ terraform_dir }} apply -auto-approve tfplan
+
+    - name: Wait for deployment rollout
+      ansible.builtin.command: kubectl -n {{ orchwiz_namespace }} rollout status deploy/{{ app_name }} --timeout=300s
+      changed_when: false
+
+    - name: Resolve local access URL
+      ansible.builtin.command: minikube service -n {{ orchwiz_namespace }} {{ app_name }} --url
+      register: starship_url
+      changed_when: false
+
+    - name: Print local access URL
+      ansible.builtin.debug:
+        msg: "Local Starship endpoint: {{ starship_url.stdout }}"

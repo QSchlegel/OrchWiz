@@ -1,169 +1,251 @@
 "use client"
 
-import { signIn } from "@/lib/auth-client"
-import { useState } from "react"
-import { Github, KeyRound, Mail, WandSparkles } from "lucide-react"
+import { authClient, signIn, signUp } from "@/lib/auth-client"
+import {
+  generateBootstrapPassword,
+  generateDisplayName,
+  getPasskeySignInErrorMessage,
+} from "@/lib/auth-utils"
+import { KeyRound, Mail, Sparkles, UserRound } from "lucide-react"
+import { FormEvent, useState } from "react"
 
 export default function LoginPage() {
-  const githubEnabled = process.env.NEXT_PUBLIC_GITHUB_AUTH_ENABLED === "true"
   const [email, setEmail] = useState("")
-  const [magicLinkSent, setMagicLinkSent] = useState(false)
+  const [displayName, setDisplayName] = useState("")
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
-  const [isGitHubLoading, setIsGitHubLoading] = useState(false)
+  const [successMessage, setSuccessMessage] = useState<string | null>(null)
+  const [isPasskeySignInLoading, setIsPasskeySignInLoading] = useState(false)
+  const [isPasskeySetupLoading, setIsPasskeySetupLoading] = useState(false)
   const [isMagicLinkLoading, setIsMagicLinkLoading] = useState(false)
-  const [isPasskeyLoading, setIsPasskeyLoading] = useState(false)
 
-  const handleGitHubLogin = async () => {
-    setIsGitHubLoading(true)
+  const normalizedEmail = email.trim().toLowerCase()
+  const normalizedName = displayName.trim()
+  const hasEmail = normalizedEmail.length > 0
+
+  const clearNotices = () => {
     setErrorMessage(null)
-    try {
-      await signIn.social({
-        provider: "github",
-        callbackURL: "/sessions",
-      })
-    } catch (error) {
-      console.error("Login error:", error)
-      setErrorMessage("GitHub sign-in failed. Please try again.")
-    } finally {
-      setIsGitHubLoading(false)
+    setSuccessMessage(null)
+  }
+
+  const handleEmailChange = (value: string) => {
+    setEmail(value)
+    if (!displayName || displayName === generateDisplayName(email)) {
+      setDisplayName(value.trim() ? generateDisplayName(value) : "")
     }
   }
 
-  const handleMagicLink = async (event: React.FormEvent) => {
-    event.preventDefault()
-    if (!email) return
-    setIsMagicLinkLoading(true)
-    setErrorMessage(null)
-    setMagicLinkSent(false)
+  const handlePasskeySignIn = async () => {
+    setIsPasskeySignInLoading(true)
+    clearNotices()
+    try {
+      const result = await signIn.passkey()
+      if (result.error) {
+        setErrorMessage(getPasskeySignInErrorMessage(result.error))
+        return
+      }
+      window.location.href = "/sessions"
+    } catch (error) {
+      console.error("Passkey sign-in error:", error)
+      const message = error instanceof Error ? error.message : "Unknown passkey sign-in error"
+      setErrorMessage(getPasskeySignInErrorMessage({ message }))
+    } finally {
+      setIsPasskeySignInLoading(false)
+    }
+  }
 
+  const handlePasskeySetup = async (event: FormEvent) => {
+    event.preventDefault()
+    if (!normalizedEmail) {
+      setErrorMessage("Enter your email to create an account with passkey.")
+      return
+    }
+    if (!normalizedName) {
+      setErrorMessage("Enter a display name to continue.")
+      return
+    }
+
+    setIsPasskeySetupLoading(true)
+    clearNotices()
+    try {
+      const signUpResult = await signUp.email({
+        email: normalizedEmail,
+        name: normalizedName,
+        password: generateBootstrapPassword(),
+      })
+
+      if (signUpResult?.error) {
+        const msg = signUpResult.error.message || "Unable to create your account right now."
+        if (msg.toLowerCase().includes("already exists")) {
+          setErrorMessage("That email already has an account. Use passkey sign-in or request a magic link.")
+        } else {
+          setErrorMessage(msg)
+        }
+        return
+      }
+
+      const { error } = await authClient.passkey.addPasskey({
+        name: `${normalizedEmail} Passkey`,
+      })
+      if (error) {
+        setErrorMessage("Account created, but passkey registration failed. Try again or use a magic link.")
+        return
+      }
+
+      window.location.href = "/sessions"
+    } catch (error) {
+      console.error("Passkey setup error:", error)
+      const msg =
+        error && typeof error === "object" && "message" in error ? String(error.message) : ""
+      if (msg.toLowerCase().includes("already exists")) {
+        setErrorMessage("That email already has an account. Use passkey sign-in or request a magic link.")
+      } else {
+        setErrorMessage("Unable to register your passkey right now. Try again or use a magic link.")
+      }
+    } finally {
+      setIsPasskeySetupLoading(false)
+    }
+  }
+
+  const handleMagicLink = async () => {
+    if (!normalizedEmail) {
+      setErrorMessage("Enter your email to receive a magic link.")
+      return
+    }
+    if (!normalizedName) {
+      setErrorMessage("Enter a display name to continue.")
+      return
+    }
+
+    setIsMagicLinkLoading(true)
+    clearNotices()
     try {
       await signIn.magicLink({
-        email,
+        email: normalizedEmail,
+        name: normalizedName,
         callbackURL: "/sessions",
         newUserCallbackURL: "/sessions",
       })
-      setMagicLinkSent(true)
+      setSuccessMessage("Check your email for a sign-in link.")
     } catch (error) {
       console.error("Magic link error:", error)
-      setErrorMessage("Unable to send magic link. Please try again.")
+      setErrorMessage("Unable to send the email right now. Please try again.")
     } finally {
       setIsMagicLinkLoading(false)
     }
   }
 
-  const handlePasskeyLogin = async () => {
-    setIsPasskeyLoading(true)
-    setErrorMessage(null)
-    try {
-      await signIn.passkey({
-        fetchOptions: {
-          onSuccess() {
-            window.location.href = "/sessions"
-          },
-        },
-      })
-    } catch (error) {
-      console.error("Passkey error:", error)
-      setErrorMessage("Passkey sign-in failed. Please try again.")
-    } finally {
-      setIsPasskeyLoading(false)
-    }
-  }
+  const anyLoading = isPasskeySignInLoading || isPasskeySetupLoading || isMagicLinkLoading
 
   return (
-    <main className="min-h-screen gradient-orb perspective relative overflow-hidden flex items-center justify-center p-8">
-      {/* Background orbs */}
-      <div className="absolute inset-0 overflow-hidden pointer-events-none">
-        <div className="absolute top-20 left-20 w-96 h-96 bg-purple-500/20 rounded-full blur-3xl animate-pulse" />
-        <div className="absolute bottom-20 right-20 w-96 h-96 bg-pink-500/20 rounded-full blur-3xl animate-pulse delay-1000" />
+    <div>
+      <h1 className="text-2xl font-bold text-slate-900 dark:text-white tracking-tight mb-1">
+        Sign in
+      </h1>
+      <p className="text-sm text-slate-500 dark:text-slate-400 mb-8">
+        Use a passkey for instant access, or enter your email.
+      </p>
+
+      {/* Passkey sign-in for returning users */}
+      <button
+        type="button"
+        onClick={handlePasskeySignIn}
+        disabled={anyLoading}
+        className="w-full flex items-center gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3.5 text-left transition-colors hover:border-violet-300 hover:bg-violet-50/50 disabled:opacity-50 dark:border-white/10 dark:bg-white/[0.03] dark:hover:border-violet-500/30 dark:hover:bg-violet-500/[0.06]"
+      >
+        <div className="flex items-center justify-center w-9 h-9 rounded-lg bg-violet-100 dark:bg-violet-500/15">
+          <KeyRound className="w-4 h-4 text-violet-600 dark:text-violet-400" />
+        </div>
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-slate-900 dark:text-white">
+            {isPasskeySignInLoading ? "Waiting for passkey..." : "Sign in with passkey"}
+          </p>
+          <p className="text-xs text-slate-500 dark:text-slate-400">Returning users — no email needed</p>
+        </div>
+      </button>
+
+      {/* Divider */}
+      <div className="flex items-center gap-3 my-6">
+        <div className="flex-1 h-px bg-slate-200 dark:bg-white/10" />
+        <span className="text-xs text-slate-400 dark:text-slate-500">or use email</span>
+        <div className="flex-1 h-px bg-slate-200 dark:bg-white/10" />
       </div>
 
-      <div className="relative z-10 max-w-md w-full">
-        <div className="text-center mb-8">
-          <div className="inline-flex p-4 rounded-2xl bg-gradient-to-br from-purple-500/20 to-pink-500/20 mb-4">
-            <WandSparkles className="w-12 h-12 text-purple-400" strokeWidth={1.5} />
+      {/* Email form */}
+      <form onSubmit={handlePasskeySetup} className="space-y-3">
+        <div>
+          <label htmlFor="auth-email" className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5">
+            Email
+          </label>
+          <div className="relative">
+            <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+            <input
+              id="auth-email"
+              type="email"
+              value={email}
+              onChange={(e) => handleEmailChange(e.target.value)}
+              placeholder="you@company.com"
+              autoComplete="email webauthn"
+              className="w-full rounded-lg border border-slate-200 bg-white pl-10 pr-4 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/30 focus:border-violet-400 dark:border-white/10 dark:bg-white/[0.03] dark:text-white dark:placeholder:text-slate-500 dark:focus:ring-violet-500/20 dark:focus:border-violet-500/40"
+            />
           </div>
-          <h1 className="text-5xl font-bold mb-2 bg-gradient-to-r from-purple-400 via-pink-400 to-blue-400 bg-clip-text text-transparent">
-            OrchWiz
-          </h1>
-          <p className="text-lg text-gray-600 dark:text-gray-400">
-            Sign up or sign in to start orchestrating
-          </p>
         </div>
 
-        <div className="glass dark:glass-dark stack-3 p-8 rounded-2xl space-y-6">
-          <div className="text-center">
-            <h2 className="text-2xl font-semibold">Access OrchWiz</h2>
-            <p className="text-sm text-gray-600 dark:text-gray-400 mt-2">
-              Use a passkey, magic link, or GitHub to continue.
-            </p>
+        {/* Display name — appears when email is entered */}
+        {hasEmail && (
+          <div className="auth-field-reveal">
+            <label htmlFor="auth-name" className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5">
+              Display name
+            </label>
+            <div className="relative">
+              <UserRound className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+              <input
+                id="auth-name"
+                type="text"
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                placeholder="Your name"
+                className="w-full rounded-lg border border-slate-200 bg-white pl-10 pr-4 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/30 focus:border-violet-400 dark:border-white/10 dark:bg-white/[0.03] dark:text-white dark:placeholder:text-slate-500 dark:focus:ring-violet-500/20 dark:focus:border-violet-500/40"
+              />
+            </div>
           </div>
+        )}
 
-          {errorMessage && (
-            <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-600 dark:text-red-400">
-              {errorMessage}
-            </div>
-          )}
-
-          <button
-            onClick={handlePasskeyLogin}
-            disabled={isPasskeyLoading}
-            className="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 text-white font-medium py-3 px-4 rounded-lg transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed stack-2 transform hover:scale-105"
-          >
-            <KeyRound className="w-5 h-5" />
-            {isPasskeyLoading ? "Waiting for passkey..." : "Sign in with passkey"}
-          </button>
-
-          <form onSubmit={handleMagicLink} className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium mb-2">Work email</label>
-              <div className="relative">
-                <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-                <input
-                  type="email"
-                  value={email}
-                  onChange={(event) => setEmail(event.target.value)}
-                  placeholder="you@company.com"
-                  autoComplete="email webauthn"
-                  required
-                  className="w-full pl-10 pr-4 py-3 rounded-lg border border-white/20 bg-white/70 dark:bg-black/20 focus:outline-none focus:ring-2 focus:ring-purple-400/50"
-                />
-              </div>
-            </div>
+        {/* Action buttons — appear when email is entered */}
+        {hasEmail && (
+          <div className="space-y-2 pt-1 auth-field-reveal">
             <button
               type="submit"
-              disabled={isMagicLinkLoading}
-              className="w-full flex items-center justify-center gap-2 bg-white/10 hover:bg-white/20 text-gray-900 dark:text-white font-medium py-3 px-4 rounded-lg transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed border border-white/20"
+              disabled={anyLoading || !normalizedName}
+              className="w-full flex items-center justify-center gap-2 rounded-lg bg-violet-600 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-violet-500 disabled:opacity-50 dark:bg-violet-600 dark:hover:bg-violet-500"
             >
-              <Mail className="w-4 h-4" />
-              {isMagicLinkLoading ? "Sending magic link..." : "Email me a magic link"}
+              <KeyRound className="w-3.5 h-3.5" />
+              {isPasskeySetupLoading ? "Creating account..." : "Create account with passkey"}
             </button>
-            {magicLinkSent && (
-              <p className="text-sm text-emerald-500 text-center">
-                Magic link sent. Check your inbox to continue.
-              </p>
-            )}
-          </form>
 
-          {githubEnabled && (
-            <>
-              <div className="flex items-center gap-3 text-xs text-gray-500 dark:text-gray-400">
-                <div className="flex-1 h-px bg-white/20" />
-                <span>or continue with</span>
-                <div className="flex-1 h-px bg-white/20" />
-              </div>
-              <button
-                onClick={handleGitHubLogin}
-                disabled={isGitHubLoading}
-                className="w-full flex items-center justify-center gap-2 bg-gray-900 text-white font-medium py-3 px-4 rounded-lg transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-black"
-              >
-                <Github className="w-5 h-5" />
-                {isGitHubLoading ? "Signing in..." : "Sign in with GitHub"}
-              </button>
-            </>
-          )}
+            <button
+              type="button"
+              onClick={handleMagicLink}
+              disabled={anyLoading || !normalizedName}
+              className="w-full flex items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50 disabled:opacity-50 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-300 dark:hover:bg-white/[0.06]"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              {isMagicLinkLoading ? "Sending link..." : "Send magic link instead"}
+            </button>
+          </div>
+        )}
+      </form>
+
+      {/* Notices */}
+      {errorMessage && (
+        <div className="mt-5 rounded-lg border border-red-200 bg-red-50 px-3.5 py-2.5 text-sm text-red-700 dark:border-red-500/20 dark:bg-red-500/10 dark:text-red-300">
+          {errorMessage}
         </div>
-      </div>
-    </main>
+      )}
+      {successMessage && (
+        <div className="mt-5 rounded-lg border border-emerald-200 bg-emerald-50 px-3.5 py-2.5 text-sm text-emerald-700 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-300">
+          {successMessage}
+        </div>
+      )}
+    </div>
   )
 }

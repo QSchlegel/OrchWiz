@@ -1,7 +1,12 @@
 import { NextRequest, NextResponse } from "next/server"
+import type { Prisma } from "@prisma/client"
 import { auth } from "@/lib/auth"
 import { prisma } from "@/lib/prisma"
 import { headers } from "next/headers"
+import { runDeploymentAdapter } from "@/lib/deployment/adapter"
+import { publishRealtimeEvent } from "@/lib/realtime/events"
+import { mapForwardedDeployment } from "@/lib/forwarding/projections"
+import { normalizeDeploymentProfileInput } from "@/lib/deployment/profile"
 
 export const dynamic = 'force-dynamic'
 
@@ -11,6 +16,9 @@ export async function GET(request: NextRequest) {
     if (!session) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
+
+    const includeForwarded = request.nextUrl.searchParams.get("includeForwarded") === "true"
+    const sourceNodeId = request.nextUrl.searchParams.get("sourceNodeId")
 
     const deployments = await prisma.agentDeployment.findMany({
       where: {
@@ -30,7 +38,38 @@ export async function GET(request: NextRequest) {
       },
     })
 
-    return NextResponse.json(deployments)
+    if (!includeForwarded) {
+      return NextResponse.json(deployments)
+    }
+
+    const forwardedEvents = await prisma.forwardingEvent.findMany({
+      where: {
+        eventType: "deployment",
+        ...(sourceNodeId
+          ? {
+              sourceNode: {
+                nodeId: sourceNodeId,
+              },
+            }
+          : {}),
+      },
+      include: {
+        sourceNode: true,
+      },
+      orderBy: {
+        occurredAt: "desc",
+      },
+      take: 100,
+    })
+
+    const forwardedDeployments = forwardedEvents.map(mapForwardedDeployment)
+    const combined = [...deployments, ...forwardedDeployments].sort((a: any, b: any) => {
+      const aDate = new Date(a.createdAt || a.forwardingOccurredAt || 0).getTime()
+      const bDate = new Date(b.createdAt || b.forwardingOccurredAt || 0).getTime()
+      return bDate - aDate
+    })
+
+    return NextResponse.json(combined)
   } catch (error) {
     console.error("Error fetching deployments:", error)
     return NextResponse.json(
@@ -48,7 +87,27 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json()
-    const { name, description, subagentId, nodeId, nodeType, nodeUrl, config, metadata } = body
+    const {
+      name,
+      description,
+      subagentId,
+      nodeId,
+      nodeType,
+      nodeUrl,
+      config,
+      metadata,
+      deploymentProfile,
+      provisioningMode,
+      advancedNodeTypeOverride,
+    } = body
+
+    const normalizedProfile = normalizeDeploymentProfileInput({
+      deploymentProfile,
+      provisioningMode,
+      nodeType,
+      advancedNodeTypeOverride,
+      config,
+    })
 
     const deployment = await prisma.agentDeployment.create({
       data: {
@@ -56,9 +115,11 @@ export async function POST(request: NextRequest) {
         description,
         subagentId: subagentId || null,
         nodeId,
-        nodeType,
+        nodeType: normalizedProfile.nodeType,
+        deploymentProfile: normalizedProfile.deploymentProfile,
+        provisioningMode: normalizedProfile.provisioningMode,
         nodeUrl: nodeUrl || null,
-        config: config || {},
+        config: normalizedProfile.config as Prisma.InputJsonValue,
         metadata: metadata || {},
         userId: session.user.id,
         status: "pending",
@@ -74,21 +135,62 @@ export async function POST(request: NextRequest) {
       },
     })
 
-    // TODO: Trigger actual deployment process
-    // For now, simulate deployment
-    setTimeout(async () => {
-      await prisma.agentDeployment.update({
-        where: { id: deployment.id },
-        data: {
-          status: "active",
-          deployedAt: new Date(),
-          lastHealthCheck: new Date(),
-          healthStatus: "healthy",
-        },
-      })
-    }, 2000)
+    await prisma.agentDeployment.update({
+      where: { id: deployment.id },
+      data: {
+        status: "deploying",
+      },
+    })
 
-    return NextResponse.json(deployment)
+    const adapterResult = await runDeploymentAdapter({
+      kind: "agent",
+      recordId: deployment.id,
+      name: deployment.name,
+      nodeId: deployment.nodeId,
+      nodeType: deployment.nodeType,
+      nodeUrl: deployment.nodeUrl,
+      deploymentProfile: deployment.deploymentProfile,
+      provisioningMode: deployment.provisioningMode,
+      config: (deployment.config || {}) as Record<string, unknown>,
+      infrastructure: (((deployment.config || {}) as Record<string, unknown>).infrastructure ||
+        undefined) as Record<string, unknown> | undefined,
+      metadata: (deployment.metadata || {}) as Record<string, unknown>,
+    })
+
+    const updatedDeployment = await prisma.agentDeployment.update({
+      where: { id: deployment.id },
+      data: {
+        status: adapterResult.status,
+        deployedAt: adapterResult.deployedAt || null,
+        lastHealthCheck: adapterResult.lastHealthCheck || null,
+        healthStatus: adapterResult.healthStatus || null,
+        metadata: {
+          ...(deployment.metadata as Record<string, unknown> | null),
+          ...(adapterResult.metadata || {}),
+          ...(adapterResult.error ? { deploymentError: adapterResult.error } : {}),
+        },
+      },
+      include: {
+        subagent: {
+          select: {
+            id: true,
+            name: true,
+            description: true,
+          },
+        },
+      },
+    })
+
+    publishRealtimeEvent({
+      type: "deployment.updated",
+      payload: {
+        deploymentId: updatedDeployment.id,
+        status: updatedDeployment.status,
+        nodeId: updatedDeployment.nodeId,
+      },
+    })
+
+    return NextResponse.json(updatedDeployment)
   } catch (error) {
     console.error("Error creating deployment:", error)
     return NextResponse.json(

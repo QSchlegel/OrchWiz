@@ -300,6 +300,16 @@ interface NodeInfoCardProps {
   nodeUrl?: string | null
   healthStatus?: string | null
   deployedAt?: string | null
+  deploymentProfile?: string | null
+  provisioningMode?: string | null
+  infrastructure?: {
+    kubeContext?: string
+    namespace?: string
+    terraformWorkspace?: string
+    terraformEnvDir?: string
+    ansibleInventory?: string
+    ansiblePlaybook?: string
+  } | null
   // Extended node info (optional - from metadata)
   dataForwarding?: {
     enabled: boolean
@@ -320,6 +330,9 @@ export function NodeInfoCard({
   nodeUrl,
   healthStatus,
   deployedAt,
+  deploymentProfile,
+  provisioningMode,
+  infrastructure,
   dataForwarding,
   metrics,
   showCapabilities = true,
@@ -332,9 +345,32 @@ export function NodeInfoCard({
   const Icon = info.icon
   const isConnected = healthStatus === "healthy"
   const protocol = nodeUrl?.startsWith("https") ? "https" : "http"
+  const inferredLatency =
+    isConnected
+      ? nodeType === "local"
+        ? 8
+        : nodeType === "cloud"
+          ? 42
+          : 24
+      : undefined
 
   const useCaseVariants: ("purple" | "blue" | "pink" | "green" | "orange")[] =
     ["purple", "blue", "pink", "green"]
+  const deploymentProfileLabel =
+    deploymentProfile === "local_starship_build"
+      ? "Local Starship Build"
+      : deploymentProfile === "cloud_shipyard"
+        ? "Cloud Shipyard"
+        : deploymentProfile
+
+  const provisioningModeLabel =
+    provisioningMode === "terraform_ansible"
+      ? "Terraform + Ansible"
+      : provisioningMode === "terraform_only"
+        ? "Terraform only"
+        : provisioningMode === "ansible_only"
+          ? "Ansible only"
+          : provisioningMode
 
   return (
     <div className={`space-y-${compact ? "2" : "3"}`}>
@@ -388,8 +424,40 @@ export function NodeInfoCard({
         <ConnectionStatus
           isConnected={isConnected}
           protocol={protocol as any}
-          latency={isConnected ? Math.floor(Math.random() * 50) + 10 : undefined}
+          latency={inferredLatency}
         />
+      )}
+
+      {(deploymentProfileLabel || provisioningModeLabel) && (
+        <div className="rounded-lg border border-white/10 bg-black/20 px-2.5 py-2">
+          <div className="text-[10px] font-medium uppercase tracking-wider text-gray-400 mb-1">
+            Deployment Profile
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {deploymentProfileLabel && (
+              <span className="rounded-full border border-blue-500/30 bg-blue-500/15 px-2 py-0.5 text-[10px] text-blue-300">
+                {deploymentProfileLabel}
+              </span>
+            )}
+            {provisioningModeLabel && (
+              <span className="rounded-full border border-cyan-500/30 bg-cyan-500/15 px-2 py-0.5 text-[10px] text-cyan-300">
+                {provisioningModeLabel}
+              </span>
+            )}
+          </div>
+          {!compact && infrastructure && (
+            <div className="mt-2 grid grid-cols-1 gap-1 text-[10px] text-gray-400">
+              {infrastructure.kubeContext && <div>Context: {infrastructure.kubeContext}</div>}
+              {infrastructure.namespace && <div>Namespace: {infrastructure.namespace}</div>}
+              {infrastructure.terraformWorkspace && (
+                <div>TF Workspace: {infrastructure.terraformWorkspace}</div>
+              )}
+              {infrastructure.terraformEnvDir && <div>TF Env: {infrastructure.terraformEnvDir}</div>}
+              {infrastructure.ansibleInventory && <div>Inventory: {infrastructure.ansibleInventory}</div>}
+              {infrastructure.ansiblePlaybook && <div>Playbook: {infrastructure.ansiblePlaybook}</div>}
+            </div>
+          )}
+        </div>
       )}
 
       {/* Use Cases */}

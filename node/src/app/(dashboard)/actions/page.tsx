@@ -1,178 +1,166 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import Link from "next/link"
+import { FilterBar, InlineNotice, PageLayout, SurfaceCard, EmptyState } from "@/components/dashboard/PageLayout"
+import { StatusPill } from "@/components/dashboard/StatusPill"
+import { useEventStream } from "@/lib/realtime/useEventStream"
 
 interface AgentAction {
   id: string
   sessionId: string
   type: string
   action: string
-  details: any
+  details: Record<string, unknown>
   status: string | null
-  result: any
-  timestamp: Date
+  result: Record<string, unknown>
+  timestamp: string
   session: {
     id: string
     title: string | null
   }
+  isForwarded?: boolean
+  sourceNodeId?: string
+  sourceNodeName?: string
 }
 
 export default function ActionsPage() {
   const [actions, setActions] = useState<AgentAction[]>([])
   const [isLoading, setIsLoading] = useState(true)
-  const [filters, setFilters] = useState({
-    type: "",
-    status: "",
-  })
+  const [filters, setFilters] = useState({ type: "", status: "" })
+  const [includeForwarded, setIncludeForwarded] = useState(false)
+  const [sourceNodeId, setSourceNodeId] = useState("")
+  const [message, setMessage] = useState<{ type: "error" | "success" | "info"; text: string } | null>(null)
 
-  useEffect(() => {
-    fetchActions()
-  }, [filters])
-
-  const fetchActions = async () => {
+  const fetchActions = useCallback(async () => {
     setIsLoading(true)
     try {
       const params = new URLSearchParams()
       if (filters.type) params.append("type", filters.type)
       if (filters.status) params.append("status", filters.status)
+      if (includeForwarded) params.append("includeForwarded", "true")
+      if (sourceNodeId.trim()) params.append("sourceNodeId", sourceNodeId.trim())
 
       const response = await fetch(`/api/actions?${params.toString()}`)
-      if (response.ok) {
-        const data = await response.json()
-        setActions(data)
+      const payload = await response.json()
+      if (!response.ok) {
+        setActions([])
+        setMessage({ type: "error", text: payload?.error || "Unable to fetch actions" })
+        return
       }
+
+      setActions(Array.isArray(payload) ? payload : [])
     } catch (error) {
       console.error("Error fetching actions:", error)
+      setMessage({ type: "error", text: "Unable to fetch actions" })
     } finally {
       setIsLoading(false)
     }
-  }
+  }, [filters, includeForwarded, sourceNodeId])
 
-  const typeColors = {
-    slack: "bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200",
-    bigquery: "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200",
-    sentry: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200",
-    other: "bg-gray-100 text-gray-800 dark:bg-gray-900 dark:text-gray-200",
-  }
+  useEffect(() => {
+    fetchActions()
+  }, [fetchActions])
+
+  useEventStream({
+    enabled: true,
+    types: ["forwarding.received", "session.prompted"],
+    onEvent: () => fetchActions(),
+  })
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-900 p-8">
-      <div className="max-w-7xl mx-auto">
-        <h1 className="text-3xl font-bold mb-8 text-gray-900 dark:text-white">
-          Agent Actions
-        </h1>
+    <PageLayout
+      title="Agent Actions"
+      description="Audit integration actions including local and forwarded execution events."
+    >
+      <div className="space-y-4">
+        {message && <InlineNotice variant={message.type}>{message.text}</InlineNotice>}
 
-        {/* Filters */}
-        <div className="mb-6 flex gap-4">
+        <FilterBar>
           <select
             value={filters.type}
-            onChange={(e) =>
-              setFilters({ ...filters, type: e.target.value })
-            }
-            className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white"
+            onChange={(e) => setFilters((current) => ({ ...current, type: e.target.value }))}
+            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
           >
             <option value="">All Types</option>
-            <option value="slack">Slack</option>
-            <option value="bigquery">BigQuery</option>
-            <option value="sentry">Sentry</option>
-            <option value="other">Other</option>
+            <option value="slack">slack</option>
+            <option value="bigquery">bigquery</option>
+            <option value="sentry">sentry</option>
+            <option value="other">other</option>
           </select>
 
           <select
             value={filters.status}
-            onChange={(e) =>
-              setFilters({ ...filters, status: e.target.value })
-            }
-            className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white"
+            onChange={(e) => setFilters((current) => ({ ...current, status: e.target.value }))}
+            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
           >
             <option value="">All Statuses</option>
-            <option value="success">Success</option>
-            <option value="error">Error</option>
-            <option value="pending">Pending</option>
+            <option value="success">success</option>
+            <option value="error">error</option>
+            <option value="pending">pending</option>
           </select>
-        </div>
+
+          <label className="inline-flex items-center gap-2 rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 dark:border-white/15 dark:text-slate-300">
+            <input
+              type="checkbox"
+              checked={includeForwarded}
+              onChange={(e) => setIncludeForwarded(e.target.checked)}
+            />
+            Include forwarded
+          </label>
+
+          <input
+            type="text"
+            value={sourceNodeId}
+            onChange={(e) => setSourceNodeId(e.target.value)}
+            placeholder="Source node filter"
+            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
+          />
+        </FilterBar>
 
         {isLoading ? (
-          <div className="text-center py-12 text-gray-500 dark:text-gray-400">
-            Loading actions...
-          </div>
+          <SurfaceCard>Loading actions...</SurfaceCard>
         ) : actions.length === 0 ? (
-          <div className="text-center py-12 text-gray-500 dark:text-gray-400">
-            No actions found
-          </div>
+          <EmptyState title="No actions found" description="Run sessions or ingest forwarded action events." />
         ) : (
-          <div className="space-y-4">
+          <div className="space-y-3">
             {actions.map((action) => (
-              <div
-                key={action.id}
-                className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6"
-              >
-                <div className="flex items-start justify-between mb-4">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2 mb-2">
-                      <span
-                        className={`px-2 py-1 text-xs font-medium rounded ${
-                          typeColors[
-                            action.type as keyof typeof typeColors
-                          ] || typeColors.other
-                        }`}
-                      >
-                        {action.type}
-                      </span>
-                      <span className="text-lg font-semibold text-gray-900 dark:text-white">
-                        {action.action}
-                      </span>
-                      {action.status && (
-                        <span
-                          className={`px-2 py-1 text-xs font-medium rounded ${
-                            action.status === "success"
-                              ? "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200"
-                              : action.status === "error"
-                              ? "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200"
-                              : "bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200"
-                          }`}
-                        >
-                          {action.status}
+              <SurfaceCard key={action.id}>
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <StatusPill value={action.type} />
+                      {action.status && <StatusPill value={action.status} />}
+                      {action.isForwarded && (
+                        <span className="rounded-full border border-indigo-500/30 bg-indigo-500/10 px-2 py-0.5 text-[11px] text-indigo-700 dark:text-indigo-300">
+                          Forwarded {action.sourceNodeName || action.sourceNodeId || "node"}
                         </span>
                       )}
                     </div>
-                    <Link
-                      href={`/sessions/${action.sessionId}`}
-                      className="text-sm text-blue-600 dark:text-blue-400 hover:underline"
-                    >
-                      Session: {action.session.title || action.sessionId}
+                    <p className="mt-2 text-sm font-medium text-slate-900 dark:text-slate-100">{action.action}</p>
+                    <Link href={`/sessions/${action.sessionId}`} className="mt-1 inline-block text-sm text-blue-600 hover:underline dark:text-blue-400">
+                      Session: {action.session?.title || action.sessionId}
                     </Link>
-                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                      {new Date(action.timestamp).toLocaleString()}
-                    </p>
+                    <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{new Date(action.timestamp).toLocaleString()}</p>
                   </div>
                 </div>
-                {action.details && (
-                  <div className="mb-2">
-                    <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">
-                      Details:
-                    </p>
-                    <pre className="text-xs bg-gray-50 dark:bg-gray-700 p-2 rounded overflow-x-auto">
-                      {JSON.stringify(action.details, null, 2)}
-                    </pre>
-                  </div>
+
+                {action.details && Object.keys(action.details).length > 0 && (
+                  <pre className="mt-3 overflow-x-auto rounded-lg bg-slate-950 p-2 text-xs text-slate-100">
+                    {JSON.stringify(action.details, null, 2)}
+                  </pre>
                 )}
-                {action.result && (
-                  <div>
-                    <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">
-                      Result:
-                    </p>
-                    <pre className="text-xs bg-gray-50 dark:bg-gray-700 p-2 rounded overflow-x-auto">
-                      {JSON.stringify(action.result, null, 2)}
-                    </pre>
-                  </div>
+
+                {action.result && Object.keys(action.result).length > 0 && (
+                  <pre className="mt-3 overflow-x-auto rounded-lg bg-slate-950 p-2 text-xs text-slate-100">
+                    {JSON.stringify(action.result, null, 2)}
+                  </pre>
                 )}
-              </div>
+              </SurfaceCard>
             ))}
           </div>
         )}
       </div>
-    </div>
+    </PageLayout>
   )
 }

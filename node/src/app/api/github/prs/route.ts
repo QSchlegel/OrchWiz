@@ -15,7 +15,6 @@ export async function GET(request: NextRequest) {
     const searchParams = request.nextUrl.searchParams
     const owner = searchParams.get("owner")
     const repo = searchParams.get("repo")
-    const token = searchParams.get("token")
 
     if (!owner || !repo) {
       return NextResponse.json(
@@ -24,8 +23,29 @@ export async function GET(request: NextRequest) {
       )
     }
 
-    // TODO: Get GitHub token from user's connected account
-    const prs = await getPRsWithClaudeTag(owner, repo, token || undefined)
+    let githubAccessToken: string | undefined
+    try {
+      const tokenResponse = await auth.api.getAccessToken({
+        headers: await headers(),
+        body: { providerId: "github" },
+      })
+      githubAccessToken = tokenResponse?.accessToken
+    } catch (error) {
+      console.error("GitHub access token error:", error)
+      return NextResponse.json(
+        { error: "GitHub is not connected. Connect GitHub on the GitHub PRs page first." },
+        { status: 400 }
+      )
+    }
+
+    if (!githubAccessToken) {
+      return NextResponse.json(
+        { error: "GitHub is not connected. Connect GitHub on the GitHub PRs page first." },
+        { status: 400 }
+      )
+    }
+
+    const prs = await getPRsWithClaudeTag(owner, repo, githubAccessToken)
 
     return NextResponse.json(prs)
   } catch (error) {

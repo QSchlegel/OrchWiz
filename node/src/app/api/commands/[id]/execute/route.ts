@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server"
 import { auth } from "@/lib/auth"
 import { prisma } from "@/lib/prisma"
 import { headers } from "next/headers"
+import { executeCommandWithPolicy } from "@/lib/execution/command-executor"
+import { publishRealtimeEvent } from "@/lib/realtime/events"
 
 export const dynamic = 'force-dynamic'
 
@@ -27,32 +29,52 @@ export async function POST(
       return NextResponse.json({ error: "Command not found" }, { status: 404 })
     }
 
-    // Create execution record
+    const startedAt = new Date()
     const execution = await prisma.commandExecution.create({
       data: {
         commandId: id,
         sessionId: sessionId || null,
         userId: session.user.id,
         status: "running",
-        startedAt: new Date(),
+        startedAt,
       },
     })
 
-    // TODO: Actually execute the command script
-    // For now, simulate execution
-    setTimeout(async () => {
-      await prisma.commandExecution.update({
-        where: { id: execution.id },
-        data: {
-          status: "completed",
-          output: "Command executed successfully (simulated)",
-          completedAt: new Date(),
-          duration: 1000,
-        },
-      })
-    }, 1000)
+    const result = await executeCommandWithPolicy(command)
+    const completedAt = new Date()
+    const duration = Math.max(result.durationMs, completedAt.getTime() - startedAt.getTime())
 
-    return NextResponse.json(execution)
+    const updatedExecution = await prisma.commandExecution.update({
+      where: { id: execution.id },
+      data: {
+        status: result.status === "completed" ? "completed" : "failed",
+        output: result.output || null,
+        error:
+          result.error ||
+          (result.status === "blocked"
+            ? "Execution blocked by policy"
+            : null),
+        completedAt,
+        duration,
+      },
+    })
+
+    publishRealtimeEvent({
+      type: "command.executed",
+      payload: {
+        executionId: updatedExecution.id,
+        commandId: id,
+        sessionId: sessionId || null,
+        status: updatedExecution.status,
+      },
+    })
+
+    return NextResponse.json({
+      ...updatedExecution,
+      policy: result.permission,
+      blocked: result.status === "blocked",
+      metadata: result.metadata,
+    })
   } catch (error) {
     console.error("Error executing command:", error)
     return NextResponse.json(

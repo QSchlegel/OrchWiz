@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server"
 import { auth } from "@/lib/auth"
 import { prisma } from "@/lib/prisma"
 import { headers } from "next/headers"
+import { runSessionRuntime } from "@/lib/runtime"
+import { publishRealtimeEvent } from "@/lib/realtime/events"
 
 export const dynamic = 'force-dynamic'
 
@@ -49,11 +51,40 @@ export async function POST(
       })
     }
 
-    // TODO: Integrate with Claude API to get AI response
-    // For now, return the interaction
+    const runtimeResult = await runSessionRuntime({
+      sessionId: id,
+      prompt,
+      metadata: metadata || {},
+    })
+
+    const responseInteraction = await prisma.sessionInteraction.create({
+      data: {
+        sessionId: id,
+        type: "ai_response",
+        content: runtimeResult.output,
+        metadata: {
+          provider: runtimeResult.provider,
+          fallbackUsed: runtimeResult.fallbackUsed,
+          ...(runtimeResult.metadata || {}),
+        },
+      },
+    })
+
+    publishRealtimeEvent({
+      type: "session.prompted",
+      payload: {
+        sessionId: id,
+        userInteractionId: interaction.id,
+        aiInteractionId: responseInteraction.id,
+        provider: runtimeResult.provider,
+      },
+    })
+
     return NextResponse.json({
       interaction,
-      message: "Prompt submitted. AI integration pending.",
+      responseInteraction,
+      provider: runtimeResult.provider,
+      fallbackUsed: runtimeResult.fallbackUsed,
     })
   } catch (error) {
     console.error("Error submitting prompt:", error)

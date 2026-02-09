@@ -3,6 +3,7 @@
 ## Overview
 
 A cloud node is an Orchwiz deployment running in a cloud environment, accessible over the internet.
+Primary profile: `Cloud Shipyard`.
 
 ## Use Cases
 
@@ -26,6 +27,11 @@ Deploy to cloud platforms:
 - Render
 - AWS/GCP/Azure
 
+### Option 3: Cloud Shipyard (Terraform + Ansible)
+- Provider-agnostic Kubernetes target
+- Existing cluster required (no cluster provisioning in this profile)
+- Uses `infra/terraform/environments/shipyard-cloud` + `infra/ansible/playbooks/shipyard_cloud.yml`
+
 ## Configuration
 
 ### Database
@@ -37,6 +43,7 @@ Deploy to cloud platforms:
 - Public URL (via tunnel or direct)
 - Production build
 - Environment variables from secure storage
+- Shipyard profile supports optional ingress creation controlled by Terraform variables
 
 ### Authentication
 - GitHub OAuth with production callback URL

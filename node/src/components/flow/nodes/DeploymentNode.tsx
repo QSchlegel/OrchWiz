@@ -6,6 +6,8 @@ export interface DeploymentNodeData {
   title: string
   status: string
   nodeType?: string
+  deploymentProfile?: string
+  provisioningMode?: string
   meta?: string
 }
 
@@ -44,6 +46,12 @@ export function DeploymentNode({ data, selected }: NodeProps<DeploymentNodeData>
         {data.nodeType && <span>{data.nodeType}</span>}
         {data.meta && <span>{data.meta}</span>}
       </div>
+      {(data.deploymentProfile || data.provisioningMode) && (
+        <div className="mt-1 text-[10px] text-slate-500">
+          {data.deploymentProfile && <span>{data.deploymentProfile}</span>}
+          {data.provisioningMode && <span className="ml-2">{data.provisioningMode}</span>}
+        </div>
+      )}
       <Handle type="target" position={Position.Left} style={{ opacity: 0 }} />
       <Handle type="source" position={Position.Right} style={{ opacity: 0 }} />
     </div>

@@ -1,0 +1,27 @@
+kube_context = "your-cloud-cluster"
+namespace    = "orchwiz-shipyard"
+app_name     = "orchwiz"
+app_image    = "ghcr.io/your-org/orchwiz:latest"
+app_port     = 3000
+replicas     = 2
+
+database_url_secret_name = "orchwiz-db-url"
+database_url             = ""
+
+better_auth_secret  = "replace-with-32-char-secret"
+better_auth_url     = "https://orchwiz.example.com"
+next_public_app_url = "https://orchwiz.example.com"
+
+github_client_id     = ""
+github_client_secret = ""
+
+service_type   = "ClusterIP"
+create_ingress = true
+ingress_host   = "orchwiz.example.com"
+ingress_annotations = {
+  "nginx.ingress.kubernetes.io/proxy-body-size" = "10m"
+}
+
+app_env = {
+  ENABLE_LOCAL_COMMAND_EXECUTION = "false"
+}

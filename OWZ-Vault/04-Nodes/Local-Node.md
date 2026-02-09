@@ -3,6 +3,7 @@
 ## Overview
 
 A local node is an Orchwiz deployment running on your local machine or development environment.
+Primary profile: `Local Starship Build`.
 
 ## Use Cases
 
@@ -17,6 +18,7 @@ A local node is an Orchwiz deployment running on your local machine or developme
 2. Configure environment variables for local development
 3. Set up local PostgreSQL database
 4. Configure GitHub OAuth for localhost
+5. Optional Minikube path: use Terraform + Ansible from `infra/` (`starship-local` environment)
 
 ## Configuration
 
@@ -24,11 +26,13 @@ A local node is an Orchwiz deployment running on your local machine or developme
 - Local PostgreSQL instance
 - Default port: 5432
 - Database name: orchis (or custom)
+- Starship profile default: in-cluster PostgreSQL via Helm when using Minikube
 
 ### Application
 - Runs on http://localhost:3000
 - Development mode with hot reload
 - Direct database connection
+- Starship profile default: exposed through `minikube service --url`
 
 ### Authentication
 - GitHub OAuth callback: http://localhost:3000/api/auth/callback/github

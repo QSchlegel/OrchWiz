@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client'
+import { PrismaPg } from '@prisma/adapter-pg'
 
 // Load environment variables early
 if (typeof window === 'undefined') {
@@ -28,12 +29,20 @@ function getPrismaClient(): PrismaClient {
     )
   }
 
-  const client = new PrismaClient()
-  
+  const connectionString = process.env.DATABASE_URL
+  if (!connectionString) {
+    throw new Error(
+      'DATABASE_URL is not set. Prisma 7 with the pg adapter requires DATABASE_URL to instantiate PrismaClient.'
+    )
+  }
+
+  const adapter = new PrismaPg({ connectionString })
+  const client = new PrismaClient({ adapter })
+
   if (process.env.NODE_ENV !== 'production') {
     globalForPrisma.prisma = client
   }
-  
+
   return client
 }
 

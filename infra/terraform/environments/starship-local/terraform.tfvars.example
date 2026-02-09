@@ -1,0 +1,19 @@
+kube_context = "minikube"
+namespace    = "orchwiz-starship"
+app_name     = "orchwiz"
+app_image    = "ghcr.io/your-org/orchwiz:latest"
+
+postgres_user     = "orchwiz"
+postgres_password = "orchwiz_dev"
+postgres_db       = "orchis"
+
+better_auth_secret  = "replace-with-32-char-secret"
+better_auth_url     = "http://localhost:3000"
+next_public_app_url = "http://localhost:3000"
+
+github_client_id     = ""
+github_client_secret = ""
+
+app_env = {
+  ENABLE_LOCAL_COMMAND_EXECUTION = "false"
+}

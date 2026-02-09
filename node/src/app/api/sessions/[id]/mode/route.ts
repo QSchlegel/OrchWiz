@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { auth } from "@/lib/auth"
 import { prisma } from "@/lib/prisma"
 import { headers } from "next/headers"
+import { publishRealtimeEvent } from "@/lib/realtime/events"
 
 export const dynamic = 'force-dynamic'
 
@@ -33,6 +34,14 @@ export async function POST(
       },
       data: {
         mode,
+      },
+    })
+
+    publishRealtimeEvent({
+      type: "session.prompted",
+      payload: {
+        sessionId: updatedSession.id,
+        mode: updatedSession.mode,
       },
     })
 

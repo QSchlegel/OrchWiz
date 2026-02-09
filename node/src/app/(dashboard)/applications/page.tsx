@@ -37,6 +37,90 @@ import { ApplicationNode, SystemNode } from "@/components/flow/nodes"
 import { layoutColumns } from "@/lib/flow/layout"
 import { buildEdgesToAnchors, mapAnchorsToNodes, mapApplicationsToNodes } from "@/lib/flow/mappers"
 import type { Node } from "reactflow"
+import { useEventStream } from "@/lib/realtime/useEventStream"
+
+type DeploymentProfile = "local_starship_build" | "cloud_shipyard"
+type ProvisioningMode = "terraform_ansible" | "terraform_only" | "ansible_only"
+type NodeType = "local" | "cloud" | "hybrid"
+
+interface InfrastructureConfig {
+  kubeContext: string
+  namespace: string
+  terraformWorkspace: string
+  terraformEnvDir: string
+  ansibleInventory: string
+  ansiblePlaybook: string
+}
+
+interface ApplicationFormData {
+  name: string
+  description: string
+  applicationType: Application["applicationType"]
+  image: string
+  repository: string
+  branch: string
+  buildCommand: string
+  startCommand: string
+  port: number
+  environment: Record<string, unknown>
+  nodeId: string
+  nodeType: NodeType
+  deploymentProfile: DeploymentProfile
+  provisioningMode: ProvisioningMode
+  advancedNodeTypeOverride: boolean
+  infrastructure: InfrastructureConfig
+  nodeUrl: string
+  version: string
+}
+
+const deploymentProfileLabels: Record<DeploymentProfile, string> = {
+  local_starship_build: "Local Starship Build",
+  cloud_shipyard: "Cloud Shipyard",
+}
+
+const provisioningModeLabels: Record<ProvisioningMode, string> = {
+  terraform_ansible: "Terraform + Ansible",
+  terraform_only: "Terraform only",
+  ansible_only: "Ansible only",
+}
+
+function defaultInfrastructure(profile: DeploymentProfile): InfrastructureConfig {
+  if (profile === "cloud_shipyard") {
+    return {
+      kubeContext: "existing-cluster",
+      namespace: "orchwiz-shipyard",
+      terraformWorkspace: "shipyard-cloud",
+      terraformEnvDir: "infra/terraform/environments/shipyard-cloud",
+      ansibleInventory: "infra/ansible/inventory/cloud.ini",
+      ansiblePlaybook: "infra/ansible/playbooks/shipyard_cloud.yml",
+    }
+  }
+
+  return {
+    kubeContext: "minikube",
+    namespace: "orchwiz-starship",
+    terraformWorkspace: "starship-local",
+    terraformEnvDir: "infra/terraform/environments/starship-local",
+    ansibleInventory: "infra/ansible/inventory/local.ini",
+    ansiblePlaybook: "infra/ansible/playbooks/starship_local.yml",
+  }
+}
+
+function deriveNodeType(
+  profile: DeploymentProfile,
+  advancedNodeTypeOverride: boolean,
+  requestedNodeType: NodeType,
+): NodeType {
+  if (profile === "local_starship_build") {
+    return "local"
+  }
+
+  if (advancedNodeTypeOverride && requestedNodeType === "hybrid") {
+    return "hybrid"
+  }
+
+  return "cloud"
+}
 
 interface Application {
   id: string
@@ -51,7 +135,9 @@ interface Application {
   port: number | null
   environment: any
   nodeId: string
-  nodeType: "local" | "cloud" | "hybrid"
+  nodeType: NodeType
+  deploymentProfile: DeploymentProfile
+  provisioningMode: ProvisioningMode
   nodeUrl: string | null
   status: "pending" | "deploying" | "active" | "inactive" | "failed" | "updating"
   config: any
@@ -176,13 +262,30 @@ function formatUptime(deployedAt: Date): string {
   return `${minutes}m`
 }
 
+function extractInfrastructureConfig(config: unknown): InfrastructureConfig | null {
+  if (!config || typeof config !== "object") {
+    return null
+  }
+
+  const infrastructure = (config as Record<string, unknown>).infrastructure
+  if (!infrastructure || typeof infrastructure !== "object") {
+    return null
+  }
+
+  return infrastructure as InfrastructureConfig
+}
+
 export default function ApplicationsPage() {
+  const initialDeploymentProfile: DeploymentProfile = "local_starship_build"
+
   const [applications, setApplications] = useState<Application[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [selectedApplicationId, setSelectedApplicationId] = useState<string | null>(null)
   const [isCreating, setIsCreating] = useState(false)
   const [showCreateForm, setShowCreateForm] = useState(false)
-  const [formData, setFormData] = useState({
+  const [includeForwarded, setIncludeForwarded] = useState(false)
+  const [sourceNodeId, setSourceNodeId] = useState("")
+  const [formData, setFormData] = useState<ApplicationFormData>({
     name: "",
     description: "",
     applicationType: "docker" as Application["applicationType"],
@@ -194,19 +297,39 @@ export default function ApplicationsPage() {
     port: 3000,
     environment: {},
     nodeId: "",
-    nodeType: "local" as "local" | "cloud" | "hybrid",
+    nodeType: "local" as NodeType,
+    deploymentProfile: initialDeploymentProfile,
+    provisioningMode: "terraform_ansible" as ProvisioningMode,
+    advancedNodeTypeOverride: false,
+    infrastructure: defaultInfrastructure(initialDeploymentProfile),
     nodeUrl: "",
     version: "",
   })
 
+  const derivedNodeType = useMemo(
+    () => deriveNodeType(formData.deploymentProfile, formData.advancedNodeTypeOverride, formData.nodeType),
+    [formData.advancedNodeTypeOverride, formData.deploymentProfile, formData.nodeType],
+  )
+
   useEffect(() => {
     fetchApplications()
-  }, [])
+  }, [includeForwarded, sourceNodeId])
+
+  useEventStream({
+    enabled: true,
+    types: ["application.updated", "forwarding.received"],
+    onEvent: () => {
+      fetchApplications()
+    },
+  })
 
   const fetchApplications = async () => {
     setIsLoading(true)
     try {
-      const response = await fetch("/api/applications")
+      const params = new URLSearchParams()
+      if (includeForwarded) params.append("includeForwarded", "true")
+      if (sourceNodeId.trim()) params.append("sourceNodeId", sourceNodeId.trim())
+      const response = await fetch(`/api/applications?${params.toString()}`)
       if (response.ok) {
         const data = await response.json()
         setApplications(data)
@@ -229,9 +352,26 @@ export default function ApplicationsPage() {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          ...formData,
+          name: formData.name,
+          description: formData.description,
+          applicationType: formData.applicationType,
+          image: formData.image,
+          repository: formData.repository,
+          branch: formData.branch,
+          buildCommand: formData.buildCommand,
+          startCommand: formData.startCommand,
           port: formData.port || null,
           environment: formData.environment || {},
+          nodeId: formData.nodeId,
+          nodeType: formData.nodeType,
+          deploymentProfile: formData.deploymentProfile,
+          provisioningMode: formData.provisioningMode,
+          advancedNodeTypeOverride: formData.advancedNodeTypeOverride,
+          nodeUrl: formData.nodeUrl || null,
+          version: formData.version || null,
+          config: {
+            infrastructure: formData.infrastructure,
+          },
         }),
       })
 
@@ -250,6 +390,10 @@ export default function ApplicationsPage() {
           environment: {},
           nodeId: "",
           nodeType: "local",
+          deploymentProfile: initialDeploymentProfile,
+          provisioningMode: "terraform_ansible",
+          advancedNodeTypeOverride: false,
+          infrastructure: defaultInfrastructure(initialDeploymentProfile),
           nodeUrl: "",
           version: "",
         })
@@ -303,6 +447,8 @@ export default function ApplicationsPage() {
       status: app.status,
       nodeType: app.nodeType,
       applicationType: app.applicationType,
+      deploymentProfile: app.deploymentProfile,
+      provisioningMode: app.provisioningMode,
     }))
 
     const localInputs = appInputs.filter((item) => item.nodeType === "local")
@@ -383,6 +529,24 @@ export default function ApplicationsPage() {
           </button>
         </div>
 
+        <div className="mb-6 flex flex-wrap items-center gap-3">
+          <label className="inline-flex items-center gap-2 rounded-lg border border-white/15 bg-white/[0.04] px-3 py-2 text-sm text-gray-300">
+            <input
+              type="checkbox"
+              checked={includeForwarded}
+              onChange={(e) => setIncludeForwarded(e.target.checked)}
+            />
+            Include forwarded
+          </label>
+          <input
+            type="text"
+            value={sourceNodeId}
+            onChange={(e) => setSourceNodeId(e.target.value)}
+            placeholder="Source node filter"
+            className="rounded-lg border border-white/15 bg-white/[0.04] px-3 py-2 text-sm text-white"
+          />
+        </div>
+
         <OrchestrationSurface level={4} className="mb-8 bg-white/5">
           <div className="flex items-center justify-between">
             <h2 className="text-lg font-semibold">Application Topology</h2>
@@ -442,16 +606,88 @@ export default function ApplicationsPage() {
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium mb-2">Node Type</label>
+                  <label className="block text-sm font-medium mb-2">Deployment Profile</label>
                   <select
-                    value={formData.nodeType}
-                    onChange={(e) => setFormData({ ...formData, nodeType: e.target.value as any })}
+                    value={formData.deploymentProfile}
+                    onChange={(e) => {
+                      const deploymentProfile = e.target.value as DeploymentProfile
+                      const nodeType =
+                        deploymentProfile === "local_starship_build"
+                          ? "local"
+                          : formData.nodeType === "hybrid"
+                            ? "hybrid"
+                            : "cloud"
+                      setFormData({
+                        ...formData,
+                        deploymentProfile,
+                        advancedNodeTypeOverride:
+                          deploymentProfile === "cloud_shipyard" ? formData.advancedNodeTypeOverride : false,
+                        nodeType,
+                        infrastructure: defaultInfrastructure(deploymentProfile),
+                      })
+                    }}
                     className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
                   >
-                    <option value="local">Local</option>
-                    <option value="cloud">Cloud</option>
-                    <option value="hybrid">Hybrid</option>
+                    <option value="local_starship_build">Local Starship Build</option>
+                    <option value="cloud_shipyard">Cloud Shipyard</option>
                   </select>
+                </div>
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium mb-2">Provisioning Mode</label>
+                  <select
+                    value={formData.provisioningMode}
+                    onChange={(e) =>
+                      setFormData({ ...formData, provisioningMode: e.target.value as ProvisioningMode })
+                    }
+                    className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
+                  >
+                    <option value="terraform_ansible">Terraform + Ansible</option>
+                    <option value="terraform_only" disabled>
+                      Terraform only (coming soon)
+                    </option>
+                    <option value="ansible_only" disabled>
+                      Ansible only (coming soon)
+                    </option>
+                  </select>
+                  <p className="mt-1 text-xs text-gray-500">
+                    {provisioningModeLabels[formData.provisioningMode]}
+                  </p>
+                </div>
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium mb-2">Derived Node Type</label>
+                  <div className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20 text-sm">
+                    {deploymentProfileLabels[formData.deploymentProfile]}
+                    {" -> "}
+                    {nodeTypeConfig[derivedNodeType].label}
+                  </div>
+                  {formData.deploymentProfile === "cloud_shipyard" && (
+                    <div className="mt-2 space-y-2">
+                      <label className="inline-flex items-center gap-2 text-sm text-gray-300">
+                        <input
+                          type="checkbox"
+                          checked={formData.advancedNodeTypeOverride}
+                          onChange={(e) =>
+                            setFormData({
+                              ...formData,
+                              advancedNodeTypeOverride: e.target.checked,
+                              nodeType: e.target.checked ? formData.nodeType : "cloud",
+                            })
+                          }
+                        />
+                        Advanced override (allow hybrid)
+                      </label>
+                      {formData.advancedNodeTypeOverride && (
+                        <select
+                          value={formData.nodeType}
+                          onChange={(e) => setFormData({ ...formData, nodeType: e.target.value as NodeType })}
+                          className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
+                        >
+                          <option value="cloud">Cloud</option>
+                          <option value="hybrid">Hybrid</option>
+                        </select>
+                      )}
+                    </div>
+                  )}
                 </div>
                 {formData.applicationType === "docker" && (
                   <div className="md:col-span-2">
@@ -528,6 +764,83 @@ export default function ApplicationsPage() {
                     className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
                     placeholder="https://node.example.com"
                   />
+                </div>
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium mb-2">Infrastructure (config.infrastructure)</label>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <input
+                      type="text"
+                      value={formData.infrastructure.kubeContext}
+                      onChange={(e) =>
+                        setFormData({
+                          ...formData,
+                          infrastructure: { ...formData.infrastructure, kubeContext: e.target.value },
+                        })
+                      }
+                      className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
+                      placeholder="kube context"
+                    />
+                    <input
+                      type="text"
+                      value={formData.infrastructure.namespace}
+                      onChange={(e) =>
+                        setFormData({
+                          ...formData,
+                          infrastructure: { ...formData.infrastructure, namespace: e.target.value },
+                        })
+                      }
+                      className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
+                      placeholder="namespace"
+                    />
+                    <input
+                      type="text"
+                      value={formData.infrastructure.terraformWorkspace}
+                      onChange={(e) =>
+                        setFormData({
+                          ...formData,
+                          infrastructure: { ...formData.infrastructure, terraformWorkspace: e.target.value },
+                        })
+                      }
+                      className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
+                      placeholder="terraform workspace"
+                    />
+                    <input
+                      type="text"
+                      value={formData.infrastructure.terraformEnvDir}
+                      onChange={(e) =>
+                        setFormData({
+                          ...formData,
+                          infrastructure: { ...formData.infrastructure, terraformEnvDir: e.target.value },
+                        })
+                      }
+                      className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
+                      placeholder="terraform environment directory"
+                    />
+                    <input
+                      type="text"
+                      value={formData.infrastructure.ansibleInventory}
+                      onChange={(e) =>
+                        setFormData({
+                          ...formData,
+                          infrastructure: { ...formData.infrastructure, ansibleInventory: e.target.value },
+                        })
+                      }
+                      className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
+                      placeholder="ansible inventory path"
+                    />
+                    <input
+                      type="text"
+                      value={formData.infrastructure.ansiblePlaybook}
+                      onChange={(e) =>
+                        setFormData({
+                          ...formData,
+                          infrastructure: { ...formData.infrastructure, ansiblePlaybook: e.target.value },
+                        })
+                      }
+                      className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
+                      placeholder="ansible playbook path"
+                    />
+                  </div>
                 </div>
                 <div>
                   <label className="block text-sm font-medium mb-2">Version (optional)</label>
@@ -688,6 +1001,9 @@ export default function ApplicationsPage() {
                         nodeId={application.nodeId}
                         nodeUrl={application.nodeUrl}
                         healthStatus={application.healthStatus}
+                        deploymentProfile={application.deploymentProfile}
+                        provisioningMode={application.provisioningMode}
+                        infrastructure={extractInfrastructureConfig(application.config)}
                         showCapabilities={false}
                         showConfig={false}
                         showSecurity={false}
@@ -787,6 +1103,9 @@ export default function ApplicationsPage() {
                         nodeUrl={application.nodeUrl}
                         healthStatus={application.healthStatus}
                         deployedAt={application.deployedAt}
+                        deploymentProfile={application.deploymentProfile}
+                        provisioningMode={application.provisioningMode}
+                        infrastructure={extractInfrastructureConfig(application.config)}
                         showCapabilities={true}
                         showConfig={false}
                         showSecurity={true}

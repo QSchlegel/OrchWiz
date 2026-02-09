@@ -6,8 +6,11 @@ import ReactFlow, {
   MiniMap,
   type Edge,
   type Node,
+  type NodeDragHandler,
   type NodeMouseHandler,
   type NodeTypes,
+  type OnNodesChange,
+  type ReactFlowInstance,
 } from "reactflow"
 
 interface FlowCanvasProps {
@@ -15,8 +18,13 @@ interface FlowCanvasProps {
   edges: Edge[]
   nodeTypes?: NodeTypes
   onNodeClick?: NodeMouseHandler
+  onPaneClick?: (event: React.MouseEvent) => void
+  onInit?: (instance: ReactFlowInstance) => void
+  onNodesChange?: OnNodesChange
+  onNodeDragStop?: NodeDragHandler
   className?: string
   showMiniMap?: boolean
+  nodesDraggable?: boolean
 }
 
 export function FlowCanvas({
@@ -24,8 +32,13 @@ export function FlowCanvas({
   edges,
   nodeTypes,
   onNodeClick,
+  onPaneClick,
+  onInit,
+  onNodesChange,
+  onNodeDragStop,
   className = "",
   showMiniMap = false,
+  nodesDraggable = true,
 }: FlowCanvasProps) {
   return (
     <div className={`h-[360px] w-full ${className}`}>
@@ -34,22 +47,26 @@ export function FlowCanvas({
         edges={edges}
         nodeTypes={nodeTypes}
         onNodeClick={onNodeClick}
+        onPaneClick={onPaneClick}
+        onInit={onInit}
+        onNodesChange={onNodesChange}
+        onNodeDragStop={onNodeDragStop}
         fitView
         fitViewOptions={{ padding: 0.18 }}
         minZoom={0.4}
         maxZoom={1.6}
-        nodesDraggable
+        nodesDraggable={nodesDraggable}
         nodesConnectable={false}
         panOnDrag
         zoomOnScroll
       >
-        <Background color="rgba(255,255,255,0.06)" gap={24} size={1} />
-        <Controls className="!bg-white/5 !border-white/10 !text-slate-100" />
+        <Background color="var(--flow-grid-color)" gap={24} size={1} />
+        <Controls className="flow-theme-controls" />
         {showMiniMap && (
           <MiniMap
-            className="!bg-slate-900/70"
-            maskColor="rgba(15, 23, 42, 0.4)"
-            nodeColor={() => "rgba(148, 163, 184, 0.6)"}
+            className="flow-theme-minimap"
+            maskColor="var(--flow-minimap-mask)"
+            nodeColor={() => "var(--flow-minimap-node)"}
           />
         )}
       </ReactFlow>

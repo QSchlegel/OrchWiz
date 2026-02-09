@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react"
 import Link from "next/link"
+import { useEventStream } from "@/lib/realtime/useEventStream"
+import { PageLayout, SurfaceCard, FilterBar, EmptyState } from "@/components/dashboard/PageLayout"
 
 interface Command {
   id: string
@@ -14,6 +16,9 @@ interface Command {
   _count: {
     executions: number
   }
+  isForwarded?: boolean
+  sourceNodeId?: string
+  sourceNodeName?: string | null
 }
 
 export default function CommandsPage() {
@@ -21,6 +26,8 @@ export default function CommandsPage() {
   const [isLoading, setIsLoading] = useState(true)
   const [isCreating, setIsCreating] = useState(false)
   const [showCreateForm, setShowCreateForm] = useState(false)
+  const [includeForwarded, setIncludeForwarded] = useState(false)
+  const [sourceNodeId, setSourceNodeId] = useState("")
   const [formData, setFormData] = useState({
     name: "",
     description: "",
@@ -31,12 +38,24 @@ export default function CommandsPage() {
 
   useEffect(() => {
     fetchCommands()
-  }, [])
+  }, [includeForwarded, sourceNodeId])
+
+  useEventStream({
+    enabled: true,
+    types: ["command.executed", "forwarding.received"],
+    onEvent: () => {
+      fetchCommands()
+    },
+  })
 
   const fetchCommands = async () => {
     setIsLoading(true)
     try {
-      const response = await fetch("/api/commands")
+      const params = new URLSearchParams()
+      if (includeForwarded) params.append("includeForwarded", "true")
+      if (sourceNodeId.trim()) params.append("sourceNodeId", sourceNodeId.trim())
+
+      const response = await fetch(`/api/commands?${params.toString()}`)
       if (response.ok) {
         const data = await response.json()
         setCommands(data)
@@ -96,29 +115,47 @@ export default function CommandsPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-900 p-8">
-      <div className="max-w-7xl mx-auto">
-        <div className="flex items-center justify-between mb-8">
-          <h1 className="text-3xl font-bold text-gray-900 dark:text-white">
-            Slash Commands
-          </h1>
-          <button
-            onClick={() => setShowCreateForm(true)}
-            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-          >
-            New Command
-          </button>
-        </div>
+    <PageLayout
+      title="Slash Commands"
+      description="Create and manage reusable slash commands."
+      actions={
+        <button
+          onClick={() => setShowCreateForm(true)}
+          className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-black dark:bg-white dark:text-slate-900"
+        >
+          New Command
+        </button>
+      }
+    >
+      <div className="space-y-4">
+        <FilterBar>
+          <label className="inline-flex items-center gap-2 rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 dark:border-white/15 dark:text-slate-300">
+            <input
+              type="checkbox"
+              checked={includeForwarded}
+              onChange={(e) => setIncludeForwarded(e.target.checked)}
+            />
+            Include forwarded
+          </label>
+
+          <input
+            type="text"
+            value={sourceNodeId}
+            onChange={(e) => setSourceNodeId(e.target.value)}
+            placeholder="Source node filter"
+            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
+          />
+        </FilterBar>
 
         {showCreateForm && (
-          <div className="mb-8 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6">
-            <h2 className="text-xl font-semibold mb-4 text-gray-900 dark:text-white">
+          <SurfaceCard>
+            <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">
               Create New Command
             </h2>
-            <form onSubmit={handleCreate}>
-              <div className="space-y-4">
+            <form onSubmit={handleCreate} className="mt-4 space-y-3">
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
                     Name
                   </label>
                   <input
@@ -128,43 +165,12 @@ export default function CommandsPage() {
                       setFormData({ ...formData, name: e.target.value })
                     }
                     required
-                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
                     placeholder="commit-push-pr"
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                    Description
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.description}
-                    onChange={(e) =>
-                      setFormData({ ...formData, description: e.target.value })
-                    }
-                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                    Script Content
-                  </label>
-                  <textarea
-                    value={formData.scriptContent}
-                    onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        scriptContent: e.target.value,
-                      })
-                    }
-                    required
-                    rows={6}
-                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white font-mono text-sm"
-                    placeholder="#!/bin/bash&#10;git add .&#10;git commit -m &quot;$1&quot;&#10;git push"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
                     Path (optional)
                   </label>
                   <input
@@ -173,100 +179,130 @@ export default function CommandsPage() {
                     onChange={(e) =>
                       setFormData({ ...formData, path: e.target.value })
                     }
-                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
                     placeholder=".claude/commands/commit-push-pr.sh"
                   />
                 </div>
-                <div className="flex items-center">
-                  <input
-                    type="checkbox"
-                    id="isShared"
-                    checked={formData.isShared}
-                    onChange={(e) =>
-                      setFormData({ ...formData, isShared: e.target.checked })
-                    }
-                    className="mr-2"
-                  />
-                  <label
-                    htmlFor="isShared"
-                    className="text-sm text-gray-700 dark:text-gray-300"
-                  >
-                    Share with team
-                  </label>
-                </div>
-                <div className="flex gap-2">
-                  <button
-                    type="submit"
-                    disabled={isCreating}
-                    className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
-                  >
-                    {isCreating ? "Creating..." : "Create"}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setShowCreateForm(false)}
-                    className="px-4 py-2 bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors"
-                  >
-                    Cancel
-                  </button>
-                </div>
+              </div>
+
+              <div>
+                <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
+                  Description
+                </label>
+                <input
+                  type="text"
+                  value={formData.description}
+                  onChange={(e) =>
+                    setFormData({ ...formData, description: e.target.value })
+                  }
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
+                />
+              </div>
+
+              <div>
+                <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
+                  Script Content
+                </label>
+                <textarea
+                  value={formData.scriptContent}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      scriptContent: e.target.value,
+                    })
+                  }
+                  required
+                  rows={6}
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
+                  placeholder="#!/bin/bash&#10;git add .&#10;git commit -m &quot;$1&quot;&#10;git push"
+                />
+              </div>
+
+              <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
+                <input
+                  type="checkbox"
+                  checked={formData.isShared}
+                  onChange={(e) =>
+                    setFormData({ ...formData, isShared: e.target.checked })
+                  }
+                />
+                Share with team
+              </label>
+
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="submit"
+                  disabled={isCreating}
+                  className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-black disabled:opacity-50 dark:bg-white dark:text-slate-900"
+                >
+                  {isCreating ? "Creating..." : "Create"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowCreateForm(false)}
+                  className="rounded-lg border border-slate-300 px-4 py-2 text-sm text-slate-700 hover:bg-slate-100 dark:border-white/15 dark:text-slate-300 dark:hover:bg-white/[0.08]"
+                >
+                  Cancel
+                </button>
               </div>
             </form>
-          </div>
+          </SurfaceCard>
         )}
 
         {isLoading ? (
-          <div className="text-center py-12 text-gray-500 dark:text-gray-400">
-            Loading commands...
-          </div>
+          <SurfaceCard>Loading commands...</SurfaceCard>
         ) : commands.length === 0 ? (
-          <div className="text-center py-12 text-gray-500 dark:text-gray-400">
-            No commands found. Create your first command to get started!
-          </div>
+          <EmptyState title="No commands found" description="Create your first command to get started." />
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
             {commands.map((command) => (
-              <div
-                key={command.id}
-                className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6"
-              >
-                <div className="flex items-start justify-between mb-2">
-                  <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
+              <SurfaceCard key={command.id}>
+                <div className="mb-2 flex items-start justify-between">
+                  <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">
                     /{command.name}
                   </h3>
-                  {command.isShared && (
-                    <span className="px-2 py-1 text-xs font-medium rounded bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200">
+                  {command.isForwarded ? (
+                    <span className="rounded-full border border-indigo-500/30 bg-indigo-500/10 px-2 py-0.5 text-[11px] text-indigo-700 dark:text-indigo-300">
+                      Forwarded
+                    </span>
+                  ) : command.isShared && (
+                    <span className="rounded-full border border-blue-500/30 bg-blue-500/10 px-2 py-0.5 text-[11px] text-blue-700 dark:text-blue-300">
                       Shared
                     </span>
                   )}
                 </div>
                 {command.description && (
-                  <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+                  <p className="mb-3 text-sm text-slate-600 dark:text-slate-400">
                     {command.description}
                   </p>
                 )}
-                <div className="text-xs text-gray-500 dark:text-gray-400 mb-4">
+                <div className="mb-3 text-xs text-slate-500 dark:text-slate-400">
                   {command._count.executions} executions
                 </div>
+                {command.isForwarded && (
+                  <div className="mb-3 text-xs text-indigo-600 dark:text-indigo-300">
+                    Source: {command.sourceNodeName || command.sourceNodeId || "unknown node"}
+                  </div>
+                )}
                 <div className="flex gap-2">
                   <Link
                     href={`/commands/${command.id}`}
-                    className="flex-1 px-3 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 transition-colors text-center"
+                    className="flex-1 rounded-lg bg-slate-900 px-3 py-2 text-center text-sm font-medium text-white hover:bg-black dark:bg-white dark:text-slate-900"
                   >
                     View
                   </Link>
                   <button
                     onClick={() => handleDelete(command.id)}
-                    className="px-3 py-2 bg-red-600 text-white text-sm rounded-lg hover:bg-red-700 transition-colors"
+                    className="rounded-lg border border-rose-500/35 px-3 py-2 text-sm text-rose-700 hover:bg-rose-500/10 dark:text-rose-300"
                   >
                     Delete
                   </button>
                 </div>
-              </div>
+              </SurfaceCard>
             ))}
           </div>
         )}
       </div>
-    </div>
+    </PageLayout>
   )
 }

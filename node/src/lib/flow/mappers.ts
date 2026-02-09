@@ -1,5 +1,6 @@
 import type { Edge, Node } from "reactflow"
 import { MarkerType } from "reactflow"
+import { USS_K8S_COMMAND_TIER_BY_NODE } from "@/lib/uss-k8s/topology"
 
 export interface StationInput {
   id: string
@@ -32,6 +33,8 @@ export interface DeploymentInput {
   name: string
   status: string
   nodeType?: string
+  deploymentProfile?: string
+  provisioningMode?: string
   meta?: string
 }
 
@@ -41,6 +44,8 @@ export interface ApplicationInput {
   status: string
   applicationType?: string
   nodeType?: string
+  deploymentProfile?: string
+  provisioningMode?: string
 }
 
 export interface AnchorInput {
@@ -118,6 +123,8 @@ export function mapDeploymentsToNodes(deployments: DeploymentInput[], selectedId
       title: deployment.name,
       status: deployment.status,
       nodeType: deployment.nodeType,
+      deploymentProfile: deployment.deploymentProfile,
+      provisioningMode: deployment.provisioningMode,
       meta: deployment.meta,
     },
     position: { x: 0, y: 0 },
@@ -134,6 +141,8 @@ export function mapApplicationsToNodes(applications: ApplicationInput[], selecte
       status: app.status,
       nodeType: app.nodeType,
       appType: app.applicationType,
+      deploymentProfile: app.deploymentProfile,
+      provisioningMode: app.provisioningMode,
     },
     position: { x: 0, y: 0 },
     selected: app.id === selectedId,
@@ -219,4 +228,160 @@ export function normalizeTaskStatus(status?: string) {
     default:
       return "pending"
   }
+}
+
+// ── USS-K8S subsystem mappers ────────────────────────
+
+export interface SubsystemNodeInput {
+  id: string
+  label: string
+  sublabel?: string
+  group: string
+  componentType: string
+  status?: string
+}
+
+export type SubsystemVisualVariant = "uss-k8s"
+
+interface SubsystemMapOptions {
+  visualVariant?: SubsystemVisualVariant
+}
+
+export interface SubsystemEdgeInput {
+  source: string
+  target: string
+  label?: string
+  animated?: boolean
+  edgeType: "data" | "control" | "telemetry" | "alert"
+}
+
+const nodeTypeForComponent: Record<string, string> = {
+  agent: "stationNode",
+  runtime: "runtimeNode",
+  observability: "observabilityNode",
+  "k8s-workload": "k8sNode",
+  operator: "systemNode",
+  ui: "systemNode",
+}
+
+export function mapSubsystemToNodes(
+  components: SubsystemNodeInput[],
+  selectedId?: string,
+  options: SubsystemMapOptions = {},
+): Node[] {
+  const visualVariant = options.visualVariant
+
+  return components.map((c) => {
+    const nodeType = nodeTypeForComponent[c.componentType] || "systemNode"
+    const commandTier = visualVariant === "uss-k8s" ? USS_K8S_COMMAND_TIER_BY_NODE[c.id] : undefined
+
+    if (nodeType === "stationNode") {
+      return {
+        id: c.id,
+        type: "stationNode",
+        data: {
+          title: c.label,
+          role: c.sublabel || "",
+          status: c.status === "warning" ? "busy" : c.status === "critical" ? "offline" : "online",
+          meta: c.group,
+          visualVariant,
+          commandTier,
+        },
+        position: { x: 0, y: 0 },
+        selected: c.id === selectedId,
+      }
+    }
+
+    return {
+      id: c.id,
+      type: nodeType,
+      data: {
+        title: c.label,
+        sublabel: c.sublabel,
+        status: c.status || "nominal",
+        visualVariant,
+        commandTier,
+      },
+      position: { x: 0, y: 0 },
+      selected: c.id === selectedId,
+    }
+  })
+}
+
+const edgeStyleForType: Record<string, { stroke: string; strokeWidth: number; strokeDasharray?: string }> = {
+  control: { stroke: "rgba(34, 211, 238, 0.76)", strokeWidth: 1.9 },
+  data: { stroke: "rgba(148, 163, 184, 0.62)", strokeWidth: 1.7 },
+  telemetry: { stroke: "rgba(167, 139, 250, 0.72)", strokeWidth: 1.8, strokeDasharray: "6 3" },
+  alert: { stroke: "rgba(244, 63, 94, 0.82)", strokeWidth: 2.3 },
+}
+
+const edgeLabelStyle = { fill: "var(--flow-edge-label)", fontSize: 10.5, fontWeight: 500 }
+const edgeLabelBgStyle = { fill: "var(--flow-edge-label-bg)", fillOpacity: 0.92 }
+const edgeLabelBgPadding: [number, number] = [5, 3]
+
+export function buildSubsystemEdges(edges: SubsystemEdgeInput[]): Edge[] {
+  return edges.map((e) => {
+    const style = edgeStyleForType[e.edgeType] || edgeStyleForType.data
+    return {
+      id: `sub-${e.source}-${e.target}`,
+      source: e.source,
+      target: e.target,
+      type: "smoothstep",
+      animated: e.animated || e.edgeType === "alert",
+      label: e.label,
+      labelStyle: edgeLabelStyle,
+      labelBgStyle: edgeLabelBgStyle,
+      labelBgPadding: edgeLabelBgPadding,
+      style,
+      markerEnd: {
+        type: MarkerType.ArrowClosed,
+        color: style.stroke,
+      },
+    }
+  })
+}
+
+/**
+ * Build subsystem edges with filtering and highlighting support.
+ * - visibleEdgeTypes: only include edges of these types
+ * - highlightNodeId: if set, dim edges not connected to this node
+ */
+export function buildSubsystemEdgesFiltered(
+  edges: SubsystemEdgeInput[],
+  visibleEdgeTypes?: Set<string>,
+  highlightNodeId?: string | null,
+): Edge[] {
+  return edges
+    .filter((e) => !visibleEdgeTypes || visibleEdgeTypes.has(e.edgeType))
+    .map((e) => {
+      const baseStyle = edgeStyleForType[e.edgeType] || edgeStyleForType.data
+      const isConnected = !highlightNodeId || e.source === highlightNodeId || e.target === highlightNodeId
+
+      const style = isConnected
+        ? baseStyle
+        : {
+            ...baseStyle,
+            stroke: baseStyle.stroke.replace(/,\s*[\d.]+\)$/, ", 0.24)"),
+            strokeWidth: Math.max(1.15, baseStyle.strokeWidth - 0.55),
+          }
+
+      return {
+        id: `sub-${e.source}-${e.target}`,
+        source: e.source,
+        target: e.target,
+        type: "smoothstep",
+        animated: isConnected && (e.animated || e.edgeType === "alert"),
+        label: isConnected ? e.label : undefined,
+        labelStyle: edgeLabelStyle,
+        labelBgStyle: edgeLabelBgStyle,
+        labelBgPadding: edgeLabelBgPadding,
+        style,
+        markerEnd: {
+          type: MarkerType.ArrowClosed,
+          color: isConnected
+            ? (edgeStyleForType[e.edgeType] || edgeStyleForType.data).stroke
+            : "var(--flow-edge-dim-marker)",
+        },
+      }
+    })
 }

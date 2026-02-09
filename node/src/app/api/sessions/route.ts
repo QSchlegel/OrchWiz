@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server"
 import { auth } from "@/lib/auth"
 import { prisma } from "@/lib/prisma"
 import { headers } from "next/headers"
+import { mapForwardedSession } from "@/lib/forwarding/projections"
+import { publishRealtimeEvent } from "@/lib/realtime/events"
 
 export const dynamic = 'force-dynamic'
 
@@ -16,6 +18,8 @@ export async function GET(request: NextRequest) {
     const status = searchParams.get("status")
     const mode = searchParams.get("mode")
     const source = searchParams.get("source")
+    const includeForwarded = searchParams.get("includeForwarded") === "true"
+    const sourceNodeId = searchParams.get("sourceNodeId")
 
     const where: any = {
       userId: session.user.id,
@@ -45,7 +49,38 @@ export async function GET(request: NextRequest) {
       },
     })
 
-    return NextResponse.json(sessions)
+    if (!includeForwarded) {
+      return NextResponse.json(sessions)
+    }
+
+    const forwardedEvents = await prisma.forwardingEvent.findMany({
+      where: {
+        eventType: "session",
+        ...(sourceNodeId
+          ? {
+              sourceNode: {
+                nodeId: sourceNodeId,
+              },
+            }
+          : {}),
+      },
+      include: {
+        sourceNode: true,
+      },
+      orderBy: {
+        occurredAt: "desc",
+      },
+      take: 100,
+    })
+
+    const forwardedSessions = forwardedEvents.map(mapForwardedSession)
+    const combined = [...sessions, ...forwardedSessions].sort((a: any, b: any) => {
+      const aDate = new Date(a.updatedAt || a.forwardingOccurredAt || 0).getTime()
+      const bDate = new Date(b.updatedAt || b.forwardingOccurredAt || 0).getTime()
+      return bDate - aDate
+    })
+
+    return NextResponse.json(combined)
   } catch (error) {
     console.error("Error fetching sessions:", error)
     return NextResponse.json(
@@ -90,6 +125,14 @@ export async function POST(request: NextRequest) {
         metadata: metadata || {},
         userId: session.user.id,
         status: "planning",
+      },
+    })
+
+    publishRealtimeEvent({
+      type: "session.prompted",
+      payload: {
+        sessionId: newSession.id,
+        status: newSession.status,
       },
     })
 
