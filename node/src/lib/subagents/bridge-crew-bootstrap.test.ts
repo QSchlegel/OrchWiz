@@ -14,6 +14,7 @@ test("buildInitialBridgeCrewSubagents returns one personal template per bridge c
     INITIAL_BRIDGE_CREW_CALLSIGNS
   )
   assert.equal(crew.every((entry) => entry.isShared === false), true)
+  assert.equal(crew.every((entry) => entry.subagentType === "bridge_crew"), true)
   assert.equal(
     crew.every((entry) => entry.path.startsWith(".claude/agents/bridge-crew/")),
     true

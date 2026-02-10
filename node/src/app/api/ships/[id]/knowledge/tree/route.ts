@@ -6,9 +6,24 @@ import { resolveVaultAbsolutePath } from "@/lib/vault/config"
 import { buildShipKnowledgeTree, filterShipKnowledgePaths } from "@/lib/vault/knowledge"
 import { directoryExists, collectMarkdownFilePaths } from "@/lib/vault/fs"
 import { getLatestVaultRagSyncRun } from "@/lib/vault/rag"
+import type { VaultTreeNode } from "@/lib/vault/types"
+import { dataCoreEnabled } from "@/lib/data-core/config"
+import { getVaultTreeFromDataCore } from "@/lib/data-core/vault-adapter"
 import { parseKnowledgeScope } from "../route-helpers"
 
 export const dynamic = "force-dynamic"
+
+function flattenTreeFilePaths(nodes: VaultTreeNode[], output: string[] = []): string[] {
+  for (const node of nodes) {
+    if (node.nodeType === "file") {
+      output.push(node.path)
+    }
+    if (node.children?.length) {
+      flattenTreeFilePaths(node.children, output)
+    }
+  }
+  return output
+}
 
 async function ensureOwnedShip(userId: string, shipDeploymentId: string): Promise<boolean> {
   const ship = await prisma.agentDeployment.findFirst({
@@ -42,36 +57,53 @@ export async function GET(
     }
 
     const scope = parseKnowledgeScope(request.nextUrl.searchParams.get("scope"))
-    const shipVaultRoot = resolveVaultAbsolutePath("ship")
-    if (!(await directoryExists(shipVaultRoot))) {
-      return NextResponse.json({
+    let filteredPaths: string[] = []
+    let latestSync: Awaited<ReturnType<typeof getLatestVaultRagSyncRun>> = null
+
+    if (dataCoreEnabled()) {
+      const tree = await getVaultTreeFromDataCore({
+        vaultId: "ship",
+        userId: session.user.id,
         shipDeploymentId: id,
-        scope,
-        tree: [],
-        noteCount: 0,
-        latestSync: null,
       })
-    }
+      const allPaths = flattenTreeFilePaths(tree.tree)
+      filteredPaths = filterShipKnowledgePaths({
+        paths: allPaths,
+        scope,
+        shipDeploymentId: id,
+      })
+    } else {
+      const shipVaultRoot = resolveVaultAbsolutePath("ship")
+      if (!(await directoryExists(shipVaultRoot))) {
+        return NextResponse.json({
+          shipDeploymentId: id,
+          scope,
+          tree: [],
+          noteCount: 0,
+          latestSync: null,
+        })
+      }
 
-    const allPaths = await collectMarkdownFilePaths(shipVaultRoot)
-    const filteredPaths = filterShipKnowledgePaths({
-      paths: allPaths,
-      scope,
-      shipDeploymentId: id,
-    })
+      const allPaths = await collectMarkdownFilePaths(shipVaultRoot)
+      filteredPaths = filterShipKnowledgePaths({
+        paths: allPaths,
+        scope,
+        shipDeploymentId: id,
+      })
 
-    const latestSync = await getLatestVaultRagSyncRun(
-      scope === "ship"
-        ? {
-            scope: "ship",
-            shipDeploymentId: id,
-          }
-        : scope === "fleet"
+      latestSync = await getLatestVaultRagSyncRun(
+        scope === "ship"
           ? {
-              scope: "fleet",
+              scope: "ship",
+              shipDeploymentId: id,
             }
-          : {},
-    )
+          : scope === "fleet"
+            ? {
+                scope: "fleet",
+              }
+            : {},
+      )
+    }
 
     return NextResponse.json({
       shipDeploymentId: id,

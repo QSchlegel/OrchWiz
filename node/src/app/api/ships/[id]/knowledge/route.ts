@@ -6,6 +6,13 @@ import { publishNotificationUpdated } from "@/lib/realtime/notifications"
 import { deleteVaultFile, moveVaultFile, saveVaultFile, VaultRequestError } from "@/lib/vault"
 import { queryVaultRag } from "@/lib/vault/rag"
 import { normalizeShipKnowledgePath } from "@/lib/vault/knowledge"
+import { dataCoreEnabled } from "@/lib/data-core/config"
+import {
+  deleteVaultFileToDataCore,
+  moveVaultFileToDataCore,
+  saveVaultFileToDataCore,
+} from "@/lib/data-core/vault-adapter"
+import { getMergedMemoryRetriever } from "@/lib/data-core/merged-memory-retriever"
 import {
   parseKnowledgeContent,
   parseKnowledgeQueryMode,
@@ -75,14 +82,24 @@ export async function GET(
       })
     }
 
-    const result = await queryVaultRag({
-      query,
-      vaultId: "joined",
-      mode,
-      scope,
-      shipDeploymentId: id,
-      k,
-    })
+    const result = dataCoreEnabled()
+      ? await getMergedMemoryRetriever().query({
+          query,
+          mode,
+          scope,
+          shipDeploymentId: id,
+          userId: session.user.id,
+          includePrivate: true,
+          k,
+        })
+      : await queryVaultRag({
+          query,
+          vaultId: "joined",
+          mode,
+          scope,
+          shipDeploymentId: id,
+          k,
+        })
 
     return NextResponse.json({
       shipDeploymentId: id,
@@ -130,7 +147,15 @@ export async function POST(
       )
     }
 
-    const payload = await saveVaultFile("ship", path, content)
+    const payload = dataCoreEnabled()
+      ? await saveVaultFileToDataCore({
+          vaultId: "ship",
+          notePath: path,
+          content,
+          userId: session.user.id,
+          shipDeploymentId: id,
+        })
+      : await saveVaultFile("ship", path, content)
     publishNotificationUpdated({
       userId: session.user.id,
       channel: "quartermaster.knowledge",
@@ -180,7 +205,15 @@ export async function PATCH(
       )
     }
 
-    const payload = await moveVaultFile("ship", fromPath, toPath)
+    const payload = dataCoreEnabled()
+      ? await moveVaultFileToDataCore({
+          vaultId: "ship",
+          fromPath,
+          toPath,
+          userId: session.user.id,
+          shipDeploymentId: id,
+        })
+      : await moveVaultFile("ship", fromPath, toPath)
     publishNotificationUpdated({
       userId: session.user.id,
       channel: "quartermaster.knowledge",
@@ -233,7 +266,15 @@ export async function DELETE(
     }
 
     const mode = parseDeleteMode(searchParams.get("mode"))
-    const payload = await deleteVaultFile("ship", path, mode)
+    const payload = dataCoreEnabled()
+      ? await deleteVaultFileToDataCore({
+          vaultId: "ship",
+          notePath: path,
+          mode,
+          userId: session.user.id,
+          shipDeploymentId: id,
+        })
+      : await deleteVaultFile("ship", path, mode)
     publishNotificationUpdated({
       userId: session.user.id,
       channel: "quartermaster.knowledge",

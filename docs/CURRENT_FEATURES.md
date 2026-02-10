@@ -27,6 +27,10 @@ This feature map reflects what is implemented in this repository as of February 
   - context file assignment
   - per-agent permission policy bindings
 - Permission profile management (`/skills`) mapped to personal agents.
+- Skills catalog/import on `/skills`:
+  - curated and GitHub URL skill imports
+  - graph-based skill tree visualization
+  - user-scoped import history
 - AgentSync runs, preferences, nightly route, and suggestion apply/reject flow.
 
 ### Bridge Ops
@@ -34,6 +38,7 @@ This feature map reflects what is implemented in this repository as of February 
 - Bridge state and active command surface (`/bridge`).
 - Bridge Call UI with station rounds, subtitle lane, and voice input/output helpers.
 - Mobile-first Bridge Chat utility (`/bridge-chat`) with station threads.
+- Ship-scoped cross-agent chat APIs for bridge-crew DM/group messaging with optional async auto-replies.
 - External bridge connection management (`telegram`, `discord`, `whatsapp`) including test + dispatch.
 - USS-K8S topology board with interactive node graph and focus panes.
 - Vault workspace with topology + explorer + graph tabs.
@@ -71,6 +76,8 @@ This feature map reflects what is implemented in this repository as of February 
   - multi-vault tree + file CRUD
   - hybrid/lexical search
   - graph endpoint for note/link topology
+- Optional data-core backend for non-private memory domains with signed write envelopes and sync endpoints.
+- Local private-memory vector index (`LocalPrivateRag*`) for encrypted private note retrieval without replication.
 - Ship knowledge APIs (`/api/ships/:id/knowledge*`) with resync route.
 - Encrypted observability traces with scoped decrypt endpoint.
 - Passkey + magic-link auth (GitHub provider when OAuth env vars are configured).
@@ -91,10 +98,9 @@ This feature map reflects what is implemented in this repository as of February 
 Implemented route groups under `node/src/app/api` include:
 
 - `actions`, `commands`, `tasks`, `sessions`, `verification`
-- `subagents`, `permissions`, `permission-policies`
-- `ship-yard`, `ships`, `applications`, `deployments`
+- `subagents`, `permissions`, `permission-policies`, `skills`
+- `ship-yard`, `ships`, `ships/:id/agent-chat`, `applications`, `deployments`
 - `bridge`, `bridge-call`, `bridge-crew`, `threads`
 - `forwarding`, `events/stream`
 - `vaults`, `docs`, `github`, `projects`
 - `security`, `agentsync`, `observability`
-

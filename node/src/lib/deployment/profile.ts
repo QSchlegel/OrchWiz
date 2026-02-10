@@ -1,3 +1,8 @@
+import {
+  normalizeCloudProviderConfig,
+  type CloudProviderConfig,
+} from "@/lib/shipyard/cloud/types"
+
 export type NodeType = "local" | "cloud" | "hybrid"
 
 export type DeploymentType = "agent" | "ship"
@@ -13,6 +18,10 @@ export interface InfrastructureConfig {
   terraformEnvDir: string
   ansibleInventory: string
   ansiblePlaybook: string
+}
+
+export interface DeploymentCloudConfig {
+  cloudProvider?: CloudProviderConfig
 }
 
 interface NormalizeProfileInput {
@@ -168,12 +177,17 @@ export function normalizeInfrastructureInConfig(
 ): { infrastructure: InfrastructureConfig; config: Record<string, unknown> } {
   const config = asRecord(rawConfig)
   const infrastructure = normalizeInfrastructureConfig(profile, asRecord(config.infrastructure))
+  const cloudProvider =
+    profile === "cloud_shipyard"
+      ? normalizeCloudProviderConfig(config.cloudProvider)
+      : undefined
 
   return {
     infrastructure,
     config: {
       ...config,
       infrastructure,
+      ...(cloudProvider ? { cloudProvider } : {}),
     },
   }
 }

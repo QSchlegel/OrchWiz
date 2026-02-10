@@ -21,6 +21,7 @@ test("legacy realtime event mapping resolves expected channels", () => {
   assert.equal(channelFromLegacyRealtimeEventType("session.prompted"), "sessions")
   assert.equal(channelFromLegacyRealtimeEventType("task.updated"), "tasks")
   assert.equal(channelFromLegacyRealtimeEventType("bridge.updated"), "bridge-chat")
+  assert.equal(channelFromLegacyRealtimeEventType("bridge.agent-chat.updated"), "bridge-chat")
   assert.equal(channelFromLegacyRealtimeEventType("agentsync.updated"), "personal.personal.agentsync")
   assert.equal(channelFromLegacyRealtimeEventType("notification.updated"), null)
   assert.equal(channelFromLegacyRealtimeEventType("unknown.event"), null)
@@ -68,6 +69,14 @@ test("sidebar nav items receive channel mappings", () => {
   )
   assert.equal(
     personalItem?.channels.includes(PERSONAL_DETAIL_NOTIFICATION_CHANNEL.shared.guidelines),
+    true,
+  )
+  assert.equal(
+    personalItem?.channels.includes(PERSONAL_DETAIL_NOTIFICATION_CHANNEL.personal.capabilities),
+    true,
+  )
+  assert.equal(
+    personalItem?.channels.includes(PERSONAL_DETAIL_NOTIFICATION_CHANNEL.shared.capabilities),
     true,
   )
 })

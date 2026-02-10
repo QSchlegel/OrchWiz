@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma"
 import { publishNotificationUpdated } from "@/lib/realtime/notifications"
 import { personalTopChannelForSubagent } from "@/lib/realtime/notification-routing"
 import { normalizeSubagentSettings } from "@/lib/subagents/settings"
+import { normalizeSubagentType, parseSubagentType } from "@/lib/subagents/types"
 import { ensureDefaultPolicyAssignmentForSubagent } from "@/lib/execution/permission-policies"
 import { AccessControlError, ownerScopedSharedReadWhere, requireAccessActor } from "@/lib/security/access-control"
 
@@ -56,6 +57,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json(
       subagents.map((subagent) => ({
         ...subagent,
+        subagentType: normalizeSubagentType(subagent.subagentType),
         settings: normalizeSubagentSettings(subagent.settings),
       })),
     )
@@ -81,7 +83,15 @@ export async function POST(request: NextRequest) {
 
     const body = await request.json()
     parsedBody = body
-    const { name, description, content, path, settings, isShared, teamId } = body
+    const { name, description, content, path, settings, isShared, teamId, subagentType } = body
+    const parsedSubagentType = parseSubagentType(subagentType)
+
+    if (subagentType !== undefined && !parsedSubagentType) {
+      return NextResponse.json(
+        { error: "subagentType must be one of: general, bridge_crew, exocomp" },
+        { status: 400 }
+      )
+    }
 
     if (!name || !content) {
       return NextResponse.json(
@@ -96,6 +106,7 @@ export async function POST(request: NextRequest) {
         description,
         content,
         path,
+        subagentType: parsedSubagentType || "general",
         settings: normalizeSubagentSettings(settings),
         isShared: isShared || false,
         teamId: teamId || null,
@@ -111,7 +122,14 @@ export async function POST(request: NextRequest) {
       entityId: subagent.id,
     })
 
-    return NextResponse.json(subagent, { status: 201 })
+    return NextResponse.json(
+      {
+        ...subagent,
+        subagentType: normalizeSubagentType(subagent.subagentType),
+        settings: normalizeSubagentSettings(subagent.settings),
+      },
+      { status: 201 },
+    )
   } catch (error) {
     console.error("Error creating subagent:", error)
 
@@ -119,9 +137,12 @@ export async function POST(request: NextRequest) {
       // Some local environments can be schema-drifted; retry without settings as a compatibility fallback.
       if (error.code === "P2022") {
         try {
-          const { name, description, content, path, isShared, teamId } = parsedBody || {}
+          const { name, description, content, path, isShared, teamId, subagentType } = parsedBody || {}
           if (!name || !content) {
             throw new Error("Name and content are required")
+          }
+          if (subagentType !== undefined && !parseSubagentType(subagentType)) {
+            throw new Error("subagentType must be one of: general, bridge_crew, exocomp")
           }
           const subagent = await prisma.subagent.create({
             data: {
@@ -142,7 +163,14 @@ export async function POST(request: NextRequest) {
               entityId: subagent.id,
             })
           }
-          return NextResponse.json(subagent, { status: 201 })
+          return NextResponse.json(
+            {
+              ...subagent,
+              subagentType: normalizeSubagentType(subagent.subagentType),
+              settings: normalizeSubagentSettings(subagent.settings),
+            },
+            { status: 201 },
+          )
         } catch (retryError) {
           console.error("Error creating subagent (fallback without settings):", retryError)
         }

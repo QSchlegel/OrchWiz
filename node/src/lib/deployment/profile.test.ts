@@ -44,6 +44,7 @@ test("cloud profile defaults infrastructure kind to existing_k8s", () => {
 
   assert.equal(normalized.infrastructure.kind, "existing_k8s")
   assert.equal(normalized.infrastructure.kubeContext, "existing-cluster")
+  assert.equal((normalized.config.cloudProvider as { provider?: string }).provider, "hetzner")
 })
 
 test("shipyard allows hybrid only when advanced override is enabled", () => {
@@ -92,4 +93,41 @@ test("invalid infrastructure kind falls back to profile default", () => {
   })
 
   assert.equal(normalized.infrastructure.kind, "kind")
+})
+
+test("cloud provider config is normalized from incoming values", () => {
+  const normalized = normalizeDeploymentProfileInput({
+    deploymentProfile: "cloud_shipyard",
+    config: {
+      cloudProvider: {
+        provider: "hetzner",
+        cluster: {
+          clusterName: "custom-cluster",
+          location: "fsn1",
+          controlPlane: {
+            machineType: "cx31",
+            count: 2,
+          },
+          workers: {
+            machineType: "cx41",
+            count: 3,
+          },
+        },
+        tunnelPolicy: {
+          localPort: 17443,
+        },
+      },
+    },
+  })
+
+  const cloudProvider = normalized.config.cloudProvider as Record<string, unknown>
+  assert.equal(cloudProvider.provider, "hetzner")
+  const cluster = cloudProvider.cluster as Record<string, unknown>
+  assert.equal(cluster.clusterName, "custom-cluster")
+  assert.equal(cluster.location, "fsn1")
+  const controlPlane = cluster.controlPlane as Record<string, unknown>
+  assert.equal(controlPlane.machineType, "cx31")
+  assert.equal(controlPlane.count, 2)
+  const tunnelPolicy = cloudProvider.tunnelPolicy as Record<string, unknown>
+  assert.equal(tunnelPolicy.localPort, 17443)
 })

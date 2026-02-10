@@ -12,6 +12,7 @@ import {
   normalizeDeploymentProfileInput,
   type InfrastructureConfig,
 } from "@/lib/deployment/profile"
+import { runShipyardCloudBootstrap } from "@/lib/deployment/shipyard-cloud-bootstrap"
 import { isCloudDeployOnlyEnabled } from "@/lib/deployment/cloud-deploy-only"
 import { publishShipUpdated } from "@/lib/shipyard/events"
 import {
@@ -28,6 +29,12 @@ import {
 import { buildOpenClawBridgeCrewContextBundle } from "@/lib/deployment/openclaw-context"
 import { resolveShipyardApiActorFromRequest } from "@/lib/shipyard/api-auth"
 import { ensureShipQuartermaster } from "@/lib/quartermaster/service"
+import { readCloudProviderConfig } from "@/lib/shipyard/cloud/types"
+import {
+  resolveCloudCredentialToken,
+  resolveCloudSshPrivateKey,
+  ShipyardCloudVaultError,
+} from "@/lib/shipyard/cloud/vault"
 
 export const dynamic = "force-dynamic"
 
@@ -285,6 +292,55 @@ export async function POST(request: NextRequest) {
       })),
     })
 
+    const failLaunch = async (args: {
+      error: string
+      code: string
+      details?: unknown
+      metadata?: Record<string, unknown>
+      httpStatus?: number
+    }) => {
+      const failureMetadata = {
+        ...(created.deployment.metadata as Record<string, unknown> | null),
+        ...(args.metadata || {}),
+        deploymentError: args.error,
+        deploymentErrorCode: args.code,
+        ...(args.details
+          ? { deploymentErrorDetails: args.details as Prisma.InputJsonValue }
+          : {}),
+      }
+
+      const deployment = await prisma.agentDeployment.update({
+        where: { id: created.deployment.id },
+        data: {
+          status: "failed",
+          lastHealthCheck: new Date(),
+          healthStatus: "unhealthy",
+          metadata: failureMetadata as Prisma.InputJsonValue,
+        },
+      })
+
+      publishShipUpdated({
+        shipId: deployment.id,
+        status: deployment.status,
+        nodeId: deployment.nodeId,
+        userId: ownerUserId,
+      })
+
+      return NextResponse.json(
+        {
+          error: args.error,
+          code: args.code,
+          details: args.details,
+          deployment,
+          bridgeCrew,
+          quartermaster,
+          baseRequirementsEstimate,
+          deploymentOverview,
+        },
+        { status: args.httpStatus ?? 422 },
+      )
+    }
+
     let adapterResult: DeploymentAdapterResult
     if (created.deployment.deploymentProfile === "local_starship_build") {
       const launchResult = await runShipyardLocalLaunch({
@@ -295,64 +351,146 @@ export async function POST(request: NextRequest) {
       })
 
       if (!launchResult.ok) {
-        const failureMetadata = {
-          ...(created.deployment.metadata as Record<string, unknown> | null),
-          ...(launchResult.metadata || {}),
-          deploymentError: launchResult.error,
-          deploymentErrorCode: launchResult.code,
-          ...(launchResult.details
-            ? { deploymentErrorDetails: launchResult.details as Prisma.InputJsonValue }
-            : {}),
-        }
-
-        const deployment = await prisma.agentDeployment.update({
-          where: { id: created.deployment.id },
-          data: {
-            status: "failed",
-            lastHealthCheck: new Date(),
-            healthStatus: "unhealthy",
-            metadata: failureMetadata as Prisma.InputJsonValue,
-          },
+        return await failLaunch({
+          error: launchResult.error,
+          code: launchResult.code,
+          details: launchResult.details,
+          metadata: launchResult.metadata,
+          httpStatus: launchResult.httpStatus,
         })
-
-        publishShipUpdated({
-          shipId: deployment.id,
-          status: deployment.status,
-          nodeId: deployment.nodeId,
-          userId: ownerUserId,
-        })
-
-        return NextResponse.json(
-          {
-            error: launchResult.error,
-            code: launchResult.code,
-            details: launchResult.details,
-            deployment,
-            bridgeCrew,
-            quartermaster,
-            baseRequirementsEstimate,
-            deploymentOverview,
-          },
-          { status: launchResult.httpStatus },
-        )
       }
 
       adapterResult = launchResult.adapterResult
     } else {
-      adapterResult = await runDeploymentAdapter({
-        kind: "agent",
-        recordId: created.deployment.id,
-        name: created.deployment.name,
-        nodeId: created.deployment.nodeId,
-        nodeType: created.deployment.nodeType,
-        nodeUrl: created.deployment.nodeUrl,
-        deploymentProfile: created.deployment.deploymentProfile,
-        provisioningMode: created.deployment.provisioningMode,
-        config: (created.deployment.config || {}) as Record<string, unknown>,
-        infrastructure: (((created.deployment.config || {}) as Record<string, unknown>).infrastructure ||
-          undefined) as Record<string, unknown> | undefined,
-        metadata: (created.deployment.metadata || {}) as Record<string, unknown>,
-      })
+      const cloudProvider = readCloudProviderConfig(created.deployment.config || {})
+      if (
+        created.deployment.deploymentProfile === "cloud_shipyard"
+        && cloudProvider
+        && cloudProvider.provider === "hetzner"
+      ) {
+        const credentials = await prisma.shipyardCloudCredential.findUnique({
+          where: {
+            userId_provider: {
+              userId: ownerUserId,
+              provider: "hetzner",
+            },
+          },
+        })
+        if (!credentials) {
+          return await failLaunch({
+            error: "Hetzner credentials are missing. Configure cloud credentials in Ship Yard Cloud Utility.",
+            code: "CLOUD_CREDENTIALS_MISSING",
+            details: {
+              provider: "hetzner",
+              suggestedCommands: [
+                "Open Ship Yard -> Cloud Utility -> Hetzner credentials and save API token.",
+              ],
+            },
+          })
+        }
+
+        if (!cloudProvider.sshKeyId) {
+          return await failLaunch({
+            error: "Cloud provider configuration is missing sshKeyId.",
+            code: "CLOUD_SSH_KEY_MISSING",
+            details: {
+              provider: "hetzner",
+              suggestedCommands: [
+                "Generate/select a Hetzner SSH key in Ship Yard Cloud Utility and retry launch.",
+              ],
+            },
+          })
+        }
+
+        const sshKey = await prisma.shipyardCloudSshKey.findFirst({
+          where: {
+            id: cloudProvider.sshKeyId,
+            userId: ownerUserId,
+            provider: "hetzner",
+          },
+        })
+        if (!sshKey) {
+          return await failLaunch({
+            error: "Selected Hetzner SSH key was not found.",
+            code: "CLOUD_SSH_KEY_MISSING",
+            details: {
+              provider: "hetzner",
+              sshKeyId: cloudProvider.sshKeyId,
+            },
+          })
+        }
+
+        let sshPrivateKey: string
+        try {
+          await resolveCloudCredentialToken({
+            userId: ownerUserId,
+            provider: "hetzner",
+            stored: credentials.tokenEnvelope,
+          })
+          sshPrivateKey = await resolveCloudSshPrivateKey({
+            userId: ownerUserId,
+            provider: "hetzner",
+            keyName: sshKey.name,
+            stored: sshKey.privateKeyEnvelope,
+          })
+        } catch (error) {
+          if (error instanceof ShipyardCloudVaultError) {
+            return await failLaunch({
+              error: error.message,
+              code: error.code,
+              details: error.details,
+              httpStatus: error.status,
+            })
+          }
+          throw error
+        }
+
+        const cloudLaunch = await runShipyardCloudBootstrap({
+          deploymentId: created.deployment.id,
+          provisioningMode: created.deployment.provisioningMode,
+          infrastructure: normalizedProfile.infrastructure as InfrastructureConfig,
+          cloudProvider,
+          sshPrivateKey,
+        })
+
+        if (!cloudLaunch.ok) {
+          return await failLaunch({
+            error: cloudLaunch.error,
+            code: cloudLaunch.code,
+            details: cloudLaunch.details,
+            metadata: cloudLaunch.metadata,
+            httpStatus: cloudLaunch.expected ? 422 : 500,
+          })
+        }
+
+        adapterResult = {
+          status: "active",
+          deployedAt: new Date(),
+          lastHealthCheck: new Date(),
+          healthStatus: "healthy",
+          metadata: {
+            mode: "shipyard_cloud",
+            provider: "hetzner",
+            cloudProvider: cloudProvider as unknown as Prisma.InputJsonValue,
+            ...cloudLaunch.metadata,
+          },
+        }
+      } else {
+        adapterResult = await runDeploymentAdapter({
+          kind: "agent",
+          recordId: created.deployment.id,
+          name: created.deployment.name,
+          nodeId: created.deployment.nodeId,
+          nodeType: created.deployment.nodeType,
+          nodeUrl: created.deployment.nodeUrl,
+          deploymentProfile: created.deployment.deploymentProfile,
+          provisioningMode: created.deployment.provisioningMode,
+          config: (created.deployment.config || {}) as Record<string, unknown>,
+          infrastructure: (((created.deployment.config || {}) as Record<string, unknown>).infrastructure ||
+            undefined) as Record<string, unknown> | undefined,
+          metadata: (created.deployment.metadata || {}) as Record<string, unknown>,
+        })
+      }
     }
 
     const successMetadata = {

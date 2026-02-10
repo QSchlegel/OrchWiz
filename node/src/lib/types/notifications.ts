@@ -34,6 +34,7 @@ export const NOTIFICATION_CHANNELS = [
   "personal.personal.workspace",
   "personal.personal.memory",
   "personal.personal.guidelines",
+  "personal.personal.capabilities",
   "personal.shared.context",
   "personal.shared.orchestration",
   "personal.shared.permissions",
@@ -41,6 +42,7 @@ export const NOTIFICATION_CHANNELS = [
   "personal.shared.workspace",
   "personal.shared.memory",
   "personal.shared.guidelines",
+  "personal.shared.capabilities",
   "quartermaster.chat",
   "quartermaster.knowledge",
 ] as const

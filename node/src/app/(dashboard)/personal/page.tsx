@@ -12,10 +12,12 @@ import {
 } from "@/lib/notifications/channels"
 import { useEventStream } from "@/lib/realtime/useEventStream"
 import { buildInitialBridgeCrewSubagents } from "@/lib/subagents/bridge-crew-bootstrap"
+import { DEFAULT_EXOCOMP_CAPABILITIES } from "@/lib/subagents/capabilities"
+import { normalizeSubagentType, type SubagentTypeValue } from "@/lib/subagents/types"
 
 type PersonalTab = "personal" | "shared"
-type AgentDetailTab = "context" | "orchestration" | "permissions" | "agentsync" | "workspace" | "memory" | "guidelines"
-type EditableSettingsSection = "orchestration" | "workspace" | "memory" | "guidelines"
+type AgentDetailTab = "context" | "orchestration" | "permissions" | "agentsync" | "workspace" | "memory" | "guidelines" | "capabilities"
+type EditableSettingsSection = "orchestration" | "workspace" | "memory" | "guidelines" | "capabilities"
 
 interface SubagentSettings {
   orchestration: {
@@ -38,11 +40,20 @@ interface SubagentSettings {
     references: string[]
     notes: string
   }
+  capabilities: {
+    preset: "core_maintenance"
+    diagnostics: boolean
+    microRepairPlanning: boolean
+    hazardChecks: boolean
+    safeShutdownGuidance: boolean
+    statusRelay: boolean
+  }
 }
 
 interface Subagent {
   id: string
   name: string
+  subagentType: SubagentTypeValue
   description: string | null
   content: string
   path: string | null
@@ -53,6 +64,7 @@ interface Subagent {
 
 interface SubagentFormState {
   name: string
+  subagentType: SubagentTypeValue
   description: string
   content: string
   path: string
@@ -154,12 +166,14 @@ const DETAIL_TABS: Array<{ id: AgentDetailTab; label: string }> = [
   { id: "workspace", label: "Workspace" },
   { id: "memory", label: "Memory" },
   { id: "guidelines", label: "Guidelines" },
+  { id: "capabilities", label: "Capabilities" },
 ]
 
 const BRIDGE_AGENT_ORDER = ["XO-CB01", "OPS-ARX", "ENG-GEO", "SEC-KOR", "MED-BEV", "COU-DEA"]
 
 const EMPTY_FORM: SubagentFormState = {
   name: "",
+  subagentType: "general",
   description: "",
   content: "",
   path: "",
@@ -195,6 +209,9 @@ const DEFAULT_SUBAGENT_SETTINGS: SubagentSettings = {
     references: [],
     notes: "",
   },
+  capabilities: {
+    ...DEFAULT_EXOCOMP_CAPABILITIES,
+  },
 }
 
 function parseTab(raw: string | null): PersonalTab {
@@ -204,6 +221,7 @@ function parseTab(raw: string | null): PersonalTab {
 function toFormState(subagent: Subagent): SubagentFormState {
   return {
     name: subagent.name,
+    subagentType: subagent.subagentType,
     description: subagent.description || "",
     content: subagent.content,
     path: subagent.path || "",
@@ -251,6 +269,7 @@ function normalizeSettings(value: unknown): SubagentSettings {
   const rawWorkspace = raw.workspace as Record<string, unknown> | undefined
   const rawMemory = raw.memory as Record<string, unknown> | undefined
   const rawGuidelines = raw.guidelines as Record<string, unknown> | undefined
+  const rawCapabilities = raw.capabilities as Record<string, unknown> | undefined
 
   const includePaths = Array.isArray(rawWorkspace?.includePaths)
     ? rawWorkspace.includePaths.filter((entry): entry is string => typeof entry === "string")
@@ -265,6 +284,7 @@ function normalizeSettings(value: unknown): SubagentSettings {
   const handoffMode = rawOrchestration?.handoffMode
   const memoryMode = rawMemory?.mode
   const summaryStyle = rawMemory?.summaryStyle
+  const capabilityPreset = rawCapabilities?.preset
 
   return {
     orchestration: {
@@ -311,12 +331,36 @@ function normalizeSettings(value: unknown): SubagentSettings {
       references,
       notes: typeof rawGuidelines?.notes === "string" ? rawGuidelines.notes : "",
     },
+    capabilities: {
+      preset: capabilityPreset === "core_maintenance" ? capabilityPreset : "core_maintenance",
+      diagnostics:
+        typeof rawCapabilities?.diagnostics === "boolean"
+          ? rawCapabilities.diagnostics
+          : DEFAULT_SUBAGENT_SETTINGS.capabilities.diagnostics,
+      microRepairPlanning:
+        typeof rawCapabilities?.microRepairPlanning === "boolean"
+          ? rawCapabilities.microRepairPlanning
+          : DEFAULT_SUBAGENT_SETTINGS.capabilities.microRepairPlanning,
+      hazardChecks:
+        typeof rawCapabilities?.hazardChecks === "boolean"
+          ? rawCapabilities.hazardChecks
+          : DEFAULT_SUBAGENT_SETTINGS.capabilities.hazardChecks,
+      safeShutdownGuidance:
+        typeof rawCapabilities?.safeShutdownGuidance === "boolean"
+          ? rawCapabilities.safeShutdownGuidance
+          : DEFAULT_SUBAGENT_SETTINGS.capabilities.safeShutdownGuidance,
+      statusRelay:
+        typeof rawCapabilities?.statusRelay === "boolean"
+          ? rawCapabilities.statusRelay
+          : DEFAULT_SUBAGENT_SETTINGS.capabilities.statusRelay,
+    },
   }
 }
 
 function normalizeSubagent(raw: any): Subagent {
   return {
     ...raw,
+    subagentType: normalizeSubagentType(raw?.subagentType),
     settings: normalizeSettings(raw?.settings),
   }
 }
@@ -520,12 +564,14 @@ export default function PersonalPage() {
     workspace: false,
     memory: false,
     guidelines: false,
+    capabilities: false,
   })
   const [isSavingSettings, setIsSavingSettings] = useState<Record<EditableSettingsSection, boolean>>({
     orchestration: false,
     workspace: false,
     memory: false,
     guidelines: false,
+    capabilities: false,
   })
   const [agentPermissions, setAgentPermissions] = useState<AgentPermission[]>([])
   const [isPermissionsLoading, setIsPermissionsLoading] = useState(false)
@@ -578,6 +624,14 @@ export default function PersonalPage() {
     () => activeSubagents.find((subagent) => subagent.id === selectedAgentId) || null,
     [activeSubagents, selectedAgentId],
   )
+
+  const visibleDetailTabs = useMemo(() => {
+    if (!selectedSubagent || selectedSubagent.subagentType !== "exocomp") {
+      return DETAIL_TABS.filter((tab) => tab.id !== "capabilities")
+    }
+
+    return DETAIL_TABS
+  }, [selectedSubagent])
 
   const missingInitialBridgeCrew = useMemo(() => {
     const existingNames = new Set(personalSubagents.map((subagent) => subagent.name.toLowerCase()))
@@ -961,6 +1015,12 @@ export default function PersonalPage() {
   }, [activeSubagents, selectedAgentId])
 
   useEffect(() => {
+    if (!visibleDetailTabs.some((tab) => tab.id === detailTab)) {
+      setDetailTab("context")
+    }
+  }, [detailTab, visibleDetailTabs])
+
+  useEffect(() => {
     if (!selectedSubagent) {
       setAgentSyncRuns([])
       return
@@ -988,6 +1048,7 @@ export default function PersonalPage() {
       workspace: false,
       memory: false,
       guidelines: false,
+      capabilities: false,
     })
 
     void loadContextFiles(selectedSubagent.id)
@@ -1700,7 +1761,7 @@ export default function PersonalPage() {
       ),
     [agentSyncRuns],
   )
-  const activeDetailTabLabel = DETAIL_TABS.find((tab) => tab.id === detailTab)?.label || "Context"
+  const activeDetailTabLabel = visibleDetailTabs.find((tab) => tab.id === detailTab)?.label || "Context"
 
   return (
     <PageLayout
@@ -1845,6 +1906,9 @@ export default function PersonalPage() {
                         <div className="flex items-start justify-between gap-2">
                           <div>
                             <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{subagent.name}</p>
+                            <p className="mt-1 text-[11px] uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">
+                              {subagent.subagentType.replace("_", " ")}
+                            </p>
                             <p className="mt-1 line-clamp-2 text-xs text-slate-600 dark:text-slate-400">
                               {subagent.description || "No description"}
                             </p>
@@ -1874,6 +1938,9 @@ export default function PersonalPage() {
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>
                       <h2 className="text-xl font-semibold text-slate-900 dark:text-slate-100">{selectedSubagent.name}</h2>
+                      <p className="mt-1 text-[11px] uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">
+                        {selectedSubagent.subagentType.replace("_", " ")}
+                      </p>
                       <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">{selectedSummary}</p>
                       <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{selectedSubagent.path || "No path configured"}</p>
                       <p className="mt-1 text-xs font-medium text-slate-500 dark:text-slate-400">
@@ -1906,7 +1973,7 @@ export default function PersonalPage() {
                   </div>
 
                   <div className="flex flex-wrap gap-2">
-                    {DETAIL_TABS.map((tab) => {
+                    {visibleDetailTabs.map((tab) => {
                       const channel = PERSONAL_DETAIL_NOTIFICATION_CHANNEL[activeTab][tab.id]
                       const badgeLabel = formatUnreadBadgeCount(getUnread([channel]))
                       return (
@@ -2918,6 +2985,120 @@ export default function PersonalPage() {
                     </div>
                   )}
 
+                  {detailTab === "capabilities" && selectedSubagent.subagentType === "exocomp" && (
+                    <div className="space-y-3">
+                      <div className="rounded-lg border border-cyan-500/30 bg-cyan-500/10 p-3 text-xs text-cyan-900 dark:text-cyan-100">
+                        Exocomp capability preset: <span className="font-semibold">{settingsDraft.capabilities.preset}</span>
+                      </div>
+
+                      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                        <label className="inline-flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-300">
+                          <input
+                            type="checkbox"
+                            checked={settingsDraft.capabilities.diagnostics}
+                            disabled={selectedSubagent.isShared}
+                            onChange={(event) => {
+                              setSettingsDraft((current) => ({
+                                ...current,
+                                capabilities: {
+                                  ...current.capabilities,
+                                  diagnostics: event.target.checked,
+                                },
+                              }))
+                              markSettingsDirty("capabilities")
+                            }}
+                          />
+                          Diagnostics
+                        </label>
+
+                        <label className="inline-flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-300">
+                          <input
+                            type="checkbox"
+                            checked={settingsDraft.capabilities.microRepairPlanning}
+                            disabled={selectedSubagent.isShared}
+                            onChange={(event) => {
+                              setSettingsDraft((current) => ({
+                                ...current,
+                                capabilities: {
+                                  ...current.capabilities,
+                                  microRepairPlanning: event.target.checked,
+                                },
+                              }))
+                              markSettingsDirty("capabilities")
+                            }}
+                          />
+                          Micro-repair planning
+                        </label>
+
+                        <label className="inline-flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-300">
+                          <input
+                            type="checkbox"
+                            checked={settingsDraft.capabilities.hazardChecks}
+                            disabled={selectedSubagent.isShared}
+                            onChange={(event) => {
+                              setSettingsDraft((current) => ({
+                                ...current,
+                                capabilities: {
+                                  ...current.capabilities,
+                                  hazardChecks: event.target.checked,
+                                },
+                              }))
+                              markSettingsDirty("capabilities")
+                            }}
+                          />
+                          Hazard checks
+                        </label>
+
+                        <label className="inline-flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-300">
+                          <input
+                            type="checkbox"
+                            checked={settingsDraft.capabilities.safeShutdownGuidance}
+                            disabled={selectedSubagent.isShared}
+                            onChange={(event) => {
+                              setSettingsDraft((current) => ({
+                                ...current,
+                                capabilities: {
+                                  ...current.capabilities,
+                                  safeShutdownGuidance: event.target.checked,
+                                },
+                              }))
+                              markSettingsDirty("capabilities")
+                            }}
+                          />
+                          Safe shutdown guidance
+                        </label>
+
+                        <label className="inline-flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-300 md:col-span-2">
+                          <input
+                            type="checkbox"
+                            checked={settingsDraft.capabilities.statusRelay}
+                            disabled={selectedSubagent.isShared}
+                            onChange={(event) => {
+                              setSettingsDraft((current) => ({
+                                ...current,
+                                capabilities: {
+                                  ...current.capabilities,
+                                  statusRelay: event.target.checked,
+                                },
+                              }))
+                              markSettingsDirty("capabilities")
+                            }}
+                          />
+                          Status relay
+                        </label>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => void saveSettingsSection("capabilities")}
+                        disabled={selectedSubagent.isShared || isSavingSettings.capabilities || !dirtySettingsSections.capabilities}
+                        className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-black disabled:opacity-50 dark:bg-white dark:text-slate-900"
+                      >
+                        {isSavingSettings.capabilities ? "Saving..." : "Save Capabilities"}
+                      </button>
+                    </div>
+                  )}
+
                   <div className="space-y-2 border-t border-slate-200/80 pt-3 dark:border-white/10">
                     <div>
                       <h3 className="text-sm font-semibold uppercase tracking-[0.14em] text-slate-500">Orchestration Graph</h3>
@@ -2944,7 +3125,7 @@ export default function PersonalPage() {
               {editingId ? "Edit Personal Agent" : "Create New Personal Agent"}
             </h2>
             <form onSubmit={editingId ? handleUpdate : handleCreate} className="mt-4 space-y-3">
-              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
                 <div>
                   <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">Name</label>
                   <input
@@ -2965,6 +3146,18 @@ export default function PersonalPage() {
                     className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
                     placeholder=".claude/agents/code-simplifier/SOUL.md"
                   />
+                </div>
+                <div>
+                  <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">Type</label>
+                  <select
+                    value={formData.subagentType}
+                    onChange={(event) => setFormData((current) => ({ ...current, subagentType: event.target.value as SubagentTypeValue }))}
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
+                  >
+                    <option value="general">General</option>
+                    <option value="bridge_crew">Bridge Crew</option>
+                    <option value="exocomp">Exocomp</option>
+                  </select>
                 </div>
               </div>
 

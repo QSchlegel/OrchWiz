@@ -11,6 +11,7 @@ export interface InitialBridgeCrewSubagent {
   content: string
   path: string
   isShared: boolean
+  subagentType: "bridge_crew"
 }
 
 export const INITIAL_BRIDGE_CREW_CALLSIGNS = BRIDGE_CREW_ROLE_ORDER.map((role) =>
@@ -129,6 +130,7 @@ export function buildInitialBridgeCrewSubagents(): InitialBridgeCrewSubagent[] {
       content: buildRoleContent(role),
       path: `.claude/agents/bridge-crew/${template.callsign.toLowerCase()}/SOUL.md`,
       isShared: false,
+      subagentType: "bridge_crew",
     }
   })
 }

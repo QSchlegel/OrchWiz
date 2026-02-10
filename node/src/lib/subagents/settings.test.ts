@@ -22,6 +22,10 @@ test("mergeSubagentSettings applies partial patch over defaults", () => {
       mode: "rolling",
       maxEntries: 120,
     },
+    capabilities: {
+      diagnostics: false,
+      statusRelay: false,
+    },
   })
 
   assert.equal(merged.workspace.workingDirectory, "node")
@@ -30,4 +34,8 @@ test("mergeSubagentSettings applies partial patch over defaults", () => {
   assert.equal(merged.memory.maxEntries, 120)
   assert.equal(merged.memory.summaryStyle, "concise")
   assert.equal(merged.orchestration.handoffEnabled, true)
+  assert.equal(merged.capabilities.preset, "core_maintenance")
+  assert.equal(merged.capabilities.diagnostics, false)
+  assert.equal(merged.capabilities.microRepairPlanning, true)
+  assert.equal(merged.capabilities.statusRelay, false)
 })

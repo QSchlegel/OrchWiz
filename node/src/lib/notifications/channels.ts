@@ -28,6 +28,7 @@ export const PERSONAL_DETAIL_NOTIFICATION_CHANNEL = {
     workspace: "personal.personal.workspace",
     memory: "personal.personal.memory",
     guidelines: "personal.personal.guidelines",
+    capabilities: "personal.personal.capabilities",
   },
   shared: {
     context: "personal.shared.context",
@@ -37,6 +38,7 @@ export const PERSONAL_DETAIL_NOTIFICATION_CHANNEL = {
     workspace: "personal.shared.workspace",
     memory: "personal.shared.memory",
     guidelines: "personal.shared.guidelines",
+    capabilities: "personal.shared.capabilities",
   },
 } as const
 
@@ -90,6 +92,7 @@ export const LEGACY_EVENT_NOTIFICATION_CHANNEL_MAP: Partial<Record<RealtimeEvent
   "command.executed": "commands",
   "verification.updated": "verification",
   "bridge.updated": "bridge-chat",
+  "bridge.agent-chat.updated": "bridge-chat",
   "bridge.comms.updated": "bridge-connections",
   "bridge-call.round.updated": "bridge-call",
   "agentsync.updated": "personal.personal.agentsync",

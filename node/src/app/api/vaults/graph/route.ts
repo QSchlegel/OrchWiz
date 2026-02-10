@@ -3,6 +3,9 @@ import { headers } from "next/headers"
 import { auth } from "@/lib/auth"
 import { parseVaultId } from "@/lib/vault/config"
 import { getVaultGraph, VaultRequestError } from "@/lib/vault"
+import { dataCoreDualReadVerifyEnabled, dataCoreEnabled } from "@/lib/data-core/config"
+import { getVaultGraphFromDataCore } from "@/lib/data-core/vault-adapter"
+import { logDualReadDrift } from "@/lib/data-core/dual-read"
 
 export const dynamic = "force-dynamic"
 
@@ -35,13 +38,36 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: "Invalid vault id" }, { status: 400 })
     }
 
-    const payload = await getVaultGraph(vaultId, {
+    const includeUnresolved = parseBoolean(searchParams.get("includeUnresolved"), true)
+    const legacyOptions = {
       focusPath: searchParams.get("focusPath"),
       depth: parseDepth(searchParams.get("depth")),
-      includeUnresolved: parseBoolean(searchParams.get("includeUnresolved"), true),
+      includeUnresolved,
       includeTrash: parseBoolean(searchParams.get("includeTrash"), false),
       query: searchParams.get("q") || "",
-    })
+    }
+
+    let payload
+    if (dataCoreEnabled()) {
+      payload = await getVaultGraphFromDataCore({
+        vaultId,
+        includeUnresolved,
+        userId: session.user.id,
+      })
+      if (dataCoreDualReadVerifyEnabled()) {
+        const legacyPayload = await getVaultGraph(vaultId, legacyOptions).catch(() => null)
+        if (legacyPayload) {
+          logDualReadDrift({
+            route: "/api/vaults/graph",
+            key: vaultId,
+            legacyPayload,
+            dataCorePayload: payload,
+          })
+        }
+      }
+    } else {
+      payload = await getVaultGraph(vaultId, legacyOptions)
+    }
 
     return NextResponse.json(payload)
   } catch (error) {

@@ -6,6 +6,7 @@ import {
   personalTopChannelForSubagent,
 } from "@/lib/realtime/notification-routing"
 import { mergeSubagentSettings, normalizeSubagentSettings } from "@/lib/subagents/settings"
+import { normalizeSubagentType, parseSubagentType } from "@/lib/subagents/types"
 import type { NotificationChannel } from "@/lib/types/notifications"
 import {
   AccessControlError,
@@ -42,6 +43,7 @@ export async function GET(
 
     return NextResponse.json({
       ...subagent,
+      subagentType: normalizeSubagentType(subagent.subagentType),
       settings: normalizeSubagentSettings(subagent.settings),
     })
   } catch (error) {
@@ -66,7 +68,14 @@ export async function PUT(
 
     const { id } = await params
     const body = await request.json()
-    const { name, description, content, path, settings, isShared, teamId } = body
+    const { name, description, content, path, settings, isShared, teamId, subagentType } = body
+    const parsedSubagentType = parseSubagentType(subagentType)
+    if (subagentType !== undefined && !parsedSubagentType) {
+      return NextResponse.json(
+        { error: "subagentType must be one of: general, bridge_crew, exocomp" },
+        { status: 400 },
+      )
+    }
 
     const existing = await prisma.subagent.findUnique({
       where: { id },
@@ -94,6 +103,7 @@ export async function PUT(
     if (settings !== undefined) {
       updateData.settings = mergeSubagentSettings(existing.settings, settings)
     }
+    if (subagentType !== undefined) updateData.subagentType = parsedSubagentType
     if (isShared !== undefined) updateData.isShared = isShared
     if (teamId !== undefined) updateData.teamId = teamId
 
@@ -116,6 +126,9 @@ export async function PUT(
       if (Object.prototype.hasOwnProperty.call(settings, "guidelines")) {
         channels.add(personalDetailChannelForSubagent(subagent.isShared, "guidelines"))
       }
+      if (Object.prototype.hasOwnProperty.call(settings, "capabilities")) {
+        channels.add(personalDetailChannelForSubagent(subagent.isShared, "capabilities"))
+      }
     }
 
     if (channels.size === 0) {
@@ -132,6 +145,7 @@ export async function PUT(
 
     return NextResponse.json({
       ...subagent,
+      subagentType: normalizeSubagentType(subagent.subagentType),
       settings: normalizeSubagentSettings(subagent.settings),
     })
   } catch (error) {

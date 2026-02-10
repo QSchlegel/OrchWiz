@@ -44,8 +44,14 @@ model User {
   ownedPermissions      Permission[]          @relation("PermissionOwner")
   ownedPermissionPolicies PermissionPolicy[]  @relation("PermissionPolicyOwner")
   ownedNodeSources      NodeSource[]          @relation("NodeSourceOwner")
+  skillCatalogEntries   SkillCatalogEntry[]
+  skillImportRuns       SkillImportRun[]
   shipyardSecretTemplates ShipyardSecretTemplate[]
+  shipyardCloudCredentials ShipyardCloudCredential[]
+  shipyardCloudSshKeys   ShipyardCloudSshKey[]
+  shipyardSshTunnels     ShipyardSshTunnel[]
   newsletterSubscriptions NewsletterSubscription[]
+  userMemorySigner      UserMemorySigner?
 }
 
 enum UserRole {
@@ -148,6 +154,8 @@ model Session {
   bridgeThread      BridgeThread?            @relation("BridgeThreadSession")
   bridgeMirrorJobs  BridgeMirrorJob[]        @relation("BridgeMirrorJobSession")
   observabilityTraces ObservabilityTrace[]
+  bridgeAgentChatMembers BridgeAgentChatMember[] @relation("BridgeAgentChatMemberSession")
+  bridgeAgentChatReplyJobs BridgeAgentChatReplyJob[] @relation("BridgeAgentChatReplyRecipientSession")
 }
 
 enum SessionStatus {
@@ -205,6 +213,23 @@ enum BridgeMirrorDirection {
 }
 
 enum BridgeMirrorJobStatus {
+  pending
+  processing
+  completed
+  failed
+}
+
+enum BridgeAgentChatRoomType {
+  dm
+  group
+}
+
+enum BridgeAgentChatMessageKind {
+  agent
+  system
+}
+
+enum BridgeAgentChatReplyJobStatus {
   pending
   processing
   completed
@@ -284,6 +309,103 @@ model BridgeMirrorJob {
   @@index([sessionId])
   @@index([messageId])
   @@index([interactionId])
+  @@index([createdAt])
+}
+
+model BridgeAgentChatRoom {
+  id                    String                    @id @default(uuid())
+  shipDeploymentId      String
+  roomType              BridgeAgentChatRoomType
+  title                 String
+  dmKey                 String?                   @unique
+  createdByBridgeCrewId String?
+  metadata              Json?
+  createdAt             DateTime                  @default(now())
+  updatedAt             DateTime                  @updatedAt
+
+  shipDeployment        AgentDeployment           @relation(fields: [shipDeploymentId], references: [id], onDelete: Cascade)
+  createdByBridgeCrew   BridgeCrew?               @relation("BridgeAgentChatRoomCreator", fields: [createdByBridgeCrewId], references: [id], onDelete: SetNull)
+  members               BridgeAgentChatMember[]
+  messages              BridgeAgentChatMessage[]
+  replyJobs             BridgeAgentChatReplyJob[]
+
+  @@index([shipDeploymentId, updatedAt])
+  @@index([shipDeploymentId, roomType])
+  @@index([createdByBridgeCrewId])
+}
+
+model BridgeAgentChatMember {
+  id           String              @id @default(cuid())
+  roomId       String
+  bridgeCrewId String
+  sessionId    String
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+
+  room         BridgeAgentChatRoom @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  bridgeCrew   BridgeCrew          @relation(fields: [bridgeCrewId], references: [id], onDelete: Cascade)
+  session      Session             @relation("BridgeAgentChatMemberSession", fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([roomId, bridgeCrewId])
+  @@unique([roomId, sessionId])
+  @@index([bridgeCrewId])
+  @@index([sessionId])
+}
+
+model BridgeAgentChatMessage {
+  id               String                     @id @default(uuid())
+  roomId           String
+  kind             BridgeAgentChatMessageKind @default(agent)
+  senderBridgeCrewId String?
+  content          String
+  inReplyToMessageId String?
+  metadata         Json?
+  createdAt        DateTime                   @default(now())
+
+  room             BridgeAgentChatRoom        @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  senderBridgeCrew BridgeCrew?                @relation("BridgeAgentChatMessageSender", fields: [senderBridgeCrewId], references: [id], onDelete: SetNull)
+  inReplyToMessage BridgeAgentChatMessage?    @relation("BridgeAgentChatMessageReplyChain", fields: [inReplyToMessageId], references: [id], onDelete: SetNull)
+  replyMessages    BridgeAgentChatMessage[]   @relation("BridgeAgentChatMessageReplyChain")
+  sourceReplyJobs  BridgeAgentChatReplyJob[]  @relation("BridgeAgentChatReplySourceMessage")
+  outputReplyJobs  BridgeAgentChatReplyJob[]  @relation("BridgeAgentChatReplyOutputMessage")
+
+  @@index([roomId, createdAt])
+  @@index([senderBridgeCrewId, createdAt])
+  @@index([inReplyToMessageId])
+  @@index([createdAt])
+}
+
+model BridgeAgentChatReplyJob {
+  id                    String                       @id @default(cuid())
+  dedupeKey             String                       @unique
+  shipDeploymentId      String
+  roomId                String
+  sourceMessageId       String
+  recipientBridgeCrewId String
+  recipientSessionId    String
+  status                BridgeAgentChatReplyJobStatus @default(pending)
+  attempts              Int                          @default(0)
+  nextAttemptAt         DateTime?
+  lastError             String?
+  outputMessageId       String?
+  createdAt             DateTime                     @default(now())
+  updatedAt             DateTime                     @updatedAt
+  completedAt           DateTime?
+
+  shipDeployment        AgentDeployment              @relation(fields: [shipDeploymentId], references: [id], onDelete: Cascade)
+  room                  BridgeAgentChatRoom          @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  sourceMessage         BridgeAgentChatMessage       @relation("BridgeAgentChatReplySourceMessage", fields: [sourceMessageId], references: [id], onDelete: Cascade)
+  recipientBridgeCrew   BridgeCrew                   @relation("BridgeAgentChatReplyRecipient", fields: [recipientBridgeCrewId], references: [id], onDelete: Cascade)
+  recipientSession      Session                      @relation("BridgeAgentChatReplyRecipientSession", fields: [recipientSessionId], references: [id], onDelete: Cascade)
+  outputMessage         BridgeAgentChatMessage?      @relation("BridgeAgentChatReplyOutputMessage", fields: [outputMessageId], references: [id], onDelete: SetNull)
+
+  @@index([status, nextAttemptAt])
+  @@index([shipDeploymentId, createdAt])
+  @@index([roomId, createdAt])
+  @@index([sourceMessageId])
+  @@index([recipientBridgeCrewId])
+  @@index([recipientSessionId])
+  @@index([outputMessageId])
   @@index([createdAt])
 }
 
@@ -405,9 +527,16 @@ enum ExecutionStatus {
   failed
 }
 
+enum SubagentType {
+  general
+  bridge_crew
+  exocomp
+}
+
 model Subagent {
   id          String   @id @default(cuid())
   name        String
+  subagentType SubagentType @default(general)
   description String?
   content     String
   path        String?
@@ -430,6 +559,7 @@ model Subagent {
   @@unique([name, teamId])
   @@index([teamId])
   @@index([ownerUserId])
+  @@index([subagentType])
 }
 
 model AgentSyncPreference {
@@ -701,6 +831,79 @@ enum PermissionScope {
   subagent
 }
 
+enum SkillCatalogSource {
+  curated
+  experimental
+  custom_github
+  local
+  system
+}
+
+enum SkillImportStatus {
+  running
+  succeeded
+  failed
+}
+
+model SkillCatalogEntry {
+  id           String           @id @default(cuid())
+  ownerUserId  String
+  slug         String
+  name         String
+  description  String?
+  source       SkillCatalogSource
+  sourceKey    String
+  repo         String?
+  sourcePath   String?
+  sourceRef    String?
+  sourceUrl    String?
+  isInstalled  Boolean          @default(false)
+  isSystem     Boolean          @default(false)
+  installedPath String?
+  metadata     Json?
+  lastSyncedAt DateTime         @default(now())
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+
+  owner       User             @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+  importRuns  SkillImportRun[]
+
+  @@unique([ownerUserId, sourceKey])
+  @@index([ownerUserId, source])
+  @@index([ownerUserId, isInstalled])
+  @@index([ownerUserId, slug])
+  @@index([ownerUserId, updatedAt])
+}
+
+model SkillImportRun {
+  id            String            @id @default(cuid())
+  ownerUserId   String
+  catalogEntryId String?
+  mode          String
+  source        SkillCatalogSource?
+  skillSlug     String?
+  repo          String?
+  sourcePath    String?
+  sourceRef     String?
+  sourceUrl     String?
+  status        SkillImportStatus @default(running)
+  exitCode      Int?
+  stdout        String?
+  stderr        String?
+  errorMessage  String?
+  startedAt     DateTime          @default(now())
+  completedAt   DateTime?
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  owner        User              @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+  catalogEntry SkillCatalogEntry? @relation(fields: [catalogEntryId], references: [id], onDelete: SetNull)
+
+  @@index([ownerUserId, createdAt(sort: Desc)])
+  @@index([ownerUserId, status, createdAt(sort: Desc)])
+  @@index([catalogEntryId])
+}
+
 model AgentAction {
   id        String   @id @default(cuid())
   sessionId String
@@ -848,6 +1051,9 @@ model AgentDeployment {
   bridgeCallRounds BridgeCallRound[] @relation("BridgeCallRoundShip")
   bridgeConnections BridgeConnection[]
   bridgeDispatchDeliveries BridgeDispatchDelivery[]
+  shipyardSshTunnels ShipyardSshTunnel[]
+  bridgeAgentChatRooms BridgeAgentChatRoom[]
+  bridgeAgentChatReplyJobs BridgeAgentChatReplyJob[]
 
   @@index([nodeId])
   @@index([status])
@@ -894,6 +1100,78 @@ model ShipyardSecretTemplate {
 
   @@unique([userId, deploymentProfile])
   @@index([userId])
+}
+
+model ShipyardCloudCredential {
+  id             String        @id @default(cuid())
+  userId         String
+  provider       CloudProvider
+  tokenEnvelope  Json
+  metadata       Json?
+  lastValidatedAt DateTime?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, provider])
+  @@index([userId])
+  @@index([provider])
+}
+
+model ShipyardCloudSshKey {
+  id                String        @id @default(cuid())
+  userId            String
+  provider          CloudProvider
+  name              String
+  publicKey         String
+  fingerprint       String
+  privateKeyEnvelope Json
+  metadata          Json?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  user              User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tunnels           ShipyardSshTunnel[]
+
+  @@index([userId, provider])
+  @@index([fingerprint])
+  @@index([name])
+}
+
+model ShipyardSshTunnel {
+  id               String             @id @default(cuid())
+  userId           String
+  deploymentId     String?
+  provider         CloudProvider
+  name             String
+  status           ShipyardTunnelStatus @default(stopped)
+  localHost        String             @default("127.0.0.1")
+  localPort        Int
+  remoteHost       String
+  remotePort       Int
+  sshHost          String
+  sshPort          Int                @default(22)
+  sshUser          String             @default("root")
+  sshKeyId         String?
+  pid              Int?
+  pidFile          String?
+  controlSocket    String?
+  keyFilePath      String?
+  lastHealthCheck  DateTime?
+  lastError        String?
+  metadata         Json?
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  user             User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deployment       AgentDeployment?   @relation(fields: [deploymentId], references: [id], onDelete: SetNull)
+  sshKey           ShipyardCloudSshKey? @relation(fields: [sshKeyId], references: [id], onDelete: SetNull)
+
+  @@index([userId, provider])
+  @@index([deploymentId])
+  @@index([status])
+  @@index([sshKeyId])
 }
 
 enum VaultRagScopeType {
@@ -986,6 +1264,55 @@ model VaultRagSyncRun {
   @@index([scope, shipDeploymentId, createdAt])
 }
 
+model LocalPrivateRagDocument {
+  id               String                @id @default(cuid())
+  joinedPath       String                @unique
+  physicalPath     String
+  title            String
+  contentHash      String
+  byteSize         Int
+  mtime            DateTime
+  chunkCount       Int                   @default(0)
+  lastIndexedAt    DateTime              @default(now())
+  createdAt        DateTime              @default(now())
+  updatedAt        DateTime              @updatedAt
+
+  chunks           LocalPrivateRagChunk[]
+
+  @@index([updatedAt])
+}
+
+model LocalPrivateRagChunk {
+  id                String                @id @default(cuid())
+  documentId        String
+  joinedPath        String
+  chunkIndex        Int
+  heading           String?
+  content           String
+  normalizedContent String
+  embedding         Json?
+  tokenCount        Int
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+
+  document          LocalPrivateRagDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@unique([documentId, chunkIndex])
+  @@index([joinedPath])
+}
+
+model UserMemorySigner {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  keyRef    String   @unique
+  address   String
+  key       String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
 model BridgeDispatchDelivery {
   id                String               @id @default(cuid())
   deploymentId      String
@@ -1021,6 +1348,17 @@ enum DeploymentType {
 enum DeploymentProfile {
   local_starship_build
   cloud_shipyard
+}
+
+enum CloudProvider {
+  hetzner
+}
+
+enum ShipyardTunnelStatus {
+  stopped
+  starting
+  running
+  failed
 }
 
 enum ProvisioningMode {
@@ -1062,6 +1400,10 @@ model BridgeCrew {
   updatedAt     DateTime        @updatedAt
 
   deployment    AgentDeployment @relation(fields: [deploymentId], references: [id], onDelete: Cascade)
+  bridgeAgentChatRoomsCreated BridgeAgentChatRoom[] @relation("BridgeAgentChatRoomCreator")
+  bridgeAgentChatMembers BridgeAgentChatMember[]
+  bridgeAgentChatMessages BridgeAgentChatMessage[] @relation("BridgeAgentChatMessageSender")
+  bridgeAgentChatReplyJobs BridgeAgentChatReplyJob[] @relation("BridgeAgentChatReplyRecipient")
 
   @@unique([deploymentId, role])
   @@index([deploymentId])

@@ -5,6 +5,14 @@ import { publishNotificationUpdated } from "@/lib/realtime/notifications"
 import { parseVaultId } from "@/lib/vault/config"
 import { deleteVaultFile, getVaultFile, moveVaultFile, saveVaultFile, VaultRequestError } from "@/lib/vault"
 import type { VaultDeleteMode, VaultFileReadMode } from "@/lib/vault/types"
+import { dataCoreDualReadVerifyEnabled, dataCoreEnabled } from "@/lib/data-core/config"
+import {
+  deleteVaultFileToDataCore,
+  getVaultFileFromDataCore,
+  moveVaultFileToDataCore,
+  saveVaultFileToDataCore,
+} from "@/lib/data-core/vault-adapter"
+import { logDualReadDrift } from "@/lib/data-core/dual-read"
 
 export const dynamic = "force-dynamic"
 
@@ -36,7 +44,28 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: "path query parameter is required" }, { status: 400 })
     }
 
-    const payload = await getVaultFile(vaultId, notePath, { mode })
+    let payload
+    if (dataCoreEnabled()) {
+      payload = await getVaultFileFromDataCore({
+        vaultId,
+        notePath,
+        mode,
+        userId: session.user.id,
+      })
+      if (dataCoreDualReadVerifyEnabled()) {
+        const legacyPayload = await getVaultFile(vaultId, notePath, { mode }).catch(() => null)
+        if (legacyPayload) {
+          logDualReadDrift({
+            route: "/api/vaults/file",
+            key: `${vaultId}:${notePath}`,
+            legacyPayload,
+            dataCorePayload: payload,
+          })
+        }
+      }
+    } else {
+      payload = await getVaultFile(vaultId, notePath, { mode })
+    }
     return NextResponse.json(payload)
   } catch (error) {
     if (error instanceof VaultRequestError) {
@@ -68,7 +97,14 @@ export async function PATCH(request: NextRequest) {
       return NextResponse.json({ error: "fromPath and toPath are required" }, { status: 400 })
     }
 
-    const payload = await moveVaultFile(vaultId, fromPath, toPath)
+    const payload = dataCoreEnabled()
+      ? await moveVaultFileToDataCore({
+          vaultId,
+          fromPath,
+          toPath,
+          userId: session.user.id,
+        })
+      : await moveVaultFile(vaultId, fromPath, toPath)
     publishNotificationUpdated({
       userId: session.user.id,
       channel: "vault.topology",
@@ -105,7 +141,14 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: "path query parameter is required" }, { status: 400 })
     }
 
-    const payload = await deleteVaultFile(vaultId, notePath, mode)
+    const payload = dataCoreEnabled()
+      ? await deleteVaultFileToDataCore({
+          vaultId,
+          notePath,
+          mode,
+          userId: session.user.id,
+        })
+      : await deleteVaultFile(vaultId, notePath, mode)
     publishNotificationUpdated({
       userId: session.user.id,
       channel: "vault.explorer",
@@ -146,7 +189,14 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "content is required" }, { status: 400 })
     }
 
-    const payload = await saveVaultFile(vaultId, notePath, content)
+    const payload = dataCoreEnabled()
+      ? await saveVaultFileToDataCore({
+          vaultId,
+          notePath,
+          content,
+          userId: session.user.id,
+        })
+      : await saveVaultFile(vaultId, notePath, content)
     publishNotificationUpdated({
       userId: session.user.id,
       channel: "vault.explorer",

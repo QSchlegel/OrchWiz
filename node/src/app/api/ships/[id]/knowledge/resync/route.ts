@@ -4,6 +4,8 @@ import { auth } from "@/lib/auth"
 import { prisma } from "@/lib/prisma"
 import { publishNotificationUpdated } from "@/lib/realtime/notifications"
 import { runVaultRagResync } from "@/lib/vault/rag"
+import { dataCoreEnabled } from "@/lib/data-core/config"
+import { getDataCoreClient } from "@/lib/data-core/client"
 import { parseKnowledgeQueryMode, parseKnowledgeResyncScope } from "../route-helpers"
 
 export const dynamic = "force-dynamic"
@@ -50,13 +52,26 @@ export async function POST(
     const scope = parseKnowledgeResyncScope(typeof body.scope === "string" ? body.scope : null)
     const mode = parseKnowledgeQueryMode(typeof body.mode === "string" ? body.mode : null)
 
-    const summary = await runVaultRagResync({
-      scope,
-      shipDeploymentId: scope === "ship" ? id : undefined,
-      trigger: "manual",
-      initiatedByUserId: session.user.id,
-      mode,
-    })
+    const summary = await (dataCoreEnabled()
+      ? getDataCoreClient().runSyncReconcile().then((reconcile) => ({
+          runId: `data-core-${Date.now()}`,
+          status: "completed" as const,
+          trigger: "manual" as const,
+          scope: scope === "all" ? "all" as const : scope,
+          shipDeploymentId: scope === "ship" ? id : null,
+          documentsScanned: Number(reconcile?.pull && typeof reconcile.pull === "object" && "pulled" in reconcile.pull ? (reconcile.pull as { pulled?: number }).pulled || 0 : 0),
+          documentsUpserted: Number(reconcile?.pull && typeof reconcile.pull === "object" && "applied" in reconcile.pull ? (reconcile.pull as { applied?: number }).applied || 0 : 0),
+          documentsRemoved: 0,
+          chunksUpserted: 0,
+          error: null as string | null,
+        }))
+      : runVaultRagResync({
+          scope,
+          shipDeploymentId: scope === "ship" ? id : undefined,
+          trigger: "manual",
+          initiatedByUserId: session.user.id,
+          mode,
+        }))
 
     publishNotificationUpdated({
       userId: session.user.id,

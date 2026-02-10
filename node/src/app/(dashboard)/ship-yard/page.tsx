@@ -32,6 +32,10 @@ import {
   type ProvisioningMode,
 } from "@/lib/deployment/profile"
 import {
+  defaultCloudProviderConfig,
+  type CloudProviderConfig,
+} from "@/lib/shipyard/cloud/types"
+import {
   BRIDGE_CREW_ROLE_ORDER,
   listBridgeCrewTemplates,
   type BridgeCrewRole,
@@ -64,12 +68,15 @@ import {
 } from "@/lib/shipyard/cluster-summary"
 import { useEventStream } from "@/lib/realtime/useEventStream"
 import { useShipSelection } from "@/lib/shipyard/useShipSelection"
-import { EmptyState, InlineNotice, PageLayout, SurfaceCard } from "@/components/dashboard/PageLayout"
+import { EmptyState, InlineNotice, SurfaceCard } from "@/components/dashboard/PageLayout"
 import { ShipQuartermasterPanel } from "@/components/quartermaster/ShipQuartermasterPanel"
+import { CloudUtilityPanel } from "@/components/shipyard/CloudUtilityPanel"
 
 type InfrastructureKind = InfrastructureConfig["kind"]
 
 type WizardStepId = "mission" | "environment" | "secrets" | "crew" | "review"
+
+type MainTab = "build" | "fleet" | "ops"
 
 interface CrewOverrideInput {
   name: string
@@ -88,6 +95,7 @@ interface LaunchFormState {
   advancedNodeTypeOverride: boolean
   nodeType: NodeType
   infrastructure: InfrastructureConfig
+  cloudProvider: CloudProviderConfig
   crewOverrides: Record<BridgeCrewRole, CrewOverrideInput>
 }
 
@@ -559,6 +567,7 @@ function createInitialFormState(): LaunchFormState {
     advancedNodeTypeOverride: false,
     nodeType: deploymentProfile === "cloud_shipyard" ? "cloud" : "local",
     infrastructure: defaultInfrastructureConfig(deploymentProfile),
+    cloudProvider: defaultCloudProviderConfig(),
     crewOverrides: createCrewOverrides(),
   }
 }
@@ -831,8 +840,10 @@ export default function ShipYardPage() {
   const [isLoadingSecrets, setIsLoadingSecrets] = useState(false)
   const [isSavingSecrets, setIsSavingSecrets] = useState(false)
   const [isClearingSecrets, setIsClearingSecrets] = useState(false)
+  const [cloudSshKeyFingerprint, setCloudSshKeyFingerprint] = useState<string | null>(null)
 
   const currentStep = steps[stepIndex]
+  const [mainTab, setMainTab] = useState<MainTab>("build")
 
   const derivedNodeType = useMemo(
     () =>
@@ -1504,6 +1515,11 @@ export default function ShipYardPage() {
           nodeType: form.nodeType,
           config: {
             infrastructure: form.infrastructure,
+            ...(form.deploymentProfile === "cloud_shipyard"
+              ? {
+                  cloudProvider: form.cloudProvider,
+                }
+              : {}),
           },
           crewRoles: REQUIRED_BRIDGE_CREW_ROLES,
           crewOverrides: selectedOverrides,
@@ -1539,6 +1555,8 @@ export default function ShipYardPage() {
       setMessage({ type: "success", text: "Ship launched. Bridge crew bootstrap complete." })
       setStepIndex(0)
       setForm(createInitialFormState())
+      setCloudSshKeyFingerprint(null)
+      setMainTab("ops")
       await refreshFleetView()
     } catch (error) {
       console.error("Ship launch failed:", error)
@@ -1771,45 +1789,120 @@ export default function ShipYardPage() {
   }
 
   return (
-    <PageLayout
-      title="Ship Yard"
-      description="Launch ships, bootstrap bridge crew command, and prepare mission-ready fleet operations."
-      actions={
-        <button
-          type="button"
-          onClick={refreshFleetView}
-          className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-200 dark:hover:bg-white/[0.08]"
-        >
-          <Compass className="h-4 w-4" />
-          Refresh Fleet
-        </button>
-      }
-    >
-      <div className="flex flex-col gap-4">
-        {message && (
-          <InlineNotice variant={message.type}>
-            <div className="space-y-2">
-              <p>{message.text}</p>
-              {message.suggestedCommands && message.suggestedCommands.length > 0 && (
-                <ul className="list-disc space-y-1 pl-5 text-xs">
-                  {message.suggestedCommands.map((command) => (
-                    <li key={command}>
-                      <code>{command}</code>
-                    </li>
-                  ))}
-                </ul>
-              )}
+    <div className="min-h-screen px-4 py-6 sm:px-6 lg:px-8">
+      <div className="mx-auto w-full max-w-7xl">
+        {/* Header */}
+        <div className="mb-6">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="rounded-xl bg-gradient-to-br from-amber-500/20 to-orange-600/20 p-2.5 dark:from-amber-500/15 dark:to-orange-500/15">
+                <Ship className="h-5 w-5 text-amber-600 dark:text-amber-400" />
+              </div>
+              <div>
+                <h1 className="text-2xl font-semibold tracking-tight text-slate-900 dark:text-slate-100" style={{ fontFamily: "var(--font-display)" }}>Ship Yard</h1>
+                <div className="mt-0.5 flex items-center gap-3">
+                  <span className="readout text-slate-500">{ships.length} SHIPS</span>
+                  {clusterSummary.deployedNowCount > 0 && <span className="readout text-emerald-600 dark:text-emerald-400">{clusterSummary.deployedNowCount} DEPLOYED</span>}
+                  {clusterSummary.failedCount > 0 && <span className="readout text-rose-600 dark:text-rose-400">{clusterSummary.failedCount} FAILED</span>}
+                </div>
+              </div>
             </div>
-          </InlineNotice>
+            <div className="flex items-center gap-2">
+              {selectedShip && (
+                <button
+                  type="button"
+                  onClick={() => setMainTab("ops")}
+                  className="hidden items-center gap-2 rounded-full border border-cyan-500/30 bg-cyan-500/8 px-3 py-1.5 text-xs font-medium text-cyan-700 transition-colors hover:bg-cyan-500/15 sm:inline-flex dark:border-cyan-400/25 dark:text-cyan-300"
+                >
+                  <span className={`h-1.5 w-1.5 rounded-full ${selectedShip.status === "active" ? "bg-emerald-500" : selectedShip.status === "failed" ? "bg-rose-500" : "bg-slate-400"}`} />
+                  {selectedShip.name}
+                </button>
+              )}
+              <button type="button" onClick={refreshFleetView} className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-200 dark:hover:bg-white/[0.08]">
+                <RefreshCw className={`h-4 w-4 ${isLoadingShips || isLoadingRuntime ? "animate-spin" : ""}`} />
+                Refresh
+              </button>
+            </div>
+          </div>
+
+          {/* Tab navigation */}
+          <div className="mt-5 flex items-center gap-1 border-b border-slate-200/80 dark:border-white/10">
+            {([
+              { key: "build" as MainTab, label: "Build", icon: Rocket },
+              { key: "fleet" as MainTab, label: "Fleet", icon: Compass },
+              ...(selectedShipDeploymentId ? [{ key: "ops" as MainTab, label: selectedShip?.name || "Ship Ops", icon: Settings2 }] : []),
+            ] as { key: MainTab; label: string; icon: typeof Rocket }[]).map((t) => (
+              <button
+                key={t.key}
+                type="button"
+                onClick={() => setMainTab(t.key)}
+                className={`relative flex items-center gap-2 px-4 py-2.5 text-sm font-medium transition-colors ${
+                  mainTab === t.key
+                    ? "text-amber-700 dark:text-amber-300"
+                    : "text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-300"
+                }`}
+              >
+                <t.icon className="h-3.5 w-3.5" />
+                <span className="max-w-[160px] truncate">{t.label}</span>
+                {mainTab === t.key && (
+                  <span className="absolute inset-x-2 -bottom-px h-[2px] rounded-full bg-amber-500 dark:bg-amber-400" />
+                )}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Messages */}
+        {message && (
+          <div className="mb-4">
+            <InlineNotice variant={message.type}>
+              <div className="space-y-2">
+                <p>{message.text}</p>
+                {message.suggestedCommands && message.suggestedCommands.length > 0 && (
+                  <ul className="list-disc space-y-1 pl-5 text-xs">
+                    {message.suggestedCommands.map((command) => (
+                      <li key={command}>
+                        <code>{command}</code>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </InlineNotice>
+          </div>
         )}
 
-        {CLOUD_DEPLOY_ONLY && (
-          <InlineNotice variant="info">
-            Cloud deploy mode is enabled (`CLOUD_DEPLOY_ONLY=true`). Local Starship Build launches are disabled on this Orchwiz instance.
-          </InlineNotice>
+        {CLOUD_DEPLOY_ONLY && mainTab === "build" && (
+          <div className="mb-4">
+            <InlineNotice variant="info">
+              Cloud deploy mode is enabled. Local Starship Build launches are disabled.
+            </InlineNotice>
+          </div>
         )}
 
-        <SurfaceCard className="order-10 border-slate-300/70 bg-white/80 dark:border-white/12 dark:bg-white/[0.03]">
+        <div className="space-y-4">
+
+        {mainTab === "ops" && !selectedShipDeploymentId && (
+          <SurfaceCard>
+            <div className="flex flex-col items-center justify-center py-16 text-center">
+              <div className="rounded-2xl bg-slate-100 p-5 dark:bg-white/5">
+                <Ship className="h-10 w-10 text-slate-400 dark:text-slate-500" />
+              </div>
+              <p className="mt-4 text-sm font-medium text-slate-700 dark:text-slate-300">No ship selected</p>
+              <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Select a ship from the Fleet tab or launch a new one from Build.</p>
+              <div className="mt-4 flex gap-2">
+                <button type="button" onClick={() => setMainTab("fleet")} className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-white/15 dark:bg-white/5 dark:text-slate-300">
+                  View Fleet
+                </button>
+                <button type="button" onClick={() => setMainTab("build")} className="rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-600 dark:bg-amber-500/90">
+                  Build New Ship
+                </button>
+              </div>
+            </div>
+          </SurfaceCard>
+        )}
+
+        {mainTab === "fleet" && (<SurfaceCard className="border-slate-300/70 bg-white/80 dark:border-white/12 dark:bg-white/[0.03]">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <p className="readout text-slate-500 dark:text-slate-400">Cluster Deployment Snapshot</p>
@@ -1984,39 +2077,21 @@ export default function ShipYardPage() {
               <p className="mt-2 text-xs text-slate-600 dark:text-slate-300">Runtime snapshot unavailable.</p>
             )}
           </div>
-        </SurfaceCard>
+        </SurfaceCard>)}
 
-        <SurfaceCard className="order-40 border-cyan-400/35 bg-gradient-to-br from-cyan-50/70 via-white to-indigo-50/70 dark:from-cyan-500/10 dark:via-white/[0.03] dark:to-indigo-500/10">
+        {mainTab === "build" && (<SurfaceCard className="border-amber-400/25 bg-gradient-to-br from-amber-50/60 via-white to-orange-50/40 dark:from-amber-500/8 dark:via-white/[0.03] dark:to-orange-500/5">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <p className="readout text-cyan-700 dark:text-cyan-300">Launch New Ship</p>
+              <p className="readout text-amber-700 dark:text-amber-400">Launch New Ship</p>
               <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-50">Deployment Wizard</h2>
               <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
-                {isLaunchPanelOpen
-                  ? "Configure mission, environment, secrets, and bridge crew for a new deployment."
-                  : "Launch new ship into a local or cloud cluster when needed."}
+                Configure mission, environment, secrets, and bridge crew for a new deployment.
               </p>
             </div>
-            <button
-              type="button"
-              onClick={() => {
-                setLaunchPanelPreferenceLocked(true)
-                setIsLaunchPanelOpen((current) => !current)
-              }}
-              className="inline-flex items-center gap-1.5 rounded-md border border-slate-300/70 bg-white/70 px-2.5 py-1.5 text-xs text-slate-700 dark:border-white/12 dark:bg-white/[0.04] dark:text-slate-200"
-            >
-              {isLaunchPanelOpen ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
-              {isLaunchPanelOpen ? "Collapse Wizard" : "Expand Wizard"}
-            </button>
           </div>
 
-          {!isLaunchPanelOpen ? (
-            <div className="mt-3 rounded-lg border border-slate-300/70 bg-white/75 px-3 py-2 text-xs text-slate-600 dark:border-white/12 dark:bg-white/[0.04] dark:text-slate-300">
-              Launch wizard is collapsed so current cluster state stays in focus.
-            </div>
-          ) : (
             <>
-              <div className="mt-3 flex flex-wrap items-center gap-2">
+              <div className="mt-3 flex items-center gap-1 rounded-xl border border-slate-200/80 bg-slate-50/80 p-1 dark:border-white/8 dark:bg-white/[0.02]">
                 {steps.map((step, index) => {
                   const Icon = step.icon
                   const isComplete = index < stepIndex
@@ -2026,16 +2101,24 @@ export default function ShipYardPage() {
                       key={step.id}
                       type="button"
                       onClick={() => setStepIndex(index)}
-                      className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-xs transition ${
+                      className={`relative flex flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2 text-xs font-medium transition-all ${
                         isActive
-                          ? "border-cyan-500/45 bg-cyan-500/12 text-cyan-700 dark:text-cyan-200"
+                          ? "bg-white text-amber-700 shadow-sm dark:bg-white/10 dark:text-amber-300"
                           : isComplete
-                            ? "border-emerald-500/35 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200"
-                            : "border-slate-300/70 bg-white/70 text-slate-600 dark:border-white/10 dark:bg-white/[0.04] dark:text-slate-300"
+                            ? "text-emerald-600 hover:bg-white/60 dark:text-emerald-400 dark:hover:bg-white/5"
+                            : "text-slate-500 hover:bg-white/60 dark:text-slate-400 dark:hover:bg-white/5"
                       }`}
                     >
-                      <Icon className="h-3.5 w-3.5" />
-                      {step.title}
+                      {isComplete ? (
+                        <CheckCircle2 className="h-3.5 w-3.5" />
+                      ) : (
+                        <span className={`flex h-4 w-4 items-center justify-center rounded-full text-[10px] font-bold ${
+                          isActive
+                            ? "bg-amber-500 text-white dark:bg-amber-400 dark:text-slate-900"
+                            : "bg-slate-300/80 text-slate-600 dark:bg-white/15 dark:text-slate-400"
+                        }`}>{index + 1}</span>
+                      )}
+                      <span className="hidden sm:inline">{step.title}</span>
                     </button>
                   )
                 })}
@@ -2306,6 +2389,20 @@ export default function ShipYardPage() {
                       </label>
                     ))}
                   </div>
+                )}
+
+                {form.deploymentProfile === "cloud_shipyard" && (
+                  <CloudUtilityPanel
+                    value={form.cloudProvider}
+                    onChange={(next) =>
+                      setForm((current) => ({
+                        ...current,
+                        cloudProvider: next,
+                      }))
+                    }
+                    onSelectedSshKeyFingerprintChange={setCloudSshKeyFingerprint}
+                    disabled={isLaunching}
+                  />
                 )}
               </div>
             )}
@@ -2638,6 +2735,31 @@ export default function ShipYardPage() {
                   <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
                     Ansible {form.infrastructure.ansibleInventory} • {form.infrastructure.ansiblePlaybook}
                   </p>
+                  {form.deploymentProfile === "cloud_shipyard" && (
+                    <>
+                      <p className="mt-2 text-xs text-slate-600 dark:text-slate-300">
+                        Provider {form.cloudProvider.provider} • Stack Mode{" "}
+                        {form.cloudProvider.stackMode.replaceAll("_", " ")}
+                      </p>
+                      <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
+                        Cluster {form.cloudProvider.cluster.clusterName} • {form.cloudProvider.cluster.location} •
+                        {` ${form.cloudProvider.cluster.controlPlane.machineType} x${form.cloudProvider.cluster.controlPlane.count}`}{" "}
+                        control-plane •
+                        {` ${form.cloudProvider.cluster.workers.machineType} x${form.cloudProvider.cluster.workers.count}`}{" "}
+                        workers
+                      </p>
+                      <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
+                        SSH key fingerprint: {cloudSshKeyFingerprint || "Not selected"}
+                      </p>
+                      <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
+                        Tunnel policy: {form.cloudProvider.tunnelPolicy.manage ? "Managed" : "Manual"}{" "}
+                        Kubernetes API {"->"} 127.0.0.1:{form.cloudProvider.tunnelPolicy.localPort}
+                      </p>
+                      <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
+                        Full-stack intent: cluster + bridge crew + runtime + observability support systems.
+                      </p>
+                    </>
+                  )}
                 </div>
 
                 <div className="rounded-lg border border-cyan-400/35 bg-cyan-500/8 p-3 dark:border-cyan-300/35">
@@ -2836,28 +2958,27 @@ export default function ShipYardPage() {
                   type="button"
                   onClick={() => setStepIndex((current) => Math.min(steps.length - 1, current + 1))}
                   disabled={!canAdvance}
-                  className="rounded-md border border-cyan-500/45 bg-cyan-500/12 px-3 py-1.5 text-xs font-medium text-cyan-700 disabled:opacity-40 dark:border-cyan-300/45 dark:text-cyan-200"
+                  className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-xs font-medium text-amber-700 transition-colors hover:bg-amber-500/20 disabled:opacity-40 dark:border-amber-400/30 dark:text-amber-300"
                 >
-                  Next
+                  Next Step
                 </button>
               ) : (
                 <button
                   type="button"
                   onClick={handleLaunch}
                   disabled={isLaunching || !canAdvance}
-                  className="inline-flex items-center gap-2 rounded-md border border-emerald-500/45 bg-emerald-500/12 px-3 py-1.5 text-xs font-medium text-emerald-700 disabled:opacity-40 dark:border-emerald-300/45 dark:text-emerald-200"
+                  className="inline-flex items-center gap-2 rounded-lg bg-gradient-to-r from-amber-500 to-orange-500 px-5 py-2 text-sm font-semibold text-white shadow-lg shadow-amber-500/20 transition-all hover:shadow-xl hover:shadow-amber-500/30 hover:brightness-110 disabled:opacity-40 active:scale-[0.98] dark:from-amber-500/90 dark:to-orange-500/90"
                 >
-                  {isLaunching ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Rocket className="h-3.5 w-3.5" />}
+                  {isLaunching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Rocket className="h-4 w-4" />}
                   Launch Ship
                 </button>
               )}
             </div>
           </div>
             </>
-          )}
-        </SurfaceCard>
+        </SurfaceCard>)}
 
-        <SurfaceCard className="order-20">
+        {mainTab === "fleet" && (<SurfaceCard>
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-50">Ship Roster</h2>
             <div className="flex flex-wrap items-center gap-3 text-xs">
@@ -2942,7 +3063,7 @@ export default function ShipYardPage() {
                   <button
                     key={ship.id}
                     type="button"
-                    onClick={() => setSelectedShipDeploymentId(ship.id)}
+                    onClick={() => { setSelectedShipDeploymentId(ship.id); setMainTab("ops") }}
                     className={`rounded-xl border p-3 text-left transition ${
                       ship.id === selectedShipDeploymentId
                         ? "border-cyan-500/45 bg-cyan-500/10"
@@ -2990,9 +3111,9 @@ export default function ShipYardPage() {
               })}
             </div>
           )}
-        </SurfaceCard>
+        </SurfaceCard>)}
 
-        <SurfaceCard className="order-25 border-slate-300/70 bg-white/80 dark:border-white/12 dark:bg-white/[0.03]">
+        {mainTab === "ops" && selectedShipDeploymentId && (<SurfaceCard className="border-slate-300/70 bg-white/80 dark:border-white/12 dark:bg-white/[0.03]">
           <div className="rounded-xl border border-rose-400/35 bg-rose-500/8 p-3 dark:border-rose-300/35">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
@@ -3070,10 +3191,10 @@ export default function ShipYardPage() {
               </button>
             </div>
           </div>
-        </SurfaceCard>
+        </SurfaceCard>)}
 
-        {selectedShipDeploymentId && (
-          <SurfaceCard className="order-30">
+        {mainTab === "ops" && selectedShipDeploymentId && (
+          <SurfaceCard>
             {selectedShip && (
               <div className="mb-4 rounded-xl border border-slate-300/70 bg-gradient-to-r from-white/80 via-cyan-50/50 to-white/80 p-3 dark:border-white/12 dark:from-white/[0.03] dark:via-cyan-500/10 dark:to-white/[0.03]">
                 <div className="flex flex-wrap items-center justify-between gap-3">
@@ -3441,6 +3562,7 @@ export default function ShipYardPage() {
           </SurfaceCard>
         )}
       </div>
-    </PageLayout>
+    </div>
+  </div>
   )
 }

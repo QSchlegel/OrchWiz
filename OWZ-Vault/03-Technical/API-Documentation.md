@@ -273,6 +273,7 @@ Forwarded records include metadata fields (for example `isForwarded`, `sourceNod
   - Optional `types=typeA,typeB` query param filters event types.
   - Event delivery is user-scoped; non-admin consumers receive only events tagged to their `userId`.
   - Emits event frames for session prompts, command execution, deployment/application updates, task/verification updates, forwarding ingestion, docs updates, webhook ingestion, and bridge updates.
+  - Bridge Agent Chat emits `bridge.agent-chat.updated` for room/message/reply lifecycle updates.
 
 ### Security
 
@@ -293,6 +294,29 @@ Forwarded records include metadata fields (for example `isForwarded`, `sourceNod
 
 - `GET /api/bridge/state` operational bridge state for dashboard.
   - Optional `includeForwarded=true` to merge forwarded bridge/system events.
+- Ship-scoped Bridge Agent Chat:
+  - `GET /api/ships/:id/agent-chat/rooms` list rooms for a ship (optional: `memberBridgeCrewId`, `take`).
+  - `POST /api/ships/:id/agent-chat/rooms` create/upsert room.
+    - Body:
+      - `roomType`: `dm|group`
+      - `title?`: group room title
+      - `memberBridgeCrewIds`: bridge crew member ids
+      - `createdByBridgeCrewId?`
+    - `dm` behavior: exactly 2 members, idempotent via deterministic `dmKey`.
+    - `group` behavior: at least 3 members.
+    - Creates per-member runtime session bindings for the room.
+  - `GET /api/ships/:id/agent-chat/rooms/:roomId/messages` list room messages (optional: `cursor`, `take`).
+  - `POST /api/ships/:id/agent-chat/rooms/:roomId/messages` create room message.
+    - Body:
+      - `senderBridgeCrewId`
+      - `content`
+      - `autoReply?` (boolean)
+      - `autoReplyRecipientBridgeCrewIds?` (required when `autoReply=true`)
+    - Auto-reply behavior:
+      - Recipients must be explicit active room members and cannot include sender.
+      - Reply jobs are queued asynchronously and drained out-of-band.
+  - Realtime:
+    - `bridge.agent-chat.updated` is emitted for room creation/reuse, message creation, reply enqueue/completion/failure.
 - Bridge Connections (outbound-only, per ship deployment):
   - `GET /api/bridge/connections?deploymentId=<id>&deliveriesTake=<n>` list connector records, provider summary, and recent delivery timeline.
     - Requires owned `deploymentId` (`deployment.userId === session.user.id`).

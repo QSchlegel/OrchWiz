@@ -11,6 +11,7 @@ export type RealtimeEventType =
   | "webhook.received"
   | "docs.updated"
   | "bridge.updated"
+  | "bridge.agent-chat.updated"
   | "bridge.comms.updated"
   | "bridge-call.round.updated"
   | "agentsync.updated"

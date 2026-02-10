@@ -16,6 +16,8 @@ import {
   SessionPromptError,
 } from "@/lib/runtime/session-prompt"
 import { queryVaultRag } from "@/lib/vault/rag"
+import { dataCoreEnabled } from "@/lib/data-core/config"
+import { getMergedMemoryRetriever } from "@/lib/data-core/merged-memory-retriever"
 
 export const dynamic = "force-dynamic"
 
@@ -154,13 +156,22 @@ export async function POST(
     }
 
     try {
-      const knowledge = await queryVaultRag({
-        query: prompt,
-        vaultId: "joined",
-        mode: "hybrid",
-        scope: "all",
-        shipDeploymentId: id,
-      })
+      const knowledge = dataCoreEnabled()
+        ? await getMergedMemoryRetriever().query({
+            query: prompt,
+            mode: "hybrid",
+            scope: "all",
+            shipDeploymentId: id,
+            userId: session.user.id,
+            includePrivate: true,
+          })
+        : await queryVaultRag({
+            query: prompt,
+            vaultId: "joined",
+            mode: "hybrid",
+            scope: "all",
+            shipDeploymentId: id,
+          })
 
       knowledgeBlock = {
         query: prompt,

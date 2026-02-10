@@ -119,6 +119,24 @@ Orchwiz uses PostgreSQL with Prisma ORM. The schema is defined in `node/prisma/s
   - `walletKeyRef`
   - `walletEnclaveUrl`
 
+### BridgeAgentChatRoom / BridgeAgentChatMember / BridgeAgentChatMessage / BridgeAgentChatReplyJob
+
+- Ship-scoped cross-agent chat storage for bridge crew DM/group communication.
+- `BridgeAgentChatRoom`:
+  - `roomType`: `dm|group`
+  - DM idempotency key: `dmKey` (unique)
+  - Linked to ship deployment (`shipDeploymentId`)
+- `BridgeAgentChatMember`:
+  - Room membership and per-member runtime session binding (`sessionId`)
+  - Unique membership on `(roomId, bridgeCrewId)`
+- `BridgeAgentChatMessage`:
+  - Message records with `kind: agent|system`
+  - Optional sender bridge crew link and optional reply threading (`inReplyToMessageId`)
+- `BridgeAgentChatReplyJob`:
+  - Async auto-reply queue rows per addressed recipient
+  - Deduped by unique `dedupeKey`
+  - Retry state: `pending|processing|completed|failed`, attempts, next-attempt timestamp, last error
+
 ## Relationships
 
 - User → Sessions (one-to-many)
@@ -129,6 +147,9 @@ Orchwiz uses PostgreSQL with Prisma ORM. The schema is defined in `node/prisma/s
 - Command → CommandExecutions (one-to-many)
 - ClaudeDocument → GuidanceEntries (one-to-many)
 - GuidanceEntry → GuidanceRevisions (one-to-many)
+- AgentDeployment(ship) → BridgeAgentChatRoom (one-to-many)
+- BridgeAgentChatRoom → BridgeAgentChatMember/BridgeAgentChatMessage (one-to-many)
+- BridgeAgentChatMessage(source) → BridgeAgentChatReplyJob (one-to-many)
 
 ## Schema Location
 

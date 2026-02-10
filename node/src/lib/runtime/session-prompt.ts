@@ -25,6 +25,7 @@ import {
   WalletEnclaveError,
 } from "@/lib/wallet-enclave/client"
 import { RuntimeProviderError } from "@/lib/runtime/errors"
+import { buildExocompCapabilityInstructionBlock } from "@/lib/subagents/capabilities"
 
 function asRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object") {
@@ -41,6 +42,58 @@ function nonEmptyString(value: unknown): string | null {
 
 function toJsonMetadata(value: Record<string, unknown>): Prisma.InputJsonValue {
   return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue
+}
+
+function resolvePromptSubagentId(metadata: Record<string, unknown>): string | null {
+  const direct = nonEmptyString(metadata.subagentId)
+  if (direct) {
+    return direct
+  }
+
+  const quartermaster = asRecord(metadata.quartermaster)
+  return nonEmptyString(quartermaster.subagentId)
+}
+
+export async function appendExocompCapabilityInstructions(args: {
+  userId: string
+  metadata: Record<string, unknown>
+  runtimePrompt: string
+}): Promise<string> {
+  const subagentId = resolvePromptSubagentId(args.metadata)
+  if (!subagentId) {
+    return args.runtimePrompt
+  }
+
+  try {
+    const subagent = await prisma.subagent.findFirst({
+      where: {
+        id: subagentId,
+        OR: [
+          { ownerUserId: args.userId },
+          { isShared: true },
+        ],
+      },
+      select: {
+        subagentType: true,
+        settings: true,
+      },
+    })
+
+    if (!subagent || subagent.subagentType !== "exocomp") {
+      return args.runtimePrompt
+    }
+
+    const settings = asRecord(subagent.settings)
+    const capabilityBlock = buildExocompCapabilityInstructionBlock(settings.capabilities)
+    if (!capabilityBlock.trim()) {
+      return args.runtimePrompt
+    }
+
+    return `${args.runtimePrompt}\n\n${capabilityBlock}`
+  } catch (error) {
+    console.error("Failed to resolve exocomp capabilities for runtime prompt (fail-open):", error)
+    return args.runtimePrompt
+  }
 }
 
 interface QuartermasterCitationSource {
@@ -205,6 +258,11 @@ export async function executeSessionPrompt(args: ExecuteSessionPromptArgs): Prom
     userPrompt: args.prompt,
     metadata: metadataAsRecord,
   })
+  const runtimePrompt = await appendExocompCapabilityInstructions({
+    userId: args.userId,
+    metadata: metadataAsRecord,
+    runtimePrompt: promptResolution.runtimePrompt,
+  })
 
   const dbSession = await prisma.session.findFirst({
     where: {
@@ -246,7 +304,7 @@ export async function executeSessionPrompt(args: ExecuteSessionPromptArgs): Prom
   try {
     runtimeResult = await runSessionRuntime({
       sessionId: args.sessionId,
-      prompt: promptResolution.runtimePrompt,
+      prompt: runtimePrompt,
       metadata: metadataRecord,
     })
   } catch (error) {

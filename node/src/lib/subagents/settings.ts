@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { DEFAULT_EXOCOMP_CAPABILITIES } from "./capabilities"
 
 const OrchestrationSettingsSchema = z.object({
   handoffEnabled: z.boolean().default(true),
@@ -24,6 +25,15 @@ const GuidelinesSettingsSchema = z.object({
   notes: z.string().default(""),
 })
 
+const CapabilitiesSettingsSchema = z.object({
+  preset: z.enum(["core_maintenance"]).default(DEFAULT_EXOCOMP_CAPABILITIES.preset),
+  diagnostics: z.boolean().default(DEFAULT_EXOCOMP_CAPABILITIES.diagnostics),
+  microRepairPlanning: z.boolean().default(DEFAULT_EXOCOMP_CAPABILITIES.microRepairPlanning),
+  hazardChecks: z.boolean().default(DEFAULT_EXOCOMP_CAPABILITIES.hazardChecks),
+  safeShutdownGuidance: z.boolean().default(DEFAULT_EXOCOMP_CAPABILITIES.safeShutdownGuidance),
+  statusRelay: z.boolean().default(DEFAULT_EXOCOMP_CAPABILITIES.statusRelay),
+})
+
 export const SubagentSettingsSchema = z.object({
   orchestration: OrchestrationSettingsSchema.default({
     handoffEnabled: true,
@@ -45,6 +55,7 @@ export const SubagentSettingsSchema = z.object({
     references: [],
     notes: "",
   }),
+  capabilities: CapabilitiesSettingsSchema.default(DEFAULT_EXOCOMP_CAPABILITIES),
 })
 
 export const PartialSubagentSettingsSchema = z.object({
@@ -52,6 +63,7 @@ export const PartialSubagentSettingsSchema = z.object({
   workspace: WorkspaceSettingsSchema.partial().optional(),
   memory: MemorySettingsSchema.partial().optional(),
   guidelines: GuidelinesSettingsSchema.partial().optional(),
+  capabilities: CapabilitiesSettingsSchema.partial().optional(),
 })
 
 export type SubagentSettings = z.infer<typeof SubagentSettingsSchema>

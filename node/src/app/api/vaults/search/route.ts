@@ -4,6 +4,9 @@ import { auth } from "@/lib/auth"
 import { parseVaultId } from "@/lib/vault/config"
 import { searchVaultNotes } from "@/lib/vault"
 import { resolveVaultRagMode } from "@/lib/vault/rag"
+import { dataCoreDualReadVerifyEnabled, dataCoreEnabled } from "@/lib/data-core/config"
+import { searchVaultNotesFromDataCore } from "@/lib/data-core/vault-adapter"
+import { logDualReadDrift } from "@/lib/data-core/dual-read"
 
 export const dynamic = "force-dynamic"
 
@@ -31,7 +34,29 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: "Invalid vault id" }, { status: 400 })
     }
 
-    const payload = await searchVaultNotes(vaultId, query, { mode, k })
+    let payload
+    if (dataCoreEnabled()) {
+      payload = await searchVaultNotesFromDataCore({
+        vaultId,
+        query,
+        mode,
+        k,
+        userId: session.user.id,
+      })
+      if (dataCoreDualReadVerifyEnabled()) {
+        const legacyPayload = await searchVaultNotes(vaultId, query, { mode, k }).catch(() => null)
+        if (legacyPayload) {
+          logDualReadDrift({
+            route: "/api/vaults/search",
+            key: `${vaultId}:${query}`,
+            legacyPayload,
+            dataCorePayload: payload,
+          })
+        }
+      }
+    } else {
+      payload = await searchVaultNotes(vaultId, query, { mode, k })
+    }
     return NextResponse.json(payload)
   } catch (error) {
     console.error("Error searching vault notes:", error)

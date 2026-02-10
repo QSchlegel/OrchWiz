@@ -23,6 +23,7 @@ import {
   syncVaultRagMutation,
   type VaultRagQueryMode,
 } from "./rag"
+import { syncLocalPrivateRagMutation } from "@/lib/data-core/local-private-rag"
 import { sanitizeRelativeVaultPath } from "./path"
 import {
   parsePrivateVaultEncryptedEnvelope,
@@ -381,6 +382,15 @@ async function syncRagMutationFailOpen(args: {
     })
   } catch (error) {
     console.error("Vault RAG mutation sync failed (fail-open):", error)
+  }
+
+  try {
+    await syncLocalPrivateRagMutation({
+      upsertJoinedPaths: args.upsertJoinedPaths,
+      deleteJoinedPaths: args.deleteJoinedPaths,
+    })
+  } catch (error) {
+    console.error("Local private RAG mutation sync failed (fail-open):", error)
   }
 }
 

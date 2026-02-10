@@ -11,6 +11,7 @@ This directory contains the main Next.js application (`node/`) for OrchWiz.
 - SSE realtime stream is implemented at `/api/events/stream` and used by dashboard pages.
 - Vault is implemented as an Obsidian-lite workspace (create/edit/save/rename/move/delete, soft-trash safety, and joined graph view).
 - Vault RAG is implemented with hybrid retrieval (OpenAI embeddings + lexical fallback), ship/fleet/global scope ranking, and quartermaster citation enforcement.
+- Data-core integration is implemented behind feature flags for non-private memory domains (`orchwiz`, `ship`, `agent-public`) while private memory remains local.
 - Ship knowledge base APIs are implemented at `/api/ships/:id/knowledge*` with owner-scoped read/write/query/resync support.
 
 ## Prerequisites
@@ -41,6 +42,7 @@ Copy `node/.env.example`. Key groups:
 - GitHub auth/webhooks: `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_WEBHOOK_SECRET`, `ENABLE_GITHUB_WEBHOOK_COMMENTS`, `GITHUB_TOKEN`
 - Command execution policy: `ENABLE_LOCAL_COMMAND_EXECUTION`, `LOCAL_COMMAND_TIMEOUT_MS`, `COMMAND_EXECUTION_SHELL`, `ENABLE_LOCAL_INFRA_AUTO_INSTALL`, `LOCAL_INFRA_COMMAND_TIMEOUT_MS`, `CLOUD_DEPLOY_ONLY` (set `true` to block local starship launches and force cloud-only Ship Yard posture)
 - Runtime provider: `OPENCLAW_*`, `OPENCLAW_DISPATCH_PATH`, `OPENCLAW_DISPATCH_TIMEOUT_MS`, `ENABLE_OPENAI_RUNTIME_FALLBACK`, `OPENAI_API_KEY`, `OPENAI_RUNTIME_FALLBACK_MODEL`, `CODEX_CLI_PATH`, `CODEX_RUNTIME_TIMEOUT_MS`, `CODEX_RUNTIME_MODEL`, `RUNTIME_PROFILE_DEFAULT`, `RUNTIME_PROFILE_QUARTERMASTER`
+- Skills catalog/import: `ORCHWIZ_CODEX_HOME_ROOT`, `ORCHWIZ_SKILL_IMPORT_TIMEOUT_MS`, `ORCHWIZ_SKILL_CATALOG_STALE_MS`
 - Bridge chat compatibility auth: `BRIDGE_ADMIN_TOKEN`
 - Ship Yard machine auth: `SHIPYARD_API_TOKEN`
 - Ship Yard token scope controls: `SHIPYARD_API_ALLOWED_USER_IDS`, `SHIPYARD_API_TOKEN_USER_ID`, `SHIPYARD_API_ALLOW_IMPERSONATION`, `SHIPYARD_API_DEFAULT_USER_ID`
@@ -56,6 +58,9 @@ Copy `node/.env.example`. Key groups:
 - Realtime toggle: `ENABLE_SSE_EVENTS`
 - Vault limits: `VAULT_MAX_PREVIEW_BYTES`, `VAULT_MAX_EDIT_BYTES`, `VAULT_SEARCH_MAX_BYTES`, `VAULT_GRAPH_MAX_NOTES`, `VAULT_GRAPH_MAX_EDGES`
 - Vault RAG: `VAULT_RAG_ENABLED`, `VAULT_RAG_EMBEDDING_MODEL`, `VAULT_RAG_TOP_K`, `VAULT_RAG_SYNC_ON_WRITE`, `VAULT_RAG_CHUNK_CHARS`, `VAULT_RAG_MAX_CHUNKS_PER_DOC`, `VAULT_RAG_EMBED_BATCH_SIZE`, `VAULT_RAG_QUERY_CANDIDATE_LIMIT`
+- Local private RAG index: `LOCAL_PRIVATE_RAG_TOP_K`, `LOCAL_PRIVATE_RAG_QUERY_CANDIDATE_LIMIT`
+- Data-core cutover: `DATA_CORE_ENABLED`, `DATA_CORE_DUAL_READ_VERIFY`, `DATA_CORE_BASE_URL`, `DATA_CORE_API_KEY`, `DATA_CORE_CORE_ID`, `DATA_CORE_CLUSTER_ID`, `DATA_CORE_SHIP_DEPLOYMENT_ID`
+- Data-core bootstrap import signer controls: `DATA_CORE_BOOTSTRAP_*`
 
 Optional magic-link email config used by auth in non-local environments:
 
@@ -221,6 +226,7 @@ Quartermaster prompts set `metadata.runtime.profile=quartermaster` and include s
 - Core: `/api/sessions`, `/api/commands`, `/api/subagents`, `/api/tasks`, `/api/verification`, `/api/actions`
 - Bridge connections: `/api/bridge/connections`, `/api/bridge/connections/:id`, `/api/bridge/connections/:id/test`, `/api/bridge/connections/dispatch`
 - Bridge chat compatibility: `/api/threads`, `/api/threads/:threadId/messages`
+- Ship-scoped cross-agent chat: `/api/ships/:id/agent-chat/rooms`, `/api/ships/:id/agent-chat/rooms/:roomId/messages`
 - Deployments: `/api/deployments`, `/api/applications`
 - Ship Yard: `/api/ship-yard/launch`, `/api/ship-yard/status/:id`, `/api/ship-yard/secrets`
 - Ship Yard self-healing (beta): `/api/ship-yard/self-heal/preferences`, `/api/ship-yard/self-heal/run`, `/api/ship-yard/self-heal/runs`, `/api/ship-yard/self-heal/cron`
@@ -228,7 +234,7 @@ Quartermaster prompts set `metadata.runtime.profile=quartermaster` and include s
 - Ship Knowledge Base:
   - `/api/ships/:id/knowledge` (`GET` query retrieval, `POST` upsert note, `PATCH` rename/move, `DELETE` delete note)
   - `/api/ships/:id/knowledge/tree` (`GET` scoped tree + latest sync summary)
-  - `/api/ships/:id/knowledge/resync` (`POST` manual `ship|fleet|all` RAG resync)
+  - `/api/ships/:id/knowledge/resync` (`POST` manual `ship|fleet|all` resync; uses data-core reconcile when enabled)
 - Docs: `/api/docs/claude`, `/api/docs/guidance`
 - Public docs page: `/docs`
 - Landing XO teaser: `/api/landing/config`, `/api/landing/chat`, `/api/landing/register`, `/api/landing/newsletter`
@@ -241,9 +247,21 @@ Quartermaster prompts set `metadata.runtime.profile=quartermaster` and include s
 - Security: `/api/security/audits/run`, `/api/security/audits/latest`, `/api/security/audits/nightly`, `/api/security/bridge-crew/stress`, `/api/security/bridge-crew/scorecard`
 - Realtime: `/api/events/stream`
 - AgentSync: `/api/agentsync/runs`, `/api/agentsync/runs/:id`, `/api/agentsync/preferences`, `/api/agentsync/suggestions/:id/apply`, `/api/agentsync/suggestions/:id/reject`, `/api/agentsync/nightly`
+- Skills catalog/import: `/api/skills/catalog`, `/api/skills/import`, `/api/skills/import-runs`
 - Observability decrypt: `/api/observability/traces/:traceId/decrypt` (session owner, session `admin`, or bearer admin token)
 - Vault: `/api/vaults`, `/api/vaults/tree`, `/api/vaults/file` (`GET/POST/PATCH/DELETE`), `/api/vaults/search`, `/api/vaults/graph`
   - `/api/vaults/search` accepts `mode=hybrid|lexical` and `k=<topK>` and may return `score`, `scopeType`, and `citations` per result.
+
+## Data-core bootstrap
+
+To import non-private markdown corpus into data-core with signed envelopes:
+
+```bash
+cd node
+npm run data-core:bootstrap-import
+```
+
+Configure signer identity and routing with `DATA_CORE_BOOTSTRAP_*` vars in `.env`.
 
 Ship knowledge path conventions in `Ship-Vault`:
 
