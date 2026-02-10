@@ -185,6 +185,7 @@ graph LR
 - **✅ Verification Workflows**: Track browser, bash, and test suite verification runs
 - **📦 Forwarded Aggregate Views**: Merge remote node events into list APIs and dashboards with source filters
 - **📡 SSE Realtime Updates**: Stream operational updates via `/api/events/stream` with typed event filtering
+- **🧪 AgentSync Reinforcement Loop**: Heuristic reward ingestion + managed prompt updates with low-risk auto-apply and high-risk approvals
 
 ## 🧠 Agent Runtime & Observability
 
@@ -270,6 +271,7 @@ The runtime harness provides a control surface for observability and governance:
    BETTER_AUTH_SECRET="your-random-secret-min-32-characters"
    BETTER_AUTH_URL="http://localhost:3000"
    NEXT_PUBLIC_APP_URL="http://localhost:3000"
+   ORCHWIZ_ADMIN_EMAILS="captain@yourdomain.com"
    
    # GitHub OAuth (for optional GitHub account connection)
    GITHUB_CLIENT_ID="your_github_client_id"

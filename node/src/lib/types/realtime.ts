@@ -13,6 +13,7 @@ export type RealtimeEventType =
   | "bridge.updated"
   | "bridge.comms.updated"
   | "bridge-call.round.updated"
+  | "agentsync.updated"
 
 export interface RealtimeEvent<T = unknown> {
   id: string

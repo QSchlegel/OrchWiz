@@ -13,6 +13,7 @@ import {
   storeBridgeConnectionCredentials,
   summarizeStoredBridgeConnectionCredentials,
 } from "@/lib/bridge/connections/secrets"
+import type { Prisma } from "@prisma/client"
 
 export const dynamic = "force-dynamic"
 
@@ -31,6 +32,10 @@ function asBoolean(value: unknown): boolean | null {
   }
 
   return null
+}
+
+function toInputJsonValue(value: unknown): Prisma.InputJsonValue {
+  return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue
 }
 
 function mapConnectionForResponse(connection: {
@@ -96,7 +101,7 @@ export async function PATCH(
     }
 
     const body = await request.json().catch(() => ({}))
-    const updateData: Record<string, unknown> = {}
+    const updateData: Prisma.BridgeConnectionUpdateInput = {}
 
     if (Object.prototype.hasOwnProperty.call(body, "name")) {
       const name = asNonEmptyString(body.name)
@@ -111,7 +116,7 @@ export async function PATCH(
     }
 
     if (Object.prototype.hasOwnProperty.call(body, "config")) {
-      updateData.config = validateBridgeConnectionConfig(body.config)
+      updateData.config = toInputJsonValue(validateBridgeConnectionConfig(body.config))
     }
 
     if (Object.prototype.hasOwnProperty.call(body, "enabled")) {
@@ -132,10 +137,12 @@ export async function PATCH(
 
     if (Object.prototype.hasOwnProperty.call(body, "credentials")) {
       const validated = validateBridgeConnectionCredentials(existing.provider, body.credentials)
-      updateData.credentials = await storeBridgeConnectionCredentials({
-        connectionId: existing.id,
-        credentials: validated,
-      })
+      updateData.credentials = toInputJsonValue(
+        await storeBridgeConnectionCredentials({
+          connectionId: existing.id,
+          credentials: validated,
+        }),
+      )
     }
 
     const updated = await prisma.bridgeConnection.update({

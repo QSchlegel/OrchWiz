@@ -1,6 +1,4 @@
 import { NextRequest, NextResponse } from "next/server"
-import { headers } from "next/headers"
-import { auth } from "@/lib/auth"
 import { prisma } from "@/lib/prisma"
 import { normalizeBridgeChatRole } from "@/lib/bridge-chat/mapping"
 import {
@@ -8,8 +6,24 @@ import {
   enqueueThreadToSessionMirrorJob,
 } from "@/lib/bridge-chat/sync"
 import { resolveBridgeChatActorFromRequest } from "@/lib/bridge-chat/auth"
+import { getCurrentSessionUserWithRole } from "@/lib/session-user"
 
 export const dynamic = "force-dynamic"
+
+async function getBridgeChatSession() {
+  const sessionUser = await getCurrentSessionUserWithRole()
+  if (!sessionUser) {
+    return null
+  }
+
+  return {
+    user: {
+      id: sessionUser.id,
+      email: sessionUser.email,
+      role: sessionUser.role,
+    },
+  }
+}
 
 function asRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object") {
@@ -44,19 +58,7 @@ export async function GET(
   try {
     const actorResolution = await resolveBridgeChatActorFromRequest(request, {
       adminToken: process.env.BRIDGE_ADMIN_TOKEN,
-      getSession: async () => {
-        const session = await auth.api.getSession({ headers: await headers() })
-        if (!session) {
-          return null
-        }
-
-        return {
-          user: {
-            id: session.user.id,
-            email: session.user.email,
-          },
-        }
-      },
+      getSession: getBridgeChatSession,
     })
 
     if (!actorResolution.ok) {
@@ -102,19 +104,7 @@ export async function POST(
   try {
     const actorResolution = await resolveBridgeChatActorFromRequest(request, {
       adminToken: process.env.BRIDGE_ADMIN_TOKEN,
-      getSession: async () => {
-        const session = await auth.api.getSession({ headers: await headers() })
-        if (!session) {
-          return null
-        }
-
-        return {
-          user: {
-            id: session.user.id,
-            email: session.user.email,
-          },
-        }
-      },
+      getSession: getBridgeChatSession,
     })
 
     if (!actorResolution.ok) {

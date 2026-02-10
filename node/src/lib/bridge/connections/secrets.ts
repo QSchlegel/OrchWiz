@@ -80,6 +80,10 @@ function encryptionRequired(): boolean {
   return requirePrivateMemoryEncryption()
 }
 
+function credentialsToRecord(credentials: BridgeConnectionCredentials): Record<string, unknown> {
+  return JSON.parse(JSON.stringify(credentials)) as Record<string, unknown>
+}
+
 export function buildBridgeConnectionCredentialsContext(connectionId: string): string {
   return `bridge:connection:${connectionId}:credentials`
 }
@@ -165,7 +169,7 @@ export async function storeBridgeConnectionCredentials(args: {
 
     return {
       storageMode: "plaintext-fallback",
-      plaintext: args.credentials as Record<string, unknown>,
+      plaintext: credentialsToRecord(args.credentials),
       savedAt: now,
     }
   }
@@ -201,7 +205,7 @@ export async function storeBridgeConnectionCredentials(args: {
 
     return {
       storageMode: "plaintext-fallback",
-      plaintext: args.credentials as Record<string, unknown>,
+      plaintext: credentialsToRecord(args.credentials),
       savedAt: now,
     }
   }

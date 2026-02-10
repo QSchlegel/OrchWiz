@@ -441,7 +441,7 @@ export default function BridgePage() {
       }
 
       const payload = await response.json()
-      const next = Array.isArray(payload?.connections)
+      const next: BridgeConnectionOption[] = Array.isArray(payload?.connections)
         ? payload.connections
             .map((connection: Record<string, unknown>) => {
               const provider = connection.provider

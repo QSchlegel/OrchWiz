@@ -16,6 +16,7 @@ model User {
   name      String?
   githubId  String?  @unique
   avatarUrl String?
+  role      UserRole @default(captain)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -33,6 +34,15 @@ model User {
   bridgeThreads         BridgeThread[]       @relation("BridgeThreadUser")
   bridgeCallRounds      BridgeCallRound[]
   observabilityTraces   ObservabilityTrace[]
+  agentSyncPreference   AgentSyncPreference?
+  agentSyncSignals      AgentSyncSignal[]
+  agentSyncRuns         AgentSyncRun[]
+  agentSyncSuggestions  AgentSyncSuggestion[]
+}
+
+enum UserRole {
+  captain
+  admin
 }
 
 model AuthSession {
@@ -400,9 +410,137 @@ model Subagent {
   permissions Permission[]
   permissionPolicies SubagentPermissionPolicy[]
   commandExecutions CommandExecution[]
+  agentSyncSignals AgentSyncSignal[]
+  agentSyncRuns AgentSyncRun[]
+  agentSyncSuggestions AgentSyncSuggestion[]
 
   @@unique([name, teamId])
   @@index([teamId])
+}
+
+model AgentSyncPreference {
+  id           String   @id @default(cuid())
+  userId       String   @unique
+  timezone     String   @default("UTC")
+  nightlyEnabled Boolean @default(true)
+  nightlyHour  Int      @default(2)
+  lastNightlyRunAt DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model AgentSyncSignal {
+  id          String              @id @default(cuid())
+  userId      String
+  subagentId  String
+  source      AgentSyncSignalSource
+  sourceId    String
+  reward      Float
+  details     Json?
+  occurredAt  DateTime
+  createdAt   DateTime            @default(now())
+
+  user        User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  subagent    Subagent            @relation(fields: [subagentId], references: [id], onDelete: Cascade)
+
+  @@unique([source, sourceId, subagentId])
+  @@index([userId, occurredAt])
+  @@index([subagentId, occurredAt])
+  @@index([source, occurredAt])
+}
+
+model AgentSyncRun {
+  id            String                 @id @default(cuid())
+  userId        String
+  subagentId    String?
+  trigger       AgentSyncTrigger
+  scope         AgentSyncScope
+  status        AgentSyncRunStatus     @default(pending)
+  summary       String?
+  error         String?
+  fileSyncStatus AgentSyncFileSyncStatus @default(skipped)
+  metadata      Json?
+  startedAt     DateTime               @default(now())
+  completedAt   DateTime?
+  createdAt     DateTime               @default(now())
+  updatedAt     DateTime               @updatedAt
+
+  user          User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  subagent      Subagent?              @relation(fields: [subagentId], references: [id], onDelete: SetNull)
+  suggestions   AgentSyncSuggestion[]
+
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+  @@index([subagentId, createdAt])
+}
+
+model AgentSyncSuggestion {
+  id             String                   @id @default(cuid())
+  runId          String
+  userId         String
+  subagentId     String
+  fileName       String
+  risk           AgentSyncSuggestionRisk
+  status         AgentSyncSuggestionStatus @default(proposed)
+  reason         String?
+  fileSyncStatus AgentSyncFileSyncStatus   @default(skipped)
+  existingContent String?
+  suggestedContent String
+  metadata       Json?
+  createdAt      DateTime                  @default(now())
+  updatedAt      DateTime                  @updatedAt
+  appliedAt      DateTime?
+
+  run            AgentSyncRun              @relation(fields: [runId], references: [id], onDelete: Cascade)
+  user           User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  subagent       Subagent                  @relation(fields: [subagentId], references: [id], onDelete: Cascade)
+
+  @@index([runId])
+  @@index([subagentId, createdAt])
+  @@index([status, createdAt])
+}
+
+enum AgentSyncTrigger {
+  manual
+  nightly
+}
+
+enum AgentSyncScope {
+  selected_agent
+  bridge_crew
+}
+
+enum AgentSyncRunStatus {
+  pending
+  running
+  completed
+  failed
+}
+
+enum AgentSyncSignalSource {
+  command
+  verification
+  bridge_call
+}
+
+enum AgentSyncSuggestionRisk {
+  low
+  high
+}
+
+enum AgentSyncSuggestionStatus {
+  proposed
+  applied
+  rejected
+  failed
+}
+
+enum AgentSyncFileSyncStatus {
+  synced
+  filesystem_sync_failed
+  skipped
 }
 
 model ClaudeDocument {

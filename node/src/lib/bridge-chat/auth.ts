@@ -1,8 +1,10 @@
 import type { NextRequest } from "next/server"
+import { normalizeUserRole, type UserRole } from "@/lib/user-roles"
 
 export interface BridgeChatSessionUser {
   id: string
   email?: string | null
+  role?: UserRole | string | null
 }
 
 export interface BridgeChatSession {
@@ -12,9 +14,13 @@ export interface BridgeChatSession {
 export type BridgeChatActor =
   | {
       type: "admin"
+      userId?: string
+      email?: string | null
+      source: "token" | "session"
     }
   | {
       type: "user"
+      role: UserRole
       userId: string
       email?: string | null
     }
@@ -89,6 +95,7 @@ export async function resolveBridgeChatActorFromRequest(
       ok: true,
       actor: {
         type: "admin",
+        source: "token",
       },
     }
   }
@@ -103,10 +110,24 @@ export async function resolveBridgeChatActorFromRequest(
     }
   }
 
+  const role = normalizeUserRole(session?.user?.role)
+  if (role === "admin") {
+    return {
+      ok: true,
+      actor: {
+        type: "admin",
+        source: "session",
+        userId,
+        email: session?.user?.email,
+      },
+    }
+  }
+
   return {
     ok: true,
     actor: {
       type: "user",
+      role,
       userId,
       email: session?.user?.email,
     },

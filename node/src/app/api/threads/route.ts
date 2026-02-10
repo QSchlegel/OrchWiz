@@ -1,7 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
-import { headers } from "next/headers"
 import type { Prisma } from "@prisma/client"
-import { auth } from "@/lib/auth"
 import { prisma } from "@/lib/prisma"
 import {
   ensureStationThreadsForUser,
@@ -12,8 +10,24 @@ import {
   readRequestedUserId,
   resolveBridgeChatActorFromRequest,
 } from "@/lib/bridge-chat/auth"
+import { getCurrentSessionUserWithRole } from "@/lib/session-user"
 
 export const dynamic = "force-dynamic"
+
+async function getBridgeChatSession() {
+  const sessionUser = await getCurrentSessionUserWithRole()
+  if (!sessionUser) {
+    return null
+  }
+
+  return {
+    user: {
+      id: sessionUser.id,
+      email: sessionUser.email,
+      role: sessionUser.role,
+    },
+  }
+}
 
 function asRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object") {
@@ -36,19 +50,7 @@ export async function GET(request: NextRequest) {
   try {
     const actorResolution = await resolveBridgeChatActorFromRequest(request, {
       adminToken: process.env.BRIDGE_ADMIN_TOKEN,
-      getSession: async () => {
-        const session = await auth.api.getSession({ headers: await headers() })
-        if (!session) {
-          return null
-        }
-
-        return {
-          user: {
-            id: session.user.id,
-            email: session.user.email,
-          },
-        }
-      },
+      getSession: getBridgeChatSession,
     })
 
     if (!actorResolution.ok) {
@@ -101,19 +103,7 @@ export async function POST(request: NextRequest) {
   try {
     const actorResolution = await resolveBridgeChatActorFromRequest(request, {
       adminToken: process.env.BRIDGE_ADMIN_TOKEN,
-      getSession: async () => {
-        const session = await auth.api.getSession({ headers: await headers() })
-        if (!session) {
-          return null
-        }
-
-        return {
-          user: {
-            id: session.user.id,
-            email: session.user.email,
-          },
-        }
-      },
+      getSession: getBridgeChatSession,
     })
 
     if (!actorResolution.ok) {
@@ -129,7 +119,7 @@ export async function POST(request: NextRequest) {
     if (actorResolution.actor.type === "user") {
       ownerUserId = actorResolution.actor.userId
     } else {
-      ownerUserId = readRequestedUserId(request, body)
+      ownerUserId = readRequestedUserId(request, body) || actorResolution.actor.userId || null
       if (!ownerUserId) {
         return NextResponse.json(
           {

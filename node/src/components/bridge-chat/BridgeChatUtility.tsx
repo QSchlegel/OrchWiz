@@ -68,8 +68,8 @@ function sortThreads(threads: BridgeThreadRecord[]): BridgeThreadRecord[] {
   const byStation = new Map(STATION_ORDER.map((key, index) => [key, index]))
 
   return [...threads].sort((a, b) => {
-    const aStation = a.stationKey && byStation.has(a.stationKey) ? byStation.get(a.stationKey)! : 99
-    const bStation = b.stationKey && byStation.has(b.stationKey) ? byStation.get(b.stationKey)! : 99
+    const aStation = a.stationKey ? (byStation.has(a.stationKey) ? byStation.get(a.stationKey)! : 99) : -1
+    const bStation = b.stationKey ? (byStation.has(b.stationKey) ? byStation.get(b.stationKey)! : 99) : -1
 
     if (aStation !== bStation) {
       return aStation - bStation
@@ -130,6 +130,11 @@ export function BridgeChatUtility({ operatorLabel }: BridgeChatUtilityProps) {
   const selectedThread = useMemo(
     () => threads.find((thread) => thread.id === selectedThreadId) || null,
     [threads, selectedThreadId],
+  )
+
+  const generalThread = useMemo(
+    () => threads.find((thread) => thread.stationKey === null) || null,
+    [threads],
   )
 
   const threadByStation = useMemo(() => {
@@ -582,7 +587,7 @@ export function BridgeChatUtility({ operatorLabel }: BridgeChatUtilityProps) {
             {isThreadsLoading ? (
               <div className="inline-flex items-center gap-2 rounded-full border border-slate-700 px-3 py-1.5 text-xs text-slate-300">
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                Loading stations
+                Loading channels
               </div>
             ) : (
               threads.map((thread) => {
@@ -726,7 +731,7 @@ export function BridgeChatUtility({ operatorLabel }: BridgeChatUtilityProps) {
           <div className="space-y-2">
             {!selectedThread && !isThreadsLoading && (
               <div className="rounded-xl border border-dashed border-slate-700 px-3 py-6 text-center text-sm text-slate-400">
-                No bridge station thread available.
+                No bridge thread available.
               </div>
             )}
 
@@ -772,6 +777,19 @@ export function BridgeChatUtility({ operatorLabel }: BridgeChatUtilityProps) {
       <section className="fixed inset-x-0 bottom-0 z-40 border-t border-cyan-400/20 bg-slate-950/96 px-4 pb-[calc(12px+env(safe-area-inset-bottom))] pt-3 backdrop-blur">
         <div className="mx-auto w-full max-w-3xl space-y-2.5">
           <div className="flex gap-2 overflow-x-auto pb-1">
+            {generalThread && (
+              <button
+                type="button"
+                onClick={() => setSelectedThreadId(generalThread.id)}
+                className={`shrink-0 rounded-full border px-3 py-1.5 text-xs ${
+                  selectedThreadId === generalThread.id
+                    ? "border-cyan-300/60 bg-cyan-500/20 text-cyan-100"
+                    : "border-slate-700 bg-slate-900 text-slate-200"
+                }`}
+              >
+                General (Codex CLI)
+              </button>
+            )}
             {QUICK_DIRECTIVES.map((directive) => (
               <button
                 key={directive}
@@ -799,7 +817,7 @@ export function BridgeChatUtility({ operatorLabel }: BridgeChatUtilityProps) {
               value={composer}
               onChange={(event) => setComposer(event.target.value)}
               rows={2}
-              placeholder={selectedThread ? `Message ${stationLabel(selectedThread.stationKey)}...` : "Select station..."}
+              placeholder={selectedThread ? `Message ${stationLabel(selectedThread.stationKey)}...` : "Select channel..."}
               disabled={!selectedThread || isSending}
               className="min-h-[52px] w-full resize-none rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-cyan-400/45 focus:outline-none"
             />

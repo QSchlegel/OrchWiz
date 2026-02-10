@@ -72,8 +72,32 @@ test("resolveBridgeChatActorFromRequest falls back to session user", async () =>
   assert.equal(result.ok, true)
   if (result.ok) {
     assert.equal(result.actor.type, "user")
+    assert.equal(result.actor.role, "captain")
     assert.equal(result.actor.userId, "user-123")
     assert.equal(result.actor.email, "bridge@example.com")
+  }
+})
+
+test("resolveBridgeChatActorFromRequest elevates session admins", async () => {
+  const request = requestFor("http://localhost/api/threads")
+
+  const result = await resolveBridgeChatActorFromRequest(request, {
+    adminToken: "expected-token",
+    getSession: async () => ({
+      user: {
+        id: "user-admin",
+        email: "admin@example.com",
+        role: "admin",
+      },
+    }),
+  })
+
+  assert.equal(result.ok, true)
+  if (result.ok) {
+    assert.equal(result.actor.type, "admin")
+    assert.equal(result.actor.source, "session")
+    assert.equal(result.actor.userId, "user-admin")
+    assert.equal(result.actor.email, "admin@example.com")
   }
 })
 

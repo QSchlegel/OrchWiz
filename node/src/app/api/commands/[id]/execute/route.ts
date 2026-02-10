@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma"
 import { headers } from "next/headers"
 import { executeCommandWithPolicy } from "@/lib/execution/command-executor"
 import { publishRealtimeEvent } from "@/lib/realtime/events"
+import { recordCommandExecutionSignal } from "@/lib/agentsync/signals"
 
 export const dynamic = 'force-dynamic'
 
@@ -84,6 +85,22 @@ export async function POST(
         status: updatedExecution.status,
       },
     })
+
+    if (effectiveSubagentId) {
+      void recordCommandExecutionSignal({
+        userId: session.user.id,
+        subagentId: effectiveSubagentId,
+        sourceId: updatedExecution.id,
+        status: result.status,
+        durationMs: result.durationMs,
+        metadata: {
+          commandId: id,
+          permission: result.permission,
+        },
+      }).catch((signalError) => {
+        console.error("AgentSync command signal record failed:", signalError)
+      })
+    }
 
     return NextResponse.json({
       ...updatedExecution,

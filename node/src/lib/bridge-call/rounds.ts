@@ -15,6 +15,7 @@ import {
   SessionPromptError,
 } from "@/lib/runtime/session-prompt"
 import { publishRealtimeEvent } from "@/lib/realtime/events"
+import { recordBridgeCallSignal } from "@/lib/agentsync/signals"
 import type {
   BridgeCallOfficerResultStatus,
   BridgeCallRoundPostResponse,
@@ -332,6 +333,7 @@ function errorMessage(error: unknown): string {
 async function executeOfficerDirective(args: {
   userId: string
   roundId: string
+  shipDeploymentId: string | null
   directive: string
   station: BridgeCallStationSummary
   allStations: BridgeCallStationSummary[]
@@ -595,6 +597,7 @@ async function executeAndPersistBridgeCallRound(args: DispatchBridgeCallRoundArg
       executeOfficerDirective({
         userId: args.userId,
         roundId: round.id,
+        shipDeploymentId: args.shipDeploymentId,
         directive: args.directive,
         station,
         allStations: args.stations,
@@ -648,6 +651,33 @@ async function executeAndPersistBridgeCallRound(args: DispatchBridgeCallRoundArg
       },
     })
   })
+
+  await Promise.all(
+    updated.officerResults.map(async (result) => {
+      try {
+        await recordBridgeCallSignal({
+          userId: args.userId,
+          stationKey: result.stationKey,
+          sourceId: result.id,
+          status: result.status,
+          attemptCount: result.attemptCount,
+          wasRetried: result.wasRetried,
+          latencyMs: result.latencyMs,
+          metadata: {
+            roundId: round.id,
+            shipDeploymentId: args.shipDeploymentId,
+            callsign: result.callsign,
+          },
+        })
+      } catch (signalError) {
+        console.error("AgentSync bridge-call signal record failed:", {
+          roundId: round.id,
+          resultId: result.id,
+          error: signalError instanceof Error ? signalError.message : "Unknown error",
+        })
+      }
+    }),
+  )
 
   await pruneBridgeCallRounds({
     userId: args.userId,

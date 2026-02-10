@@ -1,6 +1,7 @@
 import test from "node:test"
 import assert from "node:assert/strict"
 import {
+  BRIDGE_GENERAL_THREAD_TITLE,
   BRIDGE_MIRROR_MAX_ATTEMPTS,
   computeRetrySchedule,
   sessionToThreadDedupeKey,
@@ -11,6 +12,10 @@ test("mirror dedupe keys are deterministic and directional", () => {
   assert.equal(sessionToThreadDedupeKey("interaction-1"), "s2t:interaction-1")
   assert.equal(threadToSessionDedupeKey("message-1"), "t2s:message-1")
   assert.notEqual(sessionToThreadDedupeKey("id"), threadToSessionDedupeKey("id"))
+})
+
+test("general bridge thread title stays stable for UI bootstrap", () => {
+  assert.equal(BRIDGE_GENERAL_THREAD_TITLE, "General Chat")
 })
 
 test("computeRetrySchedule applies exponential backoff before max attempts", () => {

@@ -4,10 +4,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import { ContextOrchestrationBoard } from "@/components/subagents/ContextOrchestrationBoard"
 import { EmptyState, InlineNotice, PageLayout, SurfaceCard } from "@/components/dashboard/PageLayout"
+import { useEventStream } from "@/lib/realtime/useEventStream"
 import { buildInitialBridgeCrewSubagents } from "@/lib/subagents/bridge-crew-bootstrap"
 
 type PersonalTab = "personal" | "shared"
-type AgentDetailTab = "context" | "orchestration" | "permissions" | "workspace" | "memory" | "guidelines"
+type AgentDetailTab = "context" | "orchestration" | "permissions" | "agentsync" | "workspace" | "memory" | "guidelines"
 type EditableSettingsSection = "orchestration" | "workspace" | "memory" | "guidelines"
 
 interface SubagentSettings {
@@ -108,10 +109,42 @@ interface PolicyEditorState {
   rules: PermissionPolicyRule[]
 }
 
+interface AgentSyncPreference {
+  timezone: string
+  nightlyEnabled: boolean
+  nightlyHour: number
+  lastNightlyRunAt: string | null
+}
+
+interface AgentSyncSuggestion {
+  id: string
+  fileName: string
+  risk: "low" | "high"
+  status: "proposed" | "applied" | "rejected" | "failed"
+  reason: string | null
+  fileSyncStatus: "synced" | "filesystem_sync_failed" | "skipped"
+  createdAt: string
+  appliedAt: string | null
+}
+
+interface AgentSyncRun {
+  id: string
+  subagentId: string | null
+  status: "pending" | "running" | "completed" | "failed"
+  trigger: "manual" | "nightly"
+  scope: "selected_agent" | "bridge_crew"
+  summary: string | null
+  fileSyncStatus: "synced" | "filesystem_sync_failed" | "skipped"
+  createdAt: string
+  completedAt: string | null
+  suggestions: AgentSyncSuggestion[]
+}
+
 const DETAIL_TABS: Array<{ id: AgentDetailTab; label: string }> = [
   { id: "context", label: "Context" },
   { id: "orchestration", label: "Orchestration" },
   { id: "permissions", label: "Permissions" },
+  { id: "agentsync", label: "AgentSync" },
   { id: "workspace", label: "Workspace" },
   { id: "memory", label: "Memory" },
   { id: "guidelines", label: "Guidelines" },
@@ -127,6 +160,13 @@ const EMPTY_FORM: SubagentFormState = {
 }
 
 const QUICK_PRESET_SLUGS = ["safe-core", "balanced-devops", "power-operator"]
+
+const DEFAULT_AGENTSYNC_PREFERENCE: AgentSyncPreference = {
+  timezone: "UTC",
+  nightlyEnabled: true,
+  nightlyHour: 2,
+  lastNightlyRunAt: null,
+}
 
 const DEFAULT_SUBAGENT_SETTINGS: SubagentSettings = {
   orchestration: {
@@ -275,6 +315,83 @@ function normalizeSubagent(raw: any): Subagent {
   }
 }
 
+function browserTimezone(): string {
+  try {
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
+    if (typeof timezone === "string" && timezone.trim()) {
+      return timezone
+    }
+  } catch {
+    // ignore and fall back to UTC
+  }
+
+  return "UTC"
+}
+
+function normalizeAgentSyncPreference(value: any): AgentSyncPreference {
+  const timezone = typeof value?.timezone === "string" && value.timezone.trim()
+    ? value.timezone.trim()
+    : browserTimezone()
+  const nightlyHourRaw = Number(value?.nightlyHour)
+  const nightlyHour = Number.isFinite(nightlyHourRaw) ? Math.max(0, Math.min(23, Math.round(nightlyHourRaw))) : 2
+
+  return {
+    timezone,
+    nightlyEnabled: value?.nightlyEnabled !== false,
+    nightlyHour,
+    lastNightlyRunAt: typeof value?.lastNightlyRunAt === "string" ? value.lastNightlyRunAt : null,
+  }
+}
+
+function normalizeAgentSyncSuggestion(value: any): AgentSyncSuggestion {
+  const risk = value?.risk === "high" ? "high" : "low"
+  const status = value?.status === "applied" || value?.status === "rejected" || value?.status === "failed"
+    ? value.status
+    : "proposed"
+  const fileSyncStatus =
+    value?.fileSyncStatus === "synced" || value?.fileSyncStatus === "filesystem_sync_failed" ? value.fileSyncStatus : "skipped"
+
+  return {
+    id: String(value?.id || ""),
+    fileName: typeof value?.fileName === "string" ? value.fileName : "UNKNOWN.md",
+    risk,
+    status,
+    reason: typeof value?.reason === "string" ? value.reason : null,
+    fileSyncStatus,
+    createdAt: typeof value?.createdAt === "string" ? value.createdAt : new Date(0).toISOString(),
+    appliedAt: typeof value?.appliedAt === "string" ? value.appliedAt : null,
+  }
+}
+
+function normalizeAgentSyncRun(value: any): AgentSyncRun {
+  const status = value?.status === "running" || value?.status === "completed" || value?.status === "failed" ? value.status : "pending"
+  const trigger = value?.trigger === "nightly" ? "nightly" : "manual"
+  const scope = value?.scope === "bridge_crew" ? "bridge_crew" : "selected_agent"
+  const fileSyncStatus =
+    value?.fileSyncStatus === "synced" || value?.fileSyncStatus === "filesystem_sync_failed" ? value.fileSyncStatus : "skipped"
+
+  const suggestions = Array.isArray(value?.suggestions)
+    ? value.suggestions.map((entry: any) => normalizeAgentSyncSuggestion(entry))
+    : []
+
+  return {
+    id: String(value?.id || ""),
+    subagentId: typeof value?.subagentId === "string" ? value.subagentId : null,
+    status,
+    trigger,
+    scope,
+    summary: typeof value?.summary === "string" ? value.summary : null,
+    fileSyncStatus,
+    createdAt: typeof value?.createdAt === "string" ? value.createdAt : new Date(0).toISOString(),
+    completedAt: typeof value?.completedAt === "string" ? value.completedAt : null,
+    suggestions,
+  }
+}
+
+function sortAgentSyncRuns(runs: AgentSyncRun[]): AgentSyncRun[] {
+  return [...runs].sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())
+}
+
 function trimSummary(text: string, max = 130): string {
   const normalized = text.replace(/\s+/g, " ").trim()
   if (!normalized) return "No summary available"
@@ -420,6 +537,17 @@ export default function PersonalPage() {
   const [policyAssignmentsSnapshot, setPolicyAssignmentsSnapshot] = useState("[]")
   const [policyToAttachId, setPolicyToAttachId] = useState("")
   const [policyEditor, setPolicyEditor] = useState<PolicyEditorState>(emptyPolicyEditorState())
+  const [agentSyncPreference, setAgentSyncPreference] = useState<AgentSyncPreference>({
+    ...DEFAULT_AGENTSYNC_PREFERENCE,
+    timezone: browserTimezone(),
+  })
+  const [agentSyncRuns, setAgentSyncRuns] = useState<AgentSyncRun[]>([])
+  const [isAgentSyncPreferenceLoading, setIsAgentSyncPreferenceLoading] = useState(false)
+  const [isAgentSyncPreferenceSaving, setIsAgentSyncPreferenceSaving] = useState(false)
+  const [isAgentSyncRunsLoading, setIsAgentSyncRunsLoading] = useState(false)
+  const [isAgentSyncRunningSelected, setIsAgentSyncRunningSelected] = useState(false)
+  const [isAgentSyncRunningCrew, setIsAgentSyncRunningCrew] = useState(false)
+  const [actingSuggestionId, setActingSuggestionId] = useState<string | null>(null)
   const autoBootstrapAttemptedRef = useRef(false)
 
   const activeTab = parseTab(searchParams.get("tab"))
@@ -609,6 +737,176 @@ export default function PersonalPage() {
     }
   }, [])
 
+  const loadAgentSyncPreference = useCallback(async () => {
+    setIsAgentSyncPreferenceLoading(true)
+    try {
+      const response = await fetch("/api/agentsync/preferences")
+      if (!response.ok) {
+        setMessage({ type: "error", text: await readApiError(response) })
+        return
+      }
+
+      const payload = await response.json()
+      setAgentSyncPreference(normalizeAgentSyncPreference(payload))
+    } catch (error) {
+      console.error("Failed to load AgentSync preferences:", error)
+      setMessage({ type: "error", text: "Unable to load AgentSync preferences" })
+    } finally {
+      setIsAgentSyncPreferenceLoading(false)
+    }
+  }, [])
+
+  const loadAgentSyncRuns = useCallback(async (subagentId: string | null) => {
+    setIsAgentSyncRunsLoading(true)
+    try {
+      const params = new URLSearchParams({ take: "30" })
+      if (subagentId) {
+        params.set("subagentId", subagentId)
+      }
+
+      const response = await fetch(`/api/agentsync/runs?${params.toString()}`)
+      if (!response.ok) {
+        setMessage({ type: "error", text: await readApiError(response) })
+        return
+      }
+
+      const payload = await response.json()
+      const runs = Array.isArray(payload) ? payload.map((entry: any) => normalizeAgentSyncRun(entry)) : []
+      setAgentSyncRuns(sortAgentSyncRuns(runs))
+    } catch (error) {
+      console.error("Failed to load AgentSync runs:", error)
+      setMessage({ type: "error", text: "Unable to load AgentSync runs" })
+    } finally {
+      setIsAgentSyncRunsLoading(false)
+    }
+  }, [])
+
+  const runAgentSync = useCallback(async (scope: "selected_agent" | "bridge_crew") => {
+    if (scope === "selected_agent" && !selectedSubagent) {
+      setMessage({ type: "error", text: "Select an agent before running AgentSync." })
+      return
+    }
+
+    if (scope === "selected_agent") {
+      setIsAgentSyncRunningSelected(true)
+    } else {
+      setIsAgentSyncRunningCrew(true)
+    }
+    setMessage(null)
+
+    try {
+      const response = await fetch("/api/agentsync/runs", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          scope,
+          subagentId: scope === "selected_agent" ? selectedSubagent?.id : null,
+        }),
+      })
+
+      if (!response.ok) {
+        setMessage({ type: "error", text: await readApiError(response) })
+        return
+      }
+
+      await loadAgentSyncRuns(selectedSubagent?.id || null)
+      setMessage({
+        type: "success",
+        text: scope === "selected_agent" ? "AgentSync run started for selected agent." : "AgentSync full bridge crew run started.",
+      })
+    } catch (error) {
+      console.error("Failed to run AgentSync:", error)
+      setMessage({ type: "error", text: "Unable to trigger AgentSync run" })
+    } finally {
+      if (scope === "selected_agent") {
+        setIsAgentSyncRunningSelected(false)
+      } else {
+        setIsAgentSyncRunningCrew(false)
+      }
+    }
+  }, [loadAgentSyncRuns, selectedSubagent])
+
+  const saveAgentSyncPreference = useCallback(async () => {
+    setIsAgentSyncPreferenceSaving(true)
+    setMessage(null)
+
+    try {
+      const response = await fetch("/api/agentsync/preferences", {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          timezone: agentSyncPreference.timezone,
+          nightlyEnabled: agentSyncPreference.nightlyEnabled,
+          nightlyHour: agentSyncPreference.nightlyHour,
+        }),
+      })
+
+      if (!response.ok) {
+        setMessage({ type: "error", text: await readApiError(response) })
+        return
+      }
+
+      const payload = await response.json()
+      setAgentSyncPreference(normalizeAgentSyncPreference(payload))
+      setMessage({ type: "success", text: "AgentSync preferences saved." })
+    } catch (error) {
+      console.error("Failed to save AgentSync preferences:", error)
+      setMessage({ type: "error", text: "Unable to save AgentSync preferences" })
+    } finally {
+      setIsAgentSyncPreferenceSaving(false)
+    }
+  }, [agentSyncPreference])
+
+  const applyAgentSyncSuggestionAction = useCallback(async (suggestionId: string) => {
+    setActingSuggestionId(suggestionId)
+    setMessage(null)
+
+    try {
+      const response = await fetch(`/api/agentsync/suggestions/${suggestionId}/apply`, {
+        method: "POST",
+      })
+      if (!response.ok) {
+        setMessage({ type: "error", text: await readApiError(response) })
+        return
+      }
+
+      await loadAgentSyncRuns(selectedSubagent?.id || null)
+      setMessage({ type: "success", text: "Suggestion applied." })
+    } catch (error) {
+      console.error("Failed to apply AgentSync suggestion:", error)
+      setMessage({ type: "error", text: "Unable to apply suggestion" })
+    } finally {
+      setActingSuggestionId(null)
+    }
+  }, [loadAgentSyncRuns, selectedSubagent])
+
+  const rejectAgentSyncSuggestionAction = useCallback(async (suggestionId: string) => {
+    setActingSuggestionId(suggestionId)
+    setMessage(null)
+
+    try {
+      const response = await fetch(`/api/agentsync/suggestions/${suggestionId}/reject`, {
+        method: "POST",
+      })
+      if (!response.ok) {
+        setMessage({ type: "error", text: await readApiError(response) })
+        return
+      }
+
+      await loadAgentSyncRuns(selectedSubagent?.id || null)
+      setMessage({ type: "success", text: "Suggestion rejected." })
+    } catch (error) {
+      console.error("Failed to reject AgentSync suggestion:", error)
+      setMessage({ type: "error", text: "Unable to reject suggestion" })
+    } finally {
+      setActingSuggestionId(null)
+    }
+  }, [loadAgentSyncRuns, selectedSubagent])
+
   useEffect(() => {
     void fetchSubagents()
   }, [fetchSubagents])
@@ -616,6 +914,10 @@ export default function PersonalPage() {
   useEffect(() => {
     void loadPolicyLibrary()
   }, [loadPolicyLibrary])
+
+  useEffect(() => {
+    void loadAgentSyncPreference()
+  }, [loadAgentSyncPreference])
 
   useEffect(() => {
     if (activeTab === "shared") {
@@ -637,6 +939,15 @@ export default function PersonalPage() {
 
     setSelectedAgentId(selectDefaultAgentId(activeSubagents))
   }, [activeSubagents, selectedAgentId])
+
+  useEffect(() => {
+    if (!selectedSubagent) {
+      setAgentSyncRuns([])
+      return
+    }
+
+    void loadAgentSyncRuns(selectedSubagent.id)
+  }, [loadAgentSyncRuns, selectedSubagent])
 
   useEffect(() => {
     if (!selectedSubagent) {
@@ -663,6 +974,17 @@ export default function PersonalPage() {
     void loadPermissions(selectedSubagent.id)
     void loadPolicyAssignments(selectedSubagent.id)
   }, [selectedSubagent, loadContextFiles, loadPermissions, loadPolicyAssignments])
+
+  const handleAgentSyncRealtimeUpdate = useCallback(() => {
+    void loadAgentSyncPreference()
+    void loadAgentSyncRuns(selectedSubagent?.id || null)
+  }, [loadAgentSyncPreference, loadAgentSyncRuns, selectedSubagent])
+
+  useEventStream({
+    enabled: activeTab === "personal",
+    types: ["agentsync.updated"],
+    onEvent: handleAgentSyncRealtimeUpdate,
+  })
 
   const setActiveTab = (tab: PersonalTab) => {
     const params = new URLSearchParams(searchParams.toString())
@@ -1348,6 +1670,16 @@ export default function PersonalPage() {
   const selectedContextSize = selectedSubagent
     ? (contextFiles.length > 0 || contextTotals.wordCount > 0 ? contextTotals : toContextSize(selectedSubagent.content))
     : { wordCount: 0, estimatedTokens: 0 }
+  const canRunSelectedAgentSync = Boolean(selectedSubagent && !selectedSubagent.isShared && activeTab === "personal")
+  const proposedHighRiskSuggestionCount = useMemo(
+    () =>
+      agentSyncRuns.reduce(
+        (count, run) =>
+          count + run.suggestions.filter((suggestion) => suggestion.risk === "high" && suggestion.status === "proposed").length,
+        0,
+      ),
+    [agentSyncRuns],
+  )
   const activeDetailTabLabel = DETAIL_TABS.find((tab) => tab.id === detailTab)?.label || "Context"
 
   return (
@@ -2121,6 +2453,207 @@ export default function PersonalPage() {
                                 )}
                               </div>
                             ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {detailTab === "agentsync" && (
+                    <div className="space-y-4">
+                      <div className="rounded-lg border border-slate-200/80 bg-white/80 p-3 dark:border-white/10 dark:bg-white/[0.03]">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Run AgentSync</h4>
+                            <p className="text-xs text-slate-500 dark:text-slate-400">
+                              Heuristic reinforcement updates are auto-applied to low-risk files and proposed for high-risk files.
+                            </p>
+                          </div>
+                          <span className="rounded-full border border-cyan-500/35 bg-cyan-500/10 px-2 py-0.5 text-xs text-cyan-700 dark:text-cyan-200">
+                            {proposedHighRiskSuggestionCount} pending high-risk
+                          </span>
+                        </div>
+
+                        {!canRunSelectedAgentSync && (
+                          <p className="mt-2 text-xs text-amber-700 dark:text-amber-300">
+                            Select a personal agent to run selected-agent AgentSync.
+                          </p>
+                        )}
+
+                        <div className="mt-3 flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              void runAgentSync("selected_agent")
+                            }}
+                            disabled={!canRunSelectedAgentSync || isAgentSyncRunningSelected || isAgentSyncRunningCrew}
+                            className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-black disabled:opacity-50 dark:bg-white dark:text-slate-900"
+                          >
+                            {isAgentSyncRunningSelected ? "Running Selected..." : "Run AgentSync (Selected Agent)"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              void runAgentSync("bridge_crew")
+                            }}
+                            disabled={activeTab !== "personal" || isAgentSyncRunningCrew || isAgentSyncRunningSelected}
+                            className="rounded-lg border border-slate-300 px-4 py-2 text-sm text-slate-700 hover:bg-slate-100 disabled:opacity-50 dark:border-white/15 dark:text-slate-300 dark:hover:bg-white/[0.08]"
+                          >
+                            {isAgentSyncRunningCrew ? "Running Bridge Crew..." : "Run Full Bridge Crew"}
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="rounded-lg border border-slate-200/80 bg-white/80 p-3 dark:border-white/10 dark:bg-white/[0.03]">
+                        <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Nightly Preferences</h4>
+                        <p className="text-xs text-slate-500 dark:text-slate-400">
+                          Hourly cron should call `/api/agentsync/nightly`; due users run at local {agentSyncPreference.nightlyHour
+                            .toString()
+                            .padStart(2, "0")}
+                          :00.
+                        </p>
+
+                        <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+                          <label className="text-sm font-medium text-slate-700 dark:text-slate-300">
+                            Timezone
+                            <input
+                              type="text"
+                              value={agentSyncPreference.timezone}
+                              onChange={(event) =>
+                                setAgentSyncPreference((current) => ({
+                                  ...current,
+                                  timezone: event.target.value,
+                                }))
+                              }
+                              disabled={isAgentSyncPreferenceLoading || isAgentSyncPreferenceSaving}
+                              className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
+                              placeholder="America/New_York"
+                            />
+                          </label>
+                          <label className="inline-flex items-center justify-between rounded-lg border border-slate-200/80 bg-white/80 px-3 py-2 text-sm text-slate-700 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-200">
+                            Nightly enabled
+                            <input
+                              type="checkbox"
+                              checked={agentSyncPreference.nightlyEnabled}
+                              onChange={(event) =>
+                                setAgentSyncPreference((current) => ({
+                                  ...current,
+                                  nightlyEnabled: event.target.checked,
+                                }))
+                              }
+                              disabled={isAgentSyncPreferenceLoading || isAgentSyncPreferenceSaving}
+                            />
+                          </label>
+                        </div>
+
+                        <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                          <p className="text-xs text-slate-500 dark:text-slate-400">
+                            Last nightly run: {agentSyncPreference.lastNightlyRunAt
+                              ? new Date(agentSyncPreference.lastNightlyRunAt).toLocaleString()
+                              : "never"}
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              void saveAgentSyncPreference()
+                            }}
+                            disabled={isAgentSyncPreferenceLoading || isAgentSyncPreferenceSaving}
+                            className="rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 hover:bg-slate-100 disabled:opacity-50 dark:border-white/15 dark:text-slate-300 dark:hover:bg-white/[0.08]"
+                          >
+                            {isAgentSyncPreferenceSaving ? "Saving..." : "Save Preferences"}
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="rounded-lg border border-slate-200/80 bg-white/80 p-3 dark:border-white/10 dark:bg-white/[0.03]">
+                        <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Run History</h4>
+                        <p className="text-xs text-slate-500 dark:text-slate-400">
+                          Recent selected-agent or bridge-crew runs with high-risk approval actions.
+                        </p>
+
+                        {isAgentSyncRunsLoading ? (
+                          <SurfaceCard className="mt-3">Loading AgentSync runs...</SurfaceCard>
+                        ) : agentSyncRuns.length === 0 ? (
+                          <div className="mt-3">
+                            <EmptyState title="No AgentSync runs yet" description="Trigger a run to generate reinforcement updates." />
+                          </div>
+                        ) : (
+                          <div className="mt-3 space-y-3">
+                            {agentSyncRuns.map((run) => {
+                              const highRiskSuggestions = run.suggestions.filter((suggestion) => suggestion.risk === "high")
+
+                              return (
+                                <div
+                                  key={run.id}
+                                  className="rounded-lg border border-slate-200/80 bg-white/80 p-3 dark:border-white/10 dark:bg-white/[0.03]"
+                                >
+                                  <div className="flex flex-wrap items-start justify-between gap-2">
+                                    <div>
+                                      <p className="text-sm font-medium text-slate-900 dark:text-slate-100">
+                                        {run.scope === "selected_agent" ? "Selected Agent Run" : "Bridge Crew Run"} · {run.status}
+                                      </p>
+                                      <p className="text-xs text-slate-500 dark:text-slate-400">
+                                        {run.trigger} · {new Date(run.createdAt).toLocaleString()}
+                                      </p>
+                                    </div>
+                                    <span className="rounded-full border border-slate-300 px-2 py-0.5 text-[11px] text-slate-600 dark:border-white/15 dark:text-slate-300">
+                                      {run.fileSyncStatus === "filesystem_sync_failed" ? "filesystem sync warning" : run.fileSyncStatus}
+                                    </span>
+                                  </div>
+
+                                  {run.summary && (
+                                    <p className="mt-2 text-xs text-slate-600 dark:text-slate-300">{run.summary}</p>
+                                  )}
+
+                                  {highRiskSuggestions.length > 0 && (
+                                    <div className="mt-3 space-y-2 border-t border-slate-200/80 pt-2 dark:border-white/10">
+                                      {highRiskSuggestions.map((suggestion) => (
+                                        <div
+                                          key={suggestion.id}
+                                          className="rounded-lg border border-slate-200/80 bg-slate-50/70 p-2 dark:border-white/10 dark:bg-white/[0.02]"
+                                        >
+                                          <div className="flex flex-wrap items-center justify-between gap-2">
+                                            <div>
+                                              <p className="font-mono text-xs font-medium text-slate-900 dark:text-slate-100">
+                                                {suggestion.fileName}
+                                              </p>
+                                              <p className="text-xs text-slate-500 dark:text-slate-400">
+                                                {suggestion.status}
+                                                {suggestion.reason ? ` · ${suggestion.reason}` : ""}
+                                              </p>
+                                            </div>
+                                            {suggestion.status === "proposed" && (
+                                              <div className="flex gap-2">
+                                                <button
+                                                  type="button"
+                                                  onClick={() => {
+                                                    void applyAgentSyncSuggestionAction(suggestion.id)
+                                                  }}
+                                                  disabled={actingSuggestionId === suggestion.id}
+                                                  className="rounded-lg border border-emerald-500/35 px-2 py-1 text-xs text-emerald-700 hover:bg-emerald-500/10 disabled:opacity-50 dark:text-emerald-300"
+                                                >
+                                                  {actingSuggestionId === suggestion.id ? "Applying..." : "Apply"}
+                                                </button>
+                                                <button
+                                                  type="button"
+                                                  onClick={() => {
+                                                    void rejectAgentSyncSuggestionAction(suggestion.id)
+                                                  }}
+                                                  disabled={actingSuggestionId === suggestion.id}
+                                                  className="rounded-lg border border-rose-500/35 px-2 py-1 text-xs text-rose-700 hover:bg-rose-500/10 disabled:opacity-50 dark:text-rose-300"
+                                                >
+                                                  {actingSuggestionId === suggestion.id ? "Saving..." : "Reject"}
+                                                </button>
+                                              </div>
+                                            )}
+                                          </div>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              )
+                            })}
                           </div>
                         )}
                       </div>

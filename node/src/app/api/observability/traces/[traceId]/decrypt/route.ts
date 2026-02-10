@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
-import { headers } from "next/headers"
-import { auth } from "@/lib/auth"
 import { prisma } from "@/lib/prisma"
 import { decryptTraceFields } from "@/lib/observability"
+import { getCurrentSessionUserWithRole } from "@/lib/session-user"
 
 export const dynamic = "force-dynamic"
 
@@ -31,13 +30,15 @@ export async function GET(
   try {
     const bearer = parseBearerToken(request.headers.get("authorization"))
     const expectedAdminToken = decryptAdminToken()
-    const isAdmin = Boolean(expectedAdminToken && bearer && bearer === expectedAdminToken)
+    const isTokenAdmin = Boolean(expectedAdminToken && bearer && bearer === expectedAdminToken)
 
-    const session = isAdmin
+    const sessionUser = isTokenAdmin
       ? null
-      : await auth.api.getSession({ headers: await headers() })
+      : await getCurrentSessionUserWithRole()
+    const isRoleAdmin = sessionUser?.role === "admin"
+    const isAdmin = isTokenAdmin || isRoleAdmin
 
-    if (!isAdmin && !session) {
+    if (!isAdmin && !sessionUser) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
 
@@ -56,7 +57,7 @@ export async function GET(
       !isAdmin
       && (
         !traceRecord.userId
-        || traceRecord.userId !== session?.user.id
+        || traceRecord.userId !== sessionUser?.id
       )
     ) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 })
@@ -75,8 +76,8 @@ export async function GET(
       data: {
         traceId: traceRecord.id,
         actorType: isAdmin ? "admin" : "user",
-        actorId: isAdmin ? "admin-token" : (session?.user.id || "unknown"),
-        actorEmail: isAdmin ? null : (session?.user.email || null),
+        actorId: isTokenAdmin ? "admin-token" : (sessionUser?.id || "unknown"),
+        actorEmail: isTokenAdmin ? null : (sessionUser?.email || null),
       },
     })
 

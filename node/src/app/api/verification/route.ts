@@ -1,11 +1,37 @@
+import type { BridgeCrewRole } from "@prisma/client"
 import { NextRequest, NextResponse } from "next/server"
 import { auth } from "@/lib/auth"
 import { prisma } from "@/lib/prisma"
 import { headers } from "next/headers"
 import { mapForwardedVerification } from "@/lib/forwarding/projections"
 import { publishRealtimeEvent } from "@/lib/realtime/events"
+import { isBridgeStationKey } from "@/lib/bridge-chat/mapping"
+import {
+  recordVerificationSignal,
+  resolveBridgeCrewSubagentByStationKey,
+} from "@/lib/agentsync/signals"
 
 export const dynamic = 'force-dynamic'
+
+function asRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object") {
+    return {}
+  }
+
+  return value as Record<string, unknown>
+}
+
+function stationKeyFromSessionMetadata(metadata: unknown): BridgeCrewRole | null {
+  const record = asRecord(metadata)
+  const bridge = asRecord(record.bridge)
+  const stationKey = bridge.stationKey
+
+  if (isBridgeStationKey(stationKey)) {
+    return stationKey
+  }
+
+  return null
+}
 
 export async function GET(request: NextRequest) {
   try {
@@ -125,6 +151,7 @@ export async function POST(request: NextRequest) {
       },
       select: {
         id: true,
+        metadata: true,
       },
     })
 
@@ -160,6 +187,29 @@ export async function POST(request: NextRequest) {
         status: run.status,
       },
     })
+
+    const stationKey = stationKeyFromSessionMetadata(linkedSession.metadata)
+    if (stationKey) {
+      void resolveBridgeCrewSubagentByStationKey(stationKey)
+        .then((matchedSubagent) =>
+          recordVerificationSignal({
+            userId: session.user.id,
+            subagentId: matchedSubagent?.id || null,
+            sourceId: run.id,
+            status: run.status,
+            feedback: run.feedback,
+            iterations: run.iterations,
+            metadata: {
+              sessionId: run.sessionId,
+              verificationType: run.type,
+              stationKey,
+            },
+          }),
+        )
+        .catch((signalError) => {
+          console.error("AgentSync verification signal record failed:", signalError)
+        })
+    }
 
     return NextResponse.json(run, { status: 201 })
   } catch (error) {

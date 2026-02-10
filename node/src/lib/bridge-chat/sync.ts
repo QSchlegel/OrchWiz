@@ -19,6 +19,7 @@ import {
 const BRIDGE_CHANNEL = "bridge-agent"
 const BRIDGE_MIRROR_BASE_DELAY_MS = 1_000
 export const BRIDGE_MIRROR_MAX_ATTEMPTS = 6
+export const BRIDGE_GENERAL_THREAD_TITLE = "General Chat"
 
 function asRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object") {
@@ -52,6 +53,14 @@ function bridgeSessionMetadataForStation(stationKey: BridgeCrewRole): Prisma.Inp
   }
 }
 
+function bridgeSessionMetadataForGeneral(): Prisma.InputJsonObject {
+  return {
+    bridge: {
+      channel: BRIDGE_CHANNEL,
+    },
+  }
+}
+
 function inferStationKeyFromMetadata(metadata: unknown): BridgeCrewRole | null {
   const record = asRecord(metadata)
   const bridge = asRecord(record.bridge)
@@ -70,7 +79,7 @@ function defaultThreadTitle(stationKey?: BridgeCrewRole | string | null): string
     return `${template.callsign} Bridge Thread`
   }
 
-  return "Bridge"
+  return BRIDGE_GENERAL_THREAD_TITLE
 }
 
 async function upsertThreadBySession(args: {
@@ -167,6 +176,22 @@ async function ensureBridgeSessionForStation(args: {
   })
 }
 
+async function createGeneralBridgeSessionForUser(args: {
+  userId: string
+}): Promise<Session> {
+  return prisma.session.create({
+    data: {
+      userId: args.userId,
+      title: BRIDGE_GENERAL_THREAD_TITLE,
+      description: "General bridge conversation channel.",
+      mode: "plan",
+      source: "web",
+      status: "planning",
+      metadata: bridgeSessionMetadataForGeneral(),
+    },
+  })
+}
+
 async function importSessionInteractionsToThread(args: {
   sessionId: string
   threadId: string
@@ -257,6 +282,70 @@ export async function ensureStationThreadsForUser(userId: string): Promise<Bridg
     await importSessionInteractionsToThread({
       sessionId: thread.sessionId,
       threadId: thread.id,
+    })
+  }
+
+  let generalThread = await prisma.bridgeThread.findFirst({
+    where: {
+      userId,
+      stationKey: null,
+    },
+    orderBy: {
+      updatedAt: "desc",
+    },
+  })
+
+  if (!generalThread) {
+    const session = await createGeneralBridgeSessionForUser({ userId })
+    generalThread = await upsertThreadBySession({
+      sessionId: session.id,
+      userId,
+      stationKey: null,
+      title: session.title?.trim() || BRIDGE_GENERAL_THREAD_TITLE,
+    })
+  }
+
+  if (!generalThread.sessionId) {
+    const session = await createGeneralBridgeSessionForUser({ userId })
+    generalThread = await prisma.bridgeThread.update({
+      where: {
+        id: generalThread.id,
+      },
+      data: {
+        sessionId: session.id,
+        title: generalThread.title || session.title || BRIDGE_GENERAL_THREAD_TITLE,
+      },
+    })
+  }
+
+  if (generalThread.sessionId) {
+    const session = await prisma.session.findUnique({
+      where: {
+        id: generalThread.sessionId,
+      },
+      select: {
+        id: true,
+      },
+    })
+
+    if (!session) {
+      const fallbackSession = await createGeneralBridgeSessionForUser({ userId })
+      generalThread = await prisma.bridgeThread.update({
+        where: {
+          id: generalThread.id,
+        },
+        data: {
+          sessionId: fallbackSession.id,
+          title: generalThread.title || fallbackSession.title || BRIDGE_GENERAL_THREAD_TITLE,
+        },
+      })
+    }
+  }
+
+  if (generalThread.sessionId) {
+    await importSessionInteractionsToThread({
+      sessionId: generalThread.sessionId,
+      threadId: generalThread.id,
     })
   }
 

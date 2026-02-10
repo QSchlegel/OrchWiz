@@ -110,6 +110,23 @@ Forwarded records include metadata fields (for example `isForwarded`, `sourceNod
   - Required: `sessionId`, `type`.
   - Optional: `status`, `result`, `iterations`, `feedback`, `completedAt`.
 
+### AgentSync
+
+- `GET /api/agentsync/runs` list AgentSync runs for current user.
+  - Optional query params: `subagentId`, `take`.
+- `POST /api/agentsync/runs` trigger manual AgentSync run.
+  - Body: `{ scope: "selected_agent" | "bridge_crew", subagentId?: string }`
+  - `subagentId` is required for `scope="selected_agent"`.
+- `GET /api/agentsync/runs/[id]` fetch run details including suggestions.
+- `GET /api/agentsync/preferences` fetch nightly timezone preferences.
+- `PUT /api/agentsync/preferences` update nightly timezone preferences.
+  - Body: `{ timezone, nightlyEnabled, nightlyHour }`
+- `POST /api/agentsync/suggestions/[id]/apply` manually apply a proposed high-risk suggestion.
+- `POST /api/agentsync/suggestions/[id]/reject` reject a proposed high-risk suggestion.
+- `POST /api/agentsync/nightly` cron-only nightly trigger.
+  - Requires bearer token matching `AGENTSYNC_CRON_TOKEN`.
+  - Intended trigger cadence is hourly; endpoint resolves due users by stored timezone at local 02:00.
+
 ### Hooks
 
 - `GET /api/hooks` list hooks.
@@ -167,6 +184,30 @@ Forwarded records include metadata fields (for example `isForwarded`, `sourceNod
 
 - `GET /api/bridge/state` operational bridge state for dashboard.
   - Optional `includeForwarded=true` to merge forwarded bridge/system events.
+- Bridge Connections (outbound-only, per ship deployment):
+  - `GET /api/bridge/connections?deploymentId=<id>&deliveriesTake=<n>` list connector records, provider summary, and recent delivery timeline.
+    - Requires owned `deploymentId` (`deployment.userId === session.user.id`).
+  - `POST /api/bridge/connections` create connector.
+    - Required body: `deploymentId`, `provider` (`telegram|discord|whatsapp`), `name`, `destination`, `credentials`.
+    - Optional body: `enabled`, `autoRelay`, `config`.
+  - `PATCH /api/bridge/connections/[id]` update connector metadata/toggles and optional credential rotation.
+  - `DELETE /api/bridge/connections/[id]` delete connector (delivery history cascades via FK).
+  - `POST /api/bridge/connections/[id]/test` enqueue and attempt immediate test delivery for that connector.
+  - `POST /api/bridge/connections/dispatch` manual patch-through dispatch.
+    - Required body: `deploymentId`, `message`.
+    - Optional body: `connectionIds` (defaults to all enabled connectors in deployment).
+  - COU auto relay:
+    - Runtime dispatch is triggered when prompt metadata is bridge-channel COU (`metadata.bridge.channel === "bridge-agent"` and `metadata.bridge.stationKey === "cou"`).
+    - `metadata.bridge.shipDeploymentId` is the preferred deployment target hint.
+  - Realtime:
+    - `bridge.comms.updated` is emitted on enqueue, success, and terminal failure.
+  - OpenClaw dispatch contract (adapter call from OrchWiz to OpenClaw):
+    - Method/path: `POST ${OPENCLAW_GATEWAY_URL}${OPENCLAW_DISPATCH_PATH}` (default path `/v1/message`).
+    - Auth: `Authorization: Bearer ${OPENCLAW_API_KEY}` when API key is configured.
+    - Body:
+      - `requestType: "bridge_connection_dispatch.v1"`
+      - `deliveryId`, `provider`, `destination`, `message`, `config`, `credentials`, `metadata`
+    - Success semantics: HTTP 2xx and response payload where `ok !== false`; all other responses are treated as failed delivery and retried by queue policy.
 - `GET /api/uss-k8s/topology` USS/K8s topology data for dashboard.
 - `GET /api/bridge-crew?deploymentId=<ship-id>` list bridge crew records.
 - `PUT /api/bridge-crew/[id]` update bridge crew prompt/status + wallet binding fields:

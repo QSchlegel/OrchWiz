@@ -13,7 +13,7 @@ import {
   storeBridgeConnectionCredentials,
   summarizeStoredBridgeConnectionCredentials,
 } from "@/lib/bridge/connections/secrets"
-import type { BridgeConnectionProvider } from "@prisma/client"
+import type { BridgeConnectionProvider, Prisma } from "@prisma/client"
 
 export const dynamic = "force-dynamic"
 
@@ -32,6 +32,10 @@ function parseTake(value: string | null, fallback = 20): number {
     return fallback
   }
   return Math.max(1, Math.min(100, parsed))
+}
+
+function toInputJsonValue(value: unknown): Prisma.InputJsonValue {
+  return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue
 }
 
 function mapConnectionForResponse(connection: {
@@ -205,8 +209,8 @@ export async function POST(request: NextRequest) {
         destination: parsed.destination,
         enabled: parsed.enabled,
         autoRelay: parsed.autoRelay,
-        config: parsed.config,
-        credentials: storedCredentials,
+        config: toInputJsonValue(parsed.config),
+        credentials: toInputJsonValue(storedCredentials),
       },
     })
 
