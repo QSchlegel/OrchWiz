@@ -1,0 +1,51 @@
+{
+  "schemaVersion": "0.1.0",
+  "name": "OrchWiz Web Capture",
+  "behavior": "create",
+  "noteNameFormat": "{{date|date:\"YYYY-MM-DD\"}}-{{time|date:\"HHmmss\"}}-{{title|safe_name|slice:0,80}}",
+  "path": "00-Inbox/Web-Clips/{{date|date:\"YYYY-MM\"}}/{{domain|lower|replace:\"www.\":\"\"|replace:\".\":\"-\"}}",
+  "noteContentFormat": "> [!info] Source\\n> URL: {{url}}\\n> Captured: {{date|date:\"YYYY-MM-DD HH:mm\"}}\\n> Site: {{site}}\\n\\n## Summary\\n{{description}}\\n\\n## Content\\n{{content}}\\n",
+  "properties": [
+    {
+      "name": "title",
+      "value": "{{title}}",
+      "type": "text"
+    },
+    {
+      "name": "source",
+      "value": "{{url}}",
+      "type": "text"
+    },
+    {
+      "name": "domain",
+      "value": "{{domain}}",
+      "type": "text"
+    },
+    {
+      "name": "site",
+      "value": "{{site}}",
+      "type": "text"
+    },
+    {
+      "name": "author",
+      "value": "{{author}}",
+      "type": "multitext"
+    },
+    {
+      "name": "published",
+      "value": "{{published|date:\"YYYY-MM-DD\"}}",
+      "type": "date"
+    },
+    {
+      "name": "created",
+      "value": "{{date|date:\"YYYY-MM-DD\"}}",
+      "type": "date"
+    },
+    {
+      "name": "tags",
+      "value": "clippings, web-clips",
+      "type": "multitext"
+    }
+  ],
+  "triggers": []
+}

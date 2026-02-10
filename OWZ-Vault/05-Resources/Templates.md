@@ -93,3 +93,11 @@ Details about how it's implemented.
 ## Related Notes
 - [[Note-Name]]
 ```
+
+## Web Clipper Template (Obsidian)
+
+Use [OrchWiz-Web-Clipper-Template.json](OrchWiz-Web-Clipper-Template.json) for importing a ready-made Obsidian Web Clipper template.
+
+- Saves clips into `00-Inbox/Web-Clips/YYYY-MM/domain-name/`
+- Uses timestamped file names to avoid collisions
+- Adds source/frontmatter metadata for later sorting

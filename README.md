@@ -137,6 +137,7 @@ npm run build
 - [Infrastructure setup](infra/README.md)
 - [Architecture overview](OWZ-Vault/01-Project-Overview/Architecture.md)
 - [Node concept](OWZ-Vault/01-Project-Overview/Node-Concept.md)
+- [Web clipper setup](OWZ-Vault/05-Resources/Web-Clipper-Setup.md)
 - [API docs](OWZ-Vault/03-Technical/API-Documentation.md)
 - [Database schema](OWZ-Vault/03-Technical/Database-Schema.md)
 - [Deployment guide](OWZ-Vault/03-Technical/Deployment-Guide.md)
