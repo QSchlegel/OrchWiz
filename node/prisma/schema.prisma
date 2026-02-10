@@ -959,6 +959,14 @@ enum BridgeCrewStatus {
   inactive
 }
 
+model BridgeCharacterAsset {
+  id          String         @id @default(cuid())
+  role        BridgeCrewRole @unique
+  modelUrl    String
+  meshyTaskId String?
+  updatedAt   DateTime       @updatedAt
+}
+
 enum BridgeConnectionProvider {
   telegram
   discord

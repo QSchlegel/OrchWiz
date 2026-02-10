@@ -20,6 +20,8 @@ import {
   type BridgeCrewRole,
 } from "@/lib/shipyard/bridge-crew"
 import { buildOpenClawBridgeCrewContextBundle } from "@/lib/deployment/openclaw-context"
+import { resolveShipyardApiActorFromRequest } from "@/lib/shipyard/api-auth"
+import { ensureShipQuartermaster } from "@/lib/quartermaster/service"
 
 export const dynamic = "force-dynamic"
 
@@ -38,6 +40,14 @@ function asString(value: unknown): string | null {
   if (typeof value !== "string") return null
   const trimmed = value.trim()
   return trimmed.length > 0 ? trimmed : null
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {}
+  }
+
+  return value as Record<string, unknown>
 }
 
 function asBoolean(value: unknown): boolean | null {
@@ -81,12 +91,31 @@ function parseCrewOverrides(input: unknown): CrewOverrides {
 
 export async function POST(request: NextRequest) {
   try {
-    const session = await auth.api.getSession({ headers: await headers() })
-    if (!session) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+    const body = asRecord(await request.json())
+    const actorResolution = await resolveShipyardApiActorFromRequest(request, {
+      shipyardApiToken: process.env.SHIPYARD_API_TOKEN,
+      body,
+      getSessionUserId: async () => {
+        const session = await auth.api.getSession({ headers: await headers() })
+        return asString(session?.user?.id)
+      },
+      userExists: async (userId) => {
+        const user = await prisma.user.findUnique({
+          where: {
+            id: userId,
+          },
+          select: {
+            id: true,
+          },
+        })
+        return Boolean(user)
+      },
+    })
+    if (!actorResolution.ok) {
+      return NextResponse.json({ error: actorResolution.error }, { status: actorResolution.status })
     }
+    const ownerUserId = actorResolution.actor.userId
 
-    const body = await request.json()
     const name = asString(body?.name)
     const nodeId = asString(body?.nodeId)
     if (!name || !nodeId) {
@@ -138,7 +167,7 @@ export async function POST(request: NextRequest) {
               ? { saneBootstrap }
               : {}),
           },
-          userId: session.user.id,
+          userId: ownerUserId,
           status: "pending",
         },
       })
@@ -162,6 +191,12 @@ export async function POST(request: NextRequest) {
       )
 
       return { deployment, bridgeCrew }
+    })
+
+    const quartermaster = await ensureShipQuartermaster({
+      userId: ownerUserId,
+      shipDeploymentId: created.deployment.id,
+      shipName: created.deployment.name,
     })
 
     await prisma.agentDeployment.update({
@@ -225,6 +260,7 @@ export async function POST(request: NextRequest) {
             details: launchResult.details,
             deployment,
             bridgeCrew,
+            quartermaster,
           },
           { status: launchResult.httpStatus },
         )
@@ -274,6 +310,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       deployment,
       bridgeCrew,
+      quartermaster,
     })
   } catch (error) {
     console.error("Error launching ship yard deployment:", error)

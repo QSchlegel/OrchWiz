@@ -26,6 +26,7 @@ import {
 import { OrchestrationSurface } from "@/components/orchestration/OrchestrationSurface"
 import { NodeInfoCard, nodeTypeInfo, UseCaseBadge } from "@/components/orchestration/NodeInfoCard"
 import { FlipCard } from "@/components/orchestration/FlipCard"
+import { ShipQuartermasterPanel } from "@/components/quartermaster/ShipQuartermasterPanel"
 import { FlowCanvas } from "@/components/flow/FlowCanvas"
 import { DeploymentNode, SystemNode } from "@/components/flow/nodes"
 import { layoutColumns } from "@/lib/flow/layout"
@@ -693,6 +694,17 @@ export default function ShipsPage() {
     return buildEdgesToAnchors(edgeItems)
   }, [filteredDeployments])
 
+  const quartermasterShip = useMemo(() => {
+    if (selectedDeploymentId) {
+      const selected = filteredDeployments.find((deployment) => deployment.id === selectedDeploymentId)
+      if (selected) {
+        return selected
+      }
+    }
+
+    return filteredDeployments[0] || null
+  }, [filteredDeployments, selectedDeploymentId])
+
   const handleFleetNodeClick = (_: unknown, node: Node) => {
     if (node.type === "deploymentNode") {
       setSelectedDeploymentId(node.id)
@@ -921,6 +933,20 @@ export default function ShipsPage() {
               className="h-[360px]"
             />
           </div>
+        </OrchestrationSurface>
+
+        <OrchestrationSurface level={4} className="mb-8 bg-white/5">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-semibold">Quartermaster</h2>
+            <span className="text-xs text-gray-500 dark:text-gray-400">
+              {quartermasterShip ? `Ship: ${quartermasterShip.name}` : "No ship selected"}
+            </span>
+          </div>
+          <ShipQuartermasterPanel
+            shipDeploymentId={quartermasterShip?.id || null}
+            shipName={quartermasterShip?.name}
+            className="mt-3"
+          />
         </OrchestrationSurface>
 
         {showCreateForm && (

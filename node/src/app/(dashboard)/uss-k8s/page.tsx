@@ -66,6 +66,7 @@ import { TopologyControls } from "@/components/uss-k8s/TopologyControls"
 import { DockableWindow } from "@/components/uss-k8s/DockableWindow"
 import { FocusModeDock } from "@/components/uss-k8s/FocusModeDock"
 import { FocusModeDrawer } from "@/components/uss-k8s/FocusModeDrawer"
+import { ShipQuartermasterPanel } from "@/components/quartermaster/ShipQuartermasterPanel"
 import {
   addDockWindow,
   readDockWindows,
@@ -1328,6 +1329,12 @@ export default function UssK8sPage() {
                                 )
                               })}
                             </div>
+                            <ShipQuartermasterPanel
+                              shipDeploymentId={selectedShipDeploymentId}
+                              shipName={selectedShip?.name || undefined}
+                              className="mt-3"
+                              compact
+                            />
                           </>
                         )}
                         {focusDrawerId === "crew" && (
@@ -1415,6 +1422,12 @@ export default function UssK8sPage() {
                           )
                         })}
                       </div>
+                      <ShipQuartermasterPanel
+                        shipDeploymentId={selectedShipDeploymentId}
+                        shipName={selectedShip?.name || undefined}
+                        className="mt-3"
+                        compact
+                      />
                     </DockableWindow>
 
                     <DockableWindow
@@ -1603,6 +1616,12 @@ export default function UssK8sPage() {
                   </button>
                 )}
               </div>
+              <ShipQuartermasterPanel
+                shipDeploymentId={selectedShipDeploymentId}
+                shipName={selectedShip?.name || undefined}
+                className="mt-3"
+                compact
+              />
             </OrchestrationSurface>
 
             <div className="z-20">

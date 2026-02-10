@@ -8,6 +8,7 @@ OrchWiz exposes REST API routes under `node/src/app/api/`. Most routes are sessi
 
 - Session cookie auth (Better Auth) is required for most routes.
 - `POST /api/forwarding/events` is machine-authenticated via signed headers (no session cookie).
+- `POST /api/ship-yard/launch` and `GET /api/ship-yard/status/[id]` optionally support bearer token auth via `SHIPYARD_API_TOKEN`.
 - `POST /api/github/webhook` verifies signature when `GITHUB_WEBHOOK_SECRET` is configured.
 
 ## Common Conventions
@@ -83,6 +84,17 @@ Forwarded records include metadata fields (for example `isForwarded`, `sourceNod
 - `GET /api/ships/[id]` fetch ship deployment.
 - `PUT /api/ships/[id]` update ship deployment.
 - `DELETE /api/ships/[id]` delete ship deployment.
+- `POST /api/ship-yard/launch` launch Ship Yard deployment with bridge crew bootstrap.
+  - Auth modes:
+    - Session auth (default browser path).
+    - Bearer token auth (`Authorization: Bearer <SHIPYARD_API_TOKEN>`).
+  - For bearer token auth, `userId` is required from one of:
+    - `body.userId`
+    - query param `userId`
+    - header `x-orchwiz-user-id`
+  - If an `Authorization` header is present and invalid, request is rejected (`401`) with no session fallback.
+- `GET /api/ship-yard/status/[id]` fetch Ship Yard deployment status + bridge crew state.
+  - Uses the same auth rules as `POST /api/ship-yard/launch`.
 - Legacy compatibility aliases:
   - `GET /api/deployments` defaults to ship deployments when `deploymentType` is omitted.
   - `deploymentType=agent` still returns agent deployments.
@@ -171,7 +183,15 @@ Forwarded records include metadata fields (for example `isForwarded`, `sourceNod
   - Signature input: `${timestamp}.${nonce}.${rawBody}` using HMAC-SHA256 with the source API key.
   - Includes timestamp freshness check, per-source nonce replay guard, rate limiting, dedupe, and persistence into `ForwardingEvent`.
 - `GET /api/forwarding/config` list forwarding configs for current user.
+  - `targetApiKey` is returned as masked summary metadata (no plaintext secret in response).
+  - Response shape:
+    - `targetApiKey.storageMode`: `none|encrypted|plaintext-fallback|legacy-plaintext|unknown`
+    - `targetApiKey.hasValue`: boolean
+    - `targetApiKey.maskedValue`: masked suffix (for plaintext modes) or `********` for encrypted
 - `POST /api/forwarding/config` create forwarding config and optionally provision/update source node identity.
+  - Request still accepts plaintext `targetApiKey`.
+  - Stored secret format now uses an encoded envelope (encrypted with wallet-enclave when available/required, plaintext-fallback otherwise).
+  - Existing legacy plaintext rows remain readable internally for backward compatibility.
 - `POST /api/forwarding/test` run signed connectivity test from source to target.
 
 ### Realtime (SSE)

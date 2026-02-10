@@ -71,3 +71,32 @@ test("resolveSessionRuntimePrompt keeps raw interaction content while enriching 
   assert.ok(Array.isArray(result.bridgeResponseMetadata?.bridgeCameos))
   assert.ok((result.bridgeResponseMetadata?.bridgeCameos?.length || 0) <= 2)
 })
+
+test("resolveSessionRuntimePrompt builds quartermaster runtime prompt for ship-quartermaster channel", () => {
+  const result = resolveSessionRuntimePrompt({
+    userPrompt: "Validate setup readiness and maintenance risks.",
+    metadata: {
+      quartermaster: {
+        channel: "ship-quartermaster",
+        callsign: "QTM-LGR",
+      },
+      shipContext: {
+        shipDeploymentId: "ship-123",
+        shipName: "USS-Delta",
+        status: "active",
+        nodeId: "node-a",
+        nodeType: "local",
+        deploymentProfile: "local_starship_build",
+        healthStatus: "healthy",
+        crewCount: 6,
+      },
+    },
+  })
+
+  assert.equal(result.interactionContent, "Validate setup readiness and maintenance risks.")
+  assert.equal(result.bridgeResponseMetadata, undefined)
+  assert.match(result.runtimePrompt, /You are QTM-LGR, Quartermaster/)
+  assert.match(result.runtimePrompt, /Ship context:/)
+  assert.ok(result.runtimePrompt.includes("Setup/Maintenance Actions"))
+  assert.match(result.runtimePrompt, /Operator request:/)
+})

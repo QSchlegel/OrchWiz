@@ -1,4 +1,4 @@
-export type RuntimeProvider = "openclaw" | "openai-fallback" | "local-fallback"
+export type RuntimeProvider = "openclaw" | "openai-fallback" | "local-fallback" | "codex-cli"
 
 export interface RuntimeSignatureBundle {
   keyRef: string

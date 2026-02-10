@@ -39,6 +39,21 @@ export const SYSTEM_PERMISSION_POLICY_PRESETS: PermissionPolicyPreset[] = [
     ],
   },
   {
+    slug: "quartermaster-readonly",
+    name: "Quartermaster Read-Only",
+    description: "Quartermaster profile that allows only Codex CLI read-only runtime invocations.",
+    rules: [
+      { commandPattern: "codex exec * --dangerously-bypass-approvals-and-sandbox*", type: "bash_command", status: "deny", sortOrder: 10 },
+      { commandPattern: "codex exec * --sandbox danger-full-access*", type: "bash_command", status: "deny", sortOrder: 20 },
+      { commandPattern: "codex exec * --sandbox workspace-write*", type: "bash_command", status: "deny", sortOrder: 30 },
+      { commandPattern: "codex exec * --full-auto*", type: "bash_command", status: "deny", sortOrder: 40 },
+      { commandPattern: "codex exec --sandbox read-only --skip-git-repo-check *", type: "bash_command", status: "allow", sortOrder: 100 },
+      { commandPattern: "*codex* exec --sandbox read-only --skip-git-repo-check *", type: "bash_command", status: "allow", sortOrder: 110 },
+      { commandPattern: "codex exec *", type: "bash_command", status: "deny", sortOrder: 900 },
+      { commandPattern: "*", type: "bash_command", status: "deny", sortOrder: 1000 },
+    ],
+  },
+  {
     slug: "balanced-devops",
     name: "Balanced DevOps",
     description: "Operationally broader profile for common delivery workflows with safety rails.",

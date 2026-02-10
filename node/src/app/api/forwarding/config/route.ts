@@ -4,6 +4,11 @@ import { auth } from "@/lib/auth"
 import { headers } from "next/headers"
 import { prisma } from "@/lib/prisma"
 import { hashApiKey } from "@/lib/forwarding/security"
+import {
+  ForwardingSecretsError,
+  storeForwardingTargetApiKey,
+  summarizeStoredForwardingTargetApiKey,
+} from "@/lib/forwarding/secrets"
 import type { ForwardingEventType, ForwardingTargetStatus } from "@prisma/client"
 
 export const dynamic = "force-dynamic"
@@ -20,6 +25,22 @@ const DEFAULT_EVENT_TYPES: ForwardingEventType[] = [
 
 function generateApiKey(): string {
   return `owz_${crypto.randomBytes(18).toString("hex")}`
+}
+
+function asNonEmptyString(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null
+  }
+
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : null
+}
+
+function mapForwardingConfigForResponse<T extends { targetApiKey: string | null }>(config: T) {
+  return {
+    ...config,
+    targetApiKey: summarizeStoredForwardingTargetApiKey(config.targetApiKey),
+  }
 }
 
 export async function GET() {
@@ -51,7 +72,7 @@ export async function GET() {
       },
     })
 
-    return NextResponse.json(configs)
+    return NextResponse.json(configs.map(mapForwardingConfigForResponse))
   } catch (error) {
     console.error("Error fetching forwarding config:", error)
     return NextResponse.json({ error: "Internal server error" }, { status: 500 })
@@ -67,7 +88,7 @@ export async function POST(request: NextRequest) {
 
     const body = await request.json()
     const targetUrl = body?.targetUrl
-    const targetApiKey = body?.targetApiKey
+    const targetApiKeyInput = asNonEmptyString(body?.targetApiKey)
     const enabled = body?.enabled === true
     const eventTypes = Array.isArray(body?.eventTypes)
       ? (body.eventTypes as ForwardingEventType[])
@@ -128,12 +149,20 @@ export async function POST(request: NextRequest) {
       sourceNodeId = sourceNode.id
     }
 
+    const targetApiKeyContextId = crypto.randomUUID()
+    const storedTargetApiKey = targetApiKeyInput
+      ? await storeForwardingTargetApiKey({
+          configId: targetApiKeyContextId,
+          targetApiKey: targetApiKeyInput,
+        })
+      : null
+
     const config = await prisma.forwardingConfig.create({
       data: {
         userId: session.user.id,
         sourceNodeId,
         targetUrl,
-        targetApiKey: typeof targetApiKey === "string" ? targetApiKey : null,
+        targetApiKey: storedTargetApiKey,
         enabled,
         eventTypes,
         status,
@@ -155,12 +184,22 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json(
       {
-        ...config,
+        ...mapForwardingConfigForResponse(config),
         sourceApiKey,
       },
       { status: 201 }
     )
   } catch (error) {
+    if (error instanceof ForwardingSecretsError) {
+      return NextResponse.json(
+        {
+          error: error.message,
+          code: error.code,
+        },
+        { status: error.status },
+      )
+    }
+
     console.error("Error creating forwarding config:", error)
     return NextResponse.json({ error: "Internal server error" }, { status: 500 })
   }

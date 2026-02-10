@@ -220,6 +220,7 @@ export default function BridgePage() {
   const [showThreeD, setShowThreeD] = useState(false)
   const [isThreeDFullscreen, setIsThreeDFullscreen] = useState(false)
   const threeDSectionRef = useRef<HTMLElement | null>(null)
+  const [characterModelUrls, setCharacterModelUrls] = useState<Partial<Record<BridgeStationKey, string>>>({})
 
   const stardate = formatStardate(new Date())
   const operatorLabel = session?.user?.email || "Operator"
@@ -426,6 +427,24 @@ export default function BridgePage() {
       setIsBridgeLoading(false)
     }
   }, [selectedShipDeploymentId, setSelectedShipDeploymentId])
+
+  const loadCharacterModels = useCallback(async () => {
+    try {
+      const response = await fetch("/api/bridge/character-models")
+      if (!response.ok) return
+      const data = (await response.json()) as Record<string, string | null>
+      const next: Partial<Record<BridgeStationKey, string>> = {}
+      for (const key of STATION_KEYS) {
+        const url = data[key]
+        if (typeof url === "string" && url.trim().length > 0) {
+          next[key] = `/api/bridge/character-models/proxy?url=${encodeURIComponent(url.trim())}`
+        }
+      }
+      setCharacterModelUrls(next)
+    } catch {
+      // Non-fatal; bridge still works with placeholder capsules
+    }
+  }, [])
 
   const loadBridgeConnections = useCallback(async () => {
     if (!selectedShipDeploymentId) {
@@ -809,7 +828,8 @@ export default function BridgePage() {
     void loadBridgeState()
     void loadBridgeSessions()
     void loadBridgeConnections()
-  }, [session, loadBridgeConnections, loadBridgeSessions, loadBridgeState])
+    void loadCharacterModels()
+  }, [session, loadBridgeConnections, loadBridgeSessions, loadBridgeState, loadCharacterModels])
 
   useEffect(() => {
     if (!selectedStation?.stationKey) {
@@ -992,6 +1012,7 @@ export default function BridgePage() {
               lastEventAt={lastBridgeEventAt}
               selectedStationKey={selectedStation?.stationKey || null}
               onStationSelect={(stationKey) => setSelectedStationKey(stationKey)}
+              characterModelUrls={characterModelUrls}
             />
             <button
               type="button"

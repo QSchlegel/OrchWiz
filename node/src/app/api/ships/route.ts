@@ -10,6 +10,7 @@ import {
   normalizeDeploymentProfileInput,
   normalizeInfrastructureInConfig,
 } from "@/lib/deployment/profile"
+import { ensureShipQuartermaster } from "@/lib/quartermaster/service"
 
 export const dynamic = "force-dynamic"
 
@@ -151,6 +152,12 @@ export async function POST(request: NextRequest) {
       },
     })
 
+    const quartermaster = await ensureShipQuartermaster({
+      userId: session.user.id,
+      shipDeploymentId: ship.id,
+      shipName: ship.name,
+    })
+
     await prisma.agentDeployment.update({
       where: { id: ship.id },
       data: {
@@ -203,7 +210,10 @@ export async function POST(request: NextRequest) {
       nodeId: updatedShip.nodeId,
     })
 
-    return NextResponse.json(updatedShip)
+    return NextResponse.json({
+      ...updatedShip,
+      quartermaster,
+    })
   } catch (error) {
     console.error("Error creating ship:", error)
     return NextResponse.json({ error: "Internal server error" }, { status: 500 })

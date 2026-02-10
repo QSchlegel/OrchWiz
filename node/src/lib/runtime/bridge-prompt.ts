@@ -32,6 +32,25 @@ export interface BridgePromptMetadata {
   missionContext?: BridgeMissionContext
 }
 
+export interface QuartermasterPromptMetadata {
+  channel?: string
+  callsign?: string
+  shipDeploymentId?: string
+  subagentId?: string
+}
+
+export interface QuartermasterShipContext {
+  shipDeploymentId?: string
+  shipName?: string
+  status?: string
+  nodeId?: string
+  nodeType?: string
+  deploymentProfile?: string
+  healthStatus?: string | null
+  lastHealthCheck?: string | null
+  crewCount?: number
+}
+
 export interface BridgePromptBuildResult {
   runtimePrompt: string
   primaryAgent: string
@@ -145,6 +164,98 @@ function summarizeMissionContext(missionContext?: BridgeMissionContext): string 
   return lines.length > 0 ? lines.join("\n") : "No additional mission context provided."
 }
 
+function summarizeQuartermasterShipContext(shipContext?: QuartermasterShipContext): string {
+  if (!shipContext) {
+    return "No ship context provided."
+  }
+
+  const lines: string[] = []
+  if (shipContext.shipName) {
+    lines.push(`Ship: ${shipContext.shipName}`)
+  }
+  if (shipContext.shipDeploymentId) {
+    lines.push(`Ship Deployment ID: ${shipContext.shipDeploymentId}`)
+  }
+  if (shipContext.status) {
+    lines.push(`Status: ${shipContext.status}`)
+  }
+  if (shipContext.nodeId || shipContext.nodeType) {
+    lines.push(`Node: ${shipContext.nodeId || "unknown"} (${shipContext.nodeType || "unknown"})`)
+  }
+  if (shipContext.deploymentProfile) {
+    lines.push(`Deployment Profile: ${shipContext.deploymentProfile}`)
+  }
+  if (shipContext.healthStatus) {
+    lines.push(`Health: ${shipContext.healthStatus}`)
+  }
+  if (shipContext.lastHealthCheck) {
+    lines.push(`Last Health Check: ${shipContext.lastHealthCheck}`)
+  }
+  if (typeof shipContext.crewCount === "number") {
+    lines.push(`Bridge Crew Count: ${shipContext.crewCount}`)
+  }
+
+  return lines.length > 0 ? lines.join("\n") : "No ship context provided."
+}
+
+function sanitizeQuartermasterShipContext(value: unknown): QuartermasterShipContext | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined
+  }
+
+  const record = value as Record<string, unknown>
+  const crewCountValue = record.crewCount
+  const crewCount = typeof crewCountValue === "number" && Number.isFinite(crewCountValue)
+    ? Math.trunc(crewCountValue)
+    : undefined
+
+  return {
+    shipDeploymentId: typeof record.shipDeploymentId === "string" ? record.shipDeploymentId : undefined,
+    shipName: typeof record.shipName === "string" ? record.shipName : undefined,
+    status: typeof record.status === "string" ? record.status : undefined,
+    nodeId: typeof record.nodeId === "string" ? record.nodeId : undefined,
+    nodeType: typeof record.nodeType === "string" ? record.nodeType : undefined,
+    deploymentProfile: typeof record.deploymentProfile === "string" ? record.deploymentProfile : undefined,
+    healthStatus:
+      typeof record.healthStatus === "string" || record.healthStatus === null
+        ? (record.healthStatus as string | null)
+        : undefined,
+    lastHealthCheck:
+      typeof record.lastHealthCheck === "string" || record.lastHealthCheck === null
+        ? (record.lastHealthCheck as string | null)
+        : undefined,
+    crewCount,
+  }
+}
+
+function buildQuartermasterRuntimePrompt(args: {
+  userPrompt: string
+  quartermaster: QuartermasterPromptMetadata
+  shipContext?: QuartermasterShipContext
+}): string {
+  const callsign = typeof args.quartermaster.callsign === "string" && args.quartermaster.callsign.trim()
+    ? args.quartermaster.callsign
+    : "QTM-LGR"
+  const shipContextSummary = summarizeQuartermasterShipContext(args.shipContext)
+
+  return [
+    `You are ${callsign}, Quartermaster for this ship inside the OrchWiz control surface.`,
+    "Scope: setup guidance, maintenance planning, readiness checks, and diagnostics triage.",
+    "Constraint: treat all actions as read-only diagnostics/planning. Do not assume destructive execution.",
+    "Response format:",
+    "1) Situation Summary",
+    "2) Setup/Maintenance Actions (read-only-first sequence)",
+    "3) Risks and Guardrails",
+    "4) Next Operator Action",
+    "",
+    "Ship context:",
+    shipContextSummary,
+    "",
+    "Operator request:",
+    args.userPrompt,
+  ].join("\n")
+}
+
 export function selectBridgeCameoKeys(
   stationKey: BridgeStationKey,
   userPrompt: string,
@@ -227,6 +338,19 @@ export function resolveSessionRuntimePrompt(args: {
   metadata?: Record<string, unknown>
 }): SessionRuntimePromptResolution {
   const metadata = asRecord(args.metadata)
+  const quartermaster = asRecord(metadata.quartermaster) as QuartermasterPromptMetadata
+  if (quartermaster.channel === "ship-quartermaster") {
+    const shipContext = sanitizeQuartermasterShipContext(metadata.shipContext)
+    return {
+      interactionContent: args.userPrompt,
+      runtimePrompt: buildQuartermasterRuntimePrompt({
+        userPrompt: args.userPrompt,
+        quartermaster,
+        shipContext,
+      }),
+    }
+  }
+
   const bridge = asRecord(metadata.bridge) as BridgePromptMetadata
   const station = sanitizeStation(bridge)
 
@@ -259,4 +383,3 @@ export function resolveSessionRuntimePrompt(args: {
     },
   }
 }
-

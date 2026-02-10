@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react"
 import * as THREE from "three"
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js"
 import type { BridgeStationKey } from "@/lib/bridge/stations"
 import {
   BRIDGE_WIDE_SHOT,
@@ -29,6 +30,7 @@ interface BridgeDeckScene3DProps {
   lastEventAt: number | null
   selectedStationKey: BridgeStationKey | null
   onStationSelect?: (stationKey: BridgeStationKey) => void
+  characterModelUrls?: Partial<Record<BridgeStationKey, string>>
 }
 
 interface StationVisual {
@@ -462,6 +464,7 @@ export function BridgeDeckScene3D({
   lastEventAt,
   selectedStationKey,
   onStationSelect,
+  characterModelUrls,
 }: BridgeDeckScene3DProps) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const onStationSelectRef = useRef(onStationSelect)
@@ -1120,6 +1123,7 @@ export function BridgeDeckScene3D({
       med: null as unknown as StationVisual,
       cou: null as unknown as StationVisual,
     }
+    const placeholderGroupsByKey: Partial<Record<BridgeStationKey, THREE.Group>> = {}
 
     const stationColorByKey: Record<BridgeStationKey, THREE.Color> = {
       xo: new THREE.Color(STATION_ACCENT_COLORS.xo),
@@ -1179,6 +1183,7 @@ export function BridgeDeckScene3D({
       placeholderGroup.rotation.y = anchor.rotationY
       placeholderGroup.userData.stationKey = stationKey
       roomGroup.add(placeholderGroup)
+      placeholderGroupsByKey[stationKey] = placeholderGroup
 
       const pedestal = makeOutlinedMesh(
         trackGeometry(new THREE.CylinderGeometry(0.72, 0.94, 0.54, 16)),
@@ -1304,6 +1309,40 @@ export function BridgeDeckScene3D({
         screenWidth: screen.width,
         screenHeight: screen.height,
         screenPlane,
+      }
+    }
+
+    let loadCancelled = false
+    const urls = characterModelUrls
+    if (urls && Object.keys(urls).length > 0) {
+      const loader = new GLTFLoader()
+      for (const stationKey of STATION_ORDER) {
+        const url = urls[stationKey]
+        if (!url || typeof url !== "string") continue
+        const group = placeholderGroupsByKey[stationKey]
+        if (!group) continue
+        loader.load(
+          url,
+          (gltf) => {
+            if (loadCancelled) return
+            const model = gltf.scene
+            group.add(model)
+            const box = new THREE.Box3().setFromObject(model)
+            const size = box.getSize(new THREE.Vector3())
+            const maxDim = Math.max(size.x, size.y, size.z, 0.001)
+            const scale = 1.2 / maxDim
+            model.scale.setScalar(scale)
+            model.position.y = 0.78
+            const holoBody = group.children[2]
+            if (holoBody && "visible" in holoBody) {
+              ;(holoBody as THREE.Object3D).visible = false
+            }
+          },
+          undefined,
+          (err) => {
+            if (!loadCancelled) console.error("Bridge character GLB load failed:", stationKey, err)
+          },
+        )
       }
     }
 
@@ -1602,6 +1641,7 @@ export function BridgeDeckScene3D({
     renderFrame()
 
     return () => {
+      loadCancelled = true
       window.cancelAnimationFrame(animationFrame)
       resizeObserver.disconnect()
 
@@ -1625,7 +1665,7 @@ export function BridgeDeckScene3D({
         container.removeChild(renderer.domElement)
       }
     }
-  }, [isDark, prefersReducedMotion])
+  }, [isDark, prefersReducedMotion, characterModelUrls])
 
   return (
     <div ref={containerRef} className="absolute inset-0" aria-hidden>

@@ -22,6 +22,7 @@ test("runtime falls back locally when no provider configured", async () => {
   const restoreOpenClaw = withEnv("OPENCLAW_GATEWAY_URL", undefined)
   const restoreOpenAi = withEnv("OPENAI_API_KEY", undefined)
   const restoreFallbackFlag = withEnv("ENABLE_OPENAI_RUNTIME_FALLBACK", "false")
+  const restoreDefaultProfile = withEnv("RUNTIME_PROFILE_DEFAULT", undefined)
 
   try {
     const result = await runSessionRuntime({
@@ -36,5 +37,34 @@ test("runtime falls back locally when no provider configured", async () => {
     restoreOpenClaw()
     restoreOpenAi()
     restoreFallbackFlag()
+    restoreDefaultProfile()
+  }
+})
+
+test("quartermaster profile can be overridden to local fallback-only chain", async () => {
+  const restoreOpenClaw = withEnv("OPENCLAW_GATEWAY_URL", undefined)
+  const restoreOpenAi = withEnv("OPENAI_API_KEY", undefined)
+  const restoreFallbackFlag = withEnv("ENABLE_OPENAI_RUNTIME_FALLBACK", "false")
+  const restoreQuartermasterProfile = withEnv("RUNTIME_PROFILE_QUARTERMASTER", "local-fallback")
+
+  try {
+    const result = await runSessionRuntime({
+      sessionId: "session-qtm-1",
+      prompt: "Summarize setup risks.",
+      metadata: {
+        runtime: {
+          profile: "quartermaster",
+        },
+      },
+    })
+
+    assert.equal(result.provider, "local-fallback")
+    assert.equal(result.fallbackUsed, true)
+    assert.match(result.output, /Runtime fallback active/)
+  } finally {
+    restoreOpenClaw()
+    restoreOpenAi()
+    restoreFallbackFlag()
+    restoreQuartermasterProfile()
   }
 })

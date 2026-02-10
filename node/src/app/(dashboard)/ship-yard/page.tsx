@@ -29,6 +29,7 @@ import {
 } from "@/lib/shipyard/bridge-crew"
 import { useShipSelection } from "@/lib/shipyard/useShipSelection"
 import { EmptyState, InlineNotice, PageLayout, SurfaceCard } from "@/components/dashboard/PageLayout"
+import { ShipQuartermasterPanel } from "@/components/quartermaster/ShipQuartermasterPanel"
 
 type InfrastructureKind = InfrastructureConfig["kind"]
 
@@ -977,6 +978,12 @@ export default function ShipYardPage() {
                 </p>
               )}
             </div>
+
+            <ShipQuartermasterPanel
+              shipDeploymentId={selectedShipDeploymentId}
+              shipName={selectedShip?.name || undefined}
+              className="mb-4"
+            />
 
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-50">Bridge Crew Editor</h2>

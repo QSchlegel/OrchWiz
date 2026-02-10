@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma"
 import { runSessionRuntime } from "@/lib/runtime"
 import { publishRealtimeEvent } from "@/lib/realtime/events"
 import { resolveSessionRuntimePrompt } from "@/lib/runtime/bridge-prompt"
+import type { RuntimeResult } from "@/lib/types/runtime"
 import {
   drainBridgeMirrorJobsSafely,
   enqueueSessionToThreadMirrorJob,
@@ -23,6 +24,7 @@ import {
   signMessagePayload,
   WalletEnclaveError,
 } from "@/lib/wallet-enclave/client"
+import { RuntimeProviderError } from "@/lib/runtime/errors"
 
 function asRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object") {
@@ -155,11 +157,24 @@ export async function executeSessionPrompt(args: ExecuteSessionPromptArgs): Prom
     })
   }
 
-  const runtimeResult = await runSessionRuntime({
-    sessionId: args.sessionId,
-    prompt: promptResolution.runtimePrompt,
-    metadata: metadataRecord,
-  })
+  let runtimeResult: RuntimeResult
+  try {
+    runtimeResult = await runSessionRuntime({
+      sessionId: args.sessionId,
+      prompt: promptResolution.runtimePrompt,
+      metadata: metadataRecord,
+    })
+  } catch (error) {
+    if (error instanceof RuntimeProviderError) {
+      throw new SessionPromptError(error.message, error.status, {
+        code: error.code,
+        provider: error.provider,
+        recoverable: error.recoverable,
+        ...(error.details ? { details: error.details } : {}),
+      })
+    }
+    throw error
+  }
 
   const bridgeMetadata = asRecord(metadataAsRecord.bridge)
   const isBridgeAgentChannel = bridgeMetadata.channel === "bridge-agent"
