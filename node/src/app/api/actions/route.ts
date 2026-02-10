@@ -58,9 +58,13 @@ export async function GET(request: NextRequest) {
     const forwardedEvents = await prisma.forwardingEvent.findMany({
       where: {
         eventType: "action",
+        sourceNode: {
+          ownerUserId: session.user.id,
+        },
         ...(sourceNodeId
           ? {
               sourceNode: {
+                ownerUserId: session.user.id,
                 nodeId: sourceNodeId,
               },
             }

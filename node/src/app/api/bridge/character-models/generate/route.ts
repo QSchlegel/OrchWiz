@@ -4,6 +4,7 @@ import { headers } from "next/headers"
 import { prisma } from "@/lib/prisma"
 import type { BridgeCrewRole } from "@prisma/client"
 import { isBridgeCrewRole } from "@/lib/shipyard/bridge-crew"
+import { publishNotificationUpdated } from "@/lib/realtime/notifications"
 import {
   createTextTo3DTask,
   getPromptForRole,
@@ -78,6 +79,12 @@ export async function POST(request: NextRequest) {
         modelUrl,
         meshyTaskId: taskId,
       },
+    })
+
+    publishNotificationUpdated({
+      userId: session.user.id,
+      channel: "bridge",
+      entityId: role,
     })
 
     return NextResponse.json({ role, modelUrl })

@@ -1,10 +1,13 @@
 import { NextRequest, NextResponse } from "next/server"
-import { auth } from "@/lib/auth"
 import { prisma } from "@/lib/prisma"
-import { headers } from "next/headers"
 import { executeCommandWithPolicy } from "@/lib/execution/command-executor"
 import { publishRealtimeEvent } from "@/lib/realtime/events"
 import { recordCommandExecutionSignal } from "@/lib/agentsync/signals"
+import {
+  AccessControlError,
+  assertCanReadOwnedResource,
+  requireAccessActor,
+} from "@/lib/security/access-control"
 
 export const dynamic = 'force-dynamic'
 
@@ -13,10 +16,7 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const session = await auth.api.getSession({ headers: await headers() })
-    if (!session) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-    }
+    const actor = await requireAccessActor()
 
     const { id } = await params
     const body = await request.json()
@@ -32,15 +32,36 @@ export async function POST(
       return NextResponse.json({ error: "Command not found" }, { status: 404 })
     }
 
+    assertCanReadOwnedResource({
+      actor,
+      ownerUserId: command.ownerUserId,
+      isShared: command.isShared,
+      allowSharedRead: true,
+      notFoundMessage: "Command not found",
+    })
+
     let effectiveSubagentId: string | null = null
     if (requestedSubagentId) {
       const subagent = await prisma.subagent.findUnique({
         where: { id: requestedSubagentId },
-        select: { id: true },
+        select: {
+          id: true,
+          ownerUserId: true,
+          isShared: true,
+        },
       })
       if (!subagent) {
         return NextResponse.json({ error: "subagentId does not exist" }, { status: 400 })
       }
+
+      assertCanReadOwnedResource({
+        actor,
+        ownerUserId: subagent.ownerUserId,
+        isShared: subagent.isShared,
+        allowSharedRead: true,
+        notFoundMessage: "subagentId does not exist",
+      })
+
       effectiveSubagentId = subagent.id
     }
 
@@ -50,7 +71,7 @@ export async function POST(
         commandId: id,
         sessionId,
         subagentId: effectiveSubagentId,
-        userId: session.user.id,
+        userId: actor.userId,
         status: "running",
         startedAt,
       },
@@ -77,6 +98,7 @@ export async function POST(
 
     publishRealtimeEvent({
       type: "command.executed",
+      userId: actor.userId,
       payload: {
         executionId: updatedExecution.id,
         commandId: id,
@@ -88,7 +110,7 @@ export async function POST(
 
     if (effectiveSubagentId) {
       void recordCommandExecutionSignal({
-        userId: session.user.id,
+        userId: actor.userId,
         subagentId: effectiveSubagentId,
         sourceId: updatedExecution.id,
         status: result.status,
@@ -110,6 +132,10 @@ export async function POST(
       metadata: result.metadata,
     })
   } catch (error) {
+    if (error instanceof AccessControlError) {
+      return NextResponse.json({ error: error.message }, { status: error.status })
+    }
+
     console.error("Error executing command:", error)
     return NextResponse.json(
       { error: "Internal server error" },

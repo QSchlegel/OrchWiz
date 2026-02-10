@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma"
 import { headers } from "next/headers"
 import { mapForwardedSession } from "@/lib/forwarding/projections"
 import { publishRealtimeEvent } from "@/lib/realtime/events"
+import { publishNotificationUpdated } from "@/lib/realtime/notifications"
 import { buildSessionWhereFilter, hasBridgeAgentChannel } from "@/lib/sessions/filters"
 
 export const dynamic = 'force-dynamic'
@@ -51,9 +52,13 @@ export async function GET(request: NextRequest) {
     const forwardedEvents = await prisma.forwardingEvent.findMany({
       where: {
         eventType: "session",
+        sourceNode: {
+          ownerUserId: session.user.id,
+        },
         ...(sourceNodeId
           ? {
               sourceNode: {
+                ownerUserId: session.user.id,
                 nodeId: sourceNodeId,
               },
             }
@@ -129,11 +134,27 @@ export async function POST(request: NextRequest) {
 
     publishRealtimeEvent({
       type: "session.prompted",
+      userId: session.user.id,
       payload: {
         sessionId: newSession.id,
         status: newSession.status,
       },
     })
+
+    const bridgeChannel =
+      metadata && typeof metadata === "object" && !Array.isArray(metadata)
+        ? typeof (metadata as { bridge?: { channel?: unknown } }).bridge?.channel === "string"
+          ? (metadata as { bridge?: { channel?: string } }).bridge?.channel
+          : null
+        : null
+
+    if (bridgeChannel === "bridge-agent") {
+      publishNotificationUpdated({
+        userId: session.user.id,
+        channel: "bridge",
+        entityId: newSession.id,
+      })
+    }
 
     return NextResponse.json(newSession, { status: 201 })
   } catch (error) {

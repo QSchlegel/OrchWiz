@@ -688,6 +688,7 @@ async function executeAndPersistBridgeCallRound(args: DispatchBridgeCallRoundArg
 
   publishRealtimeEvent({
     type: "bridge-call.round.updated",
+    userId: args.userId,
     payload: {
       roundId: view.id,
       userId: args.userId,

@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { prisma } from "@/lib/prisma"
 import { createPRComment } from "@/lib/github"
 import { publishRealtimeEvent } from "@/lib/realtime/events"
+import { publishNotificationUpdatedMany } from "@/lib/realtime/notifications"
 import { Prisma } from "@prisma/client"
 
 export const dynamic = 'force-dynamic'
@@ -93,6 +94,23 @@ async function persistGuidanceWebhookRevision(summary: string) {
   })
 }
 
+async function notifyGithubPrsUsers(entityId: string) {
+  const accounts = await prisma.account.findMany({
+    where: {
+      providerId: "github",
+    },
+    select: {
+      userId: true,
+    },
+  })
+
+  publishNotificationUpdatedMany({
+    userIds: accounts.map((account) => account.userId),
+    channel: "github-prs",
+    entityId,
+  })
+}
+
 export async function POST(request: NextRequest) {
   const rawBody = await request.text()
   const eventType = request.headers.get("x-github-event") || "unknown"
@@ -180,6 +198,8 @@ export async function POST(request: NextRequest) {
         repository: payload?.repository?.full_name || null,
       },
     })
+
+    await notifyGithubPrsUsers(webhookEvent.id)
 
     return NextResponse.json(responseBody)
   } catch (error) {

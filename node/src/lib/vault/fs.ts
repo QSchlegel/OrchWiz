@@ -1,5 +1,5 @@
 import { promises as fs } from "node:fs"
-import { dirname } from "node:path"
+import { dirname, posix } from "node:path"
 import type { PhysicalVaultId, VaultTreeNode } from "./types"
 import { resolvePathWithinRoot, sanitizeRelativeVaultPath } from "./path"
 
@@ -11,6 +11,21 @@ function shouldSkipDirectory(name: string): boolean {
 
 function shouldSkipFile(name: string): boolean {
   return name.startsWith(".")
+}
+
+async function pruneEmptyDirectories(vaultRootPath: string, relativeFilePath: string): Promise<void> {
+  let currentDir = posix.dirname(relativeFilePath)
+
+  while (currentDir && currentDir !== ".") {
+    const absoluteDir = resolvePathWithinRoot(vaultRootPath, currentDir)
+    const entries = await fs.readdir(absoluteDir).catch(() => null)
+    if (!entries || entries.length > 0) {
+      break
+    }
+
+    await fs.rm(absoluteDir, { recursive: false, force: true }).catch(() => null)
+    currentDir = posix.dirname(currentDir)
+  }
 }
 
 export async function directoryExists(absolutePath: string): Promise<boolean> {
@@ -196,4 +211,67 @@ export async function writeMarkdownFile(
     size: stats.size,
     mtime: stats.mtime,
   }
+}
+
+export async function moveMarkdownFile(
+  vaultRootPath: string,
+  fromPathInput: string,
+  toPathInput: string,
+): Promise<{ size: number; mtime: Date }> {
+  const fromPath = sanitizeRelativeVaultPath(fromPathInput, { requireMarkdown: true })
+  const toPath = sanitizeRelativeVaultPath(toPathInput, { requireMarkdown: true })
+
+  const fromAbsolutePath = resolvePathWithinRoot(vaultRootPath, fromPath)
+  const toAbsolutePath = resolvePathWithinRoot(vaultRootPath, toPath)
+
+  const fromStats = await fs.stat(fromAbsolutePath)
+  if (!fromStats.isFile()) {
+    throw new Error("Source note does not exist.")
+  }
+
+  if (fromPath === toPath) {
+    return {
+      size: fromStats.size,
+      mtime: fromStats.mtime,
+    }
+  }
+
+  const targetExists = await fs.stat(toAbsolutePath).then(() => true).catch(() => false)
+  if (targetExists) {
+    throw new Error("Target note already exists.")
+  }
+
+  await fs.mkdir(dirname(toAbsolutePath), { recursive: true })
+
+  try {
+    await fs.rename(fromAbsolutePath, toAbsolutePath)
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException)?.code
+    if (code !== "EXDEV") {
+      throw error
+    }
+    await fs.copyFile(fromAbsolutePath, toAbsolutePath)
+    await fs.unlink(fromAbsolutePath)
+  }
+
+  await pruneEmptyDirectories(vaultRootPath, fromPath)
+
+  const nextStats = await fs.stat(toAbsolutePath)
+  return {
+    size: nextStats.size,
+    mtime: nextStats.mtime,
+  }
+}
+
+export async function deleteMarkdownFile(vaultRootPath: string, relativePathInput: string): Promise<void> {
+  const relativePath = sanitizeRelativeVaultPath(relativePathInput, { requireMarkdown: true })
+  const absolutePath = resolvePathWithinRoot(vaultRootPath, relativePath)
+
+  const stats = await fs.stat(absolutePath)
+  if (!stats.isFile()) {
+    throw new Error("Note does not exist.")
+  }
+
+  await fs.unlink(absolutePath)
+  await pruneEmptyDirectories(vaultRootPath, relativePath)
 }

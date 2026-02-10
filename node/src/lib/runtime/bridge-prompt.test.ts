@@ -79,6 +79,20 @@ test("resolveSessionRuntimePrompt builds quartermaster runtime prompt for ship-q
       quartermaster: {
         channel: "ship-quartermaster",
         callsign: "QTM-LGR",
+        knowledge: {
+          query: "maintenance readiness",
+          mode: "hybrid",
+          fallbackUsed: false,
+          sources: [
+            {
+              id: "S1",
+              path: "ship/kb/ships/ship-123/checklists/startup.md",
+              title: "Startup Checklist",
+              excerpt: "Run preflight diagnostics before launch.",
+              scopeType: "ship",
+            },
+          ],
+        },
       },
       shipContext: {
         shipDeploymentId: "ship-123",
@@ -97,6 +111,9 @@ test("resolveSessionRuntimePrompt builds quartermaster runtime prompt for ship-q
   assert.equal(result.bridgeResponseMetadata, undefined)
   assert.match(result.runtimePrompt, /You are QTM-LGR, Quartermaster/)
   assert.match(result.runtimePrompt, /Ship context:/)
+  assert.match(result.runtimePrompt, /Knowledge evidence:/)
+  assert.match(result.runtimePrompt, /\[S1\]/)
   assert.ok(result.runtimePrompt.includes("Setup/Maintenance Actions"))
+  assert.ok(result.runtimePrompt.includes("Sources"))
   assert.match(result.runtimePrompt, /Operator request:/)
 })

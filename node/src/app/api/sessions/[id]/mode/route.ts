@@ -39,6 +39,7 @@ export async function POST(
 
     publishRealtimeEvent({
       type: "session.prompted",
+      userId: session.user.id,
       payload: {
         sessionId: updatedSession.id,
         mode: updatedSession.mode,

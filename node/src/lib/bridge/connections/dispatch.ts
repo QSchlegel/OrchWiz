@@ -146,6 +146,14 @@ export async function enqueueBridgeDispatchDeliveries(args: {
 
   const payload = args.payload || {}
   const metadata = args.metadata || {}
+  const deploymentOwner = await prisma.agentDeployment.findUnique({
+    where: {
+      id: args.deploymentId,
+    },
+    select: {
+      userId: true,
+    },
+  })
 
   const created = await prisma.$transaction(async (tx) => {
     const rows: BridgeDispatchDelivery[] = []
@@ -190,6 +198,11 @@ export async function enqueueBridgeDispatchDeliveries(args: {
 
   publishRealtimeEvent({
     type: "bridge.comms.updated",
+    ...(deploymentOwner?.userId
+      ? {
+          userId: deploymentOwner.userId,
+        }
+      : {}),
     payload: {
       kind: "dispatch.enqueued",
       deploymentId: args.deploymentId,
@@ -330,6 +343,11 @@ export async function drainBridgeDispatchQueue(options: {
     },
     include: {
       connection: true,
+      deployment: {
+        select: {
+          userId: true,
+        },
+      },
     },
     orderBy: {
       createdAt: "asc",
@@ -378,6 +396,7 @@ export async function drainBridgeDispatchQueue(options: {
 
       publishRealtimeEvent({
         type: "bridge.comms.updated",
+        userId: job.deployment.userId,
         payload: {
           kind: "dispatch.completed",
           deploymentId: job.deploymentId,
@@ -421,6 +440,7 @@ export async function drainBridgeDispatchQueue(options: {
 
         publishRealtimeEvent({
           type: "bridge.comms.updated",
+          userId: job.deployment.userId,
           payload: {
             kind: "dispatch.failed",
             deploymentId: job.deploymentId,

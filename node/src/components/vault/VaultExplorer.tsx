@@ -1,12 +1,15 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
-import { Loader2, RefreshCw, Search } from "lucide-react"
+import { ArrowRightLeft, FilePlus2, Loader2, PenSquare, RefreshCw, Save, Search, Trash2 } from "lucide-react"
 import { InlineNotice, SurfaceCard } from "@/components/dashboard/PageLayout"
 import type {
+  VaultDeleteMode,
+  VaultFileReadMode,
   VaultFileResponse,
   VaultId,
+  VaultRagMode,
   VaultSearchResponse,
   VaultSearchResult,
   VaultSummary,
@@ -18,8 +21,10 @@ import { VaultNotePreview } from "./VaultNotePreview"
 import { VaultLinksPanel } from "./VaultLinksPanel"
 
 const VAULT_IDS: VaultId[] = ["orchwiz", "ship", "agent-public", "agent-private", "joined"]
+const PHYSICAL_VAULT_IDS: VaultId[] = ["orchwiz", "ship", "agent-public", "agent-private"]
 
 type MobileSection = "tree" | "note" | "links"
+type SaveState = "idle" | "saving" | "saved" | "error"
 
 function isVaultId(value: string | null): value is VaultId {
   return Boolean(value && VAULT_IDS.includes(value as VaultId))
@@ -42,6 +47,69 @@ function flattenFilePaths(nodes: VaultTreeNode[]): string[] {
   return paths
 }
 
+function normalizePathInput(raw: string): string | null {
+  const trimmed = raw.trim().replaceAll("\\", "/")
+  if (!trimmed) return null
+  if (trimmed.startsWith("/")) return null
+
+  const noLeading = trimmed.replace(/^\.\/+/, "")
+  const noTrailing = noLeading.replace(/\/+$/, "")
+  const parts = noTrailing.split("/")
+  if (parts.some((part) => !part || part === "." || part === "..")) {
+    return null
+  }
+
+  let normalized = parts.join("/")
+  if (!normalized.toLowerCase().endsWith(".md")) {
+    normalized = `${normalized}.md`
+  }
+
+  return normalized
+}
+
+function ensureJoinedNamespace(path: string): boolean {
+  const namespace = path.split("/")[0]
+  return Boolean(namespace && PHYSICAL_VAULT_IDS.includes(namespace as VaultId))
+}
+
+function inferCreatePathFromFolder(folderPath: string, selectedVault: VaultId): string {
+  if (!folderPath) {
+    return selectedVault === "joined" ? "orchwiz/Untitled.md" : "Untitled.md"
+  }
+  return `${folderPath}/Untitled.md`
+}
+
+function inferCreatePathFromUnresolved(target: string, selectedVault: VaultId, selectedNotePath: string | null): string {
+  const normalizedTarget = target.trim().replaceAll("\\", "/").split("#")[0].split("?")[0]
+
+  if (!normalizedTarget) {
+    return selectedVault === "joined" ? "orchwiz/Untitled.md" : "Untitled.md"
+  }
+
+  if (selectedVault === "joined") {
+    if (ensureJoinedNamespace(normalizedTarget)) {
+      return normalizedTarget.toLowerCase().endsWith(".md") ? normalizedTarget : `${normalizedTarget}.md`
+    }
+
+    const namespace = selectedNotePath?.split("/")[0]
+    if (namespace && ensureJoinedNamespace(`${namespace}/x.md`)) {
+      const withNamespace = `${namespace}/${normalizedTarget}`
+      return withNamespace.toLowerCase().endsWith(".md") ? withNamespace : `${withNamespace}.md`
+    }
+
+    return `orchwiz/${normalizedTarget.toLowerCase().endsWith(".md") ? normalizedTarget : `${normalizedTarget}.md`}`
+  }
+
+  const sourceDir = selectedNotePath?.includes("/") ? selectedNotePath.split("/").slice(0, -1).join("/") : ""
+  if (normalizedTarget.startsWith("/")) {
+    const absolute = normalizedTarget.slice(1)
+    return absolute.toLowerCase().endsWith(".md") ? absolute : `${absolute}.md`
+  }
+
+  const composed = sourceDir ? `${sourceDir}/${normalizedTarget}` : normalizedTarget
+  return composed.toLowerCase().endsWith(".md") ? composed : `${composed}.md`
+}
+
 export function VaultExplorer() {
   const searchParams = useSearchParams()
   const queryString = searchParams.toString()
@@ -59,19 +127,55 @@ export function VaultExplorer() {
   const [treeExists, setTreeExists] = useState(true)
   const [file, setFile] = useState<VaultFileResponse | null>(null)
   const [searchQuery, setSearchQuery] = useState("")
+  const [searchMode, setSearchMode] = useState<VaultRagMode>("hybrid")
   const [searchResults, setSearchResults] = useState<VaultSearchResult[]>([])
   const [mobileSection, setMobileSection] = useState<MobileSection>("tree")
+
+  const [isEditing, setIsEditing] = useState(false)
+  const [draftContent, setDraftContent] = useState("")
+  const [draftDirty, setDraftDirty] = useState(false)
+  const [saveState, setSaveState] = useState<SaveState>("idle")
 
   const [isLoadingVaults, setIsLoadingVaults] = useState(true)
   const [isLoadingTree, setIsLoadingTree] = useState(false)
   const [isLoadingFile, setIsLoadingFile] = useState(false)
   const [isSearching, setIsSearching] = useState(false)
+  const [isLoadingFullForEdit, setIsLoadingFullForEdit] = useState(false)
   const [message, setMessage] = useState<{ type: "error" | "success" | "info"; text: string } | null>(null)
+
+  const [showCreateForm, setShowCreateForm] = useState(false)
+  const [createPathInput, setCreatePathInput] = useState("")
+  const [createContentInput, setCreateContentInput] = useState("")
+
+  const [showRenameForm, setShowRenameForm] = useState(false)
+  const [renameSourcePath, setRenameSourcePath] = useState<string | null>(null)
+  const [renameTargetPath, setRenameTargetPath] = useState("")
+  const latestDraftRef = useRef(draftContent)
 
   const selectedVaultSummary = useMemo(
     () => vaults.find((vault) => vault.id === selectedVault) || null,
     [vaults, selectedVault],
   )
+
+  useEffect(() => {
+    latestDraftRef.current = draftContent
+  }, [draftContent])
+
+  const fetchVaultFile = useCallback(async (vaultId: VaultId, notePath: string, mode: VaultFileReadMode) => {
+    const params = new URLSearchParams({
+      vault: vaultId,
+      path: notePath,
+      mode,
+    })
+
+    const response = await fetch(`/api/vaults/file?${params.toString()}`)
+    const payload = await response.json().catch(() => ({}))
+    if (!response.ok) {
+      throw new Error(payload?.error || `Failed to load note (${response.status}).`)
+    }
+
+    return payload as VaultFileResponse
+  }, [])
 
   const loadVaultSummaries = useCallback(async () => {
     setIsLoadingVaults(true)
@@ -120,6 +224,7 @@ export function VaultExplorer() {
         setSelectedNotePath(nextPath)
         if (!nextPath) {
           setFile(null)
+          setIsEditing(false)
         }
       } catch (error) {
         console.error("Error loading vault tree:", error)
@@ -128,6 +233,7 @@ export function VaultExplorer() {
         setTreeExists(false)
         setSelectedNotePath(null)
         setFile(null)
+        setIsEditing(false)
       } finally {
         setIsLoadingTree(false)
       }
@@ -135,30 +241,22 @@ export function VaultExplorer() {
     [],
   )
 
-  const loadFile = useCallback(async (vaultId: VaultId, notePath: string) => {
-    setIsLoadingFile(true)
-    try {
-      const params = new URLSearchParams({
-        vault: vaultId,
-        path: notePath,
-      })
-      const response = await fetch(`/api/vaults/file?${params.toString()}`)
-      const payload = await response.json()
-      if (!response.ok) {
+  const loadPreviewFile = useCallback(
+    async (vaultId: VaultId, notePath: string) => {
+      setIsLoadingFile(true)
+      try {
+        const payload = await fetchVaultFile(vaultId, notePath, "preview")
+        setFile(payload)
+      } catch (error) {
+        console.error("Error loading vault note:", error)
+        setMessage({ type: "error", text: (error as Error).message || "Failed to load note." })
         setFile(null)
-        setMessage({ type: "error", text: payload?.error || "Failed to load note." })
-        return
+      } finally {
+        setIsLoadingFile(false)
       }
-
-      setFile(payload as VaultFileResponse)
-    } catch (error) {
-      console.error("Error loading vault note:", error)
-      setMessage({ type: "error", text: "Failed to load note." })
-      setFile(null)
-    } finally {
-      setIsLoadingFile(false)
-    }
-  }, [])
+    },
+    [fetchVaultFile],
+  )
 
   useEffect(() => {
     loadVaultSummaries()
@@ -171,8 +269,11 @@ export function VaultExplorer() {
 
   useEffect(() => {
     if (!selectedNotePath) return
-    loadFile(selectedVault, selectedNotePath)
-  }, [loadFile, selectedVault, selectedNotePath])
+    setIsEditing(false)
+    setDraftDirty(false)
+    setSaveState("idle")
+    loadPreviewFile(selectedVault, selectedNotePath)
+  }, [loadPreviewFile, selectedVault, selectedNotePath])
 
   useEffect(() => {
     const params = new URLSearchParams(queryString)
@@ -198,9 +299,9 @@ export function VaultExplorer() {
     const normalizedQueryVault = isVaultId(queryVault) ? queryVault : "orchwiz"
 
     if (
-      queryTab === "explorer" &&
-      normalizedQueryVault === selectedVault &&
-      (queryNote || null) === selectedNotePath
+      queryTab === "explorer"
+      && normalizedQueryVault === selectedVault
+      && (queryNote || null) === selectedNotePath
     ) {
       return
     }
@@ -227,6 +328,7 @@ export function VaultExplorer() {
       const params = new URLSearchParams({
         vault: selectedVault,
         q: searchQuery,
+        mode: searchMode,
       })
 
       const response = await fetch(`/api/vaults/search?${params.toString()}`)
@@ -250,6 +352,288 @@ export function VaultExplorer() {
     }
   }
 
+  const saveCurrentDraft = useCallback(async (announce = false) => {
+    if (!isEditing || !selectedNotePath) return false
+
+    const path = selectedNotePath
+    const content = latestDraftRef.current
+    setSaveState("saving")
+
+    try {
+      const response = await fetch("/api/vaults/file", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          vault: selectedVault,
+          path,
+          content,
+        }),
+      })
+
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        setSaveState("error")
+        setMessage({ type: "error", text: payload?.error || "Failed to save note." })
+        return false
+      }
+
+      const unchangedSinceSaveStart = latestDraftRef.current === content
+      setDraftDirty(!unchangedSinceSaveStart)
+      setSaveState(unchangedSinceSaveStart ? "saved" : "idle")
+
+      if (announce) {
+        setMessage({ type: "success", text: "Note saved." })
+      }
+
+      if (unchangedSinceSaveStart) {
+        try {
+          const refreshed = await fetchVaultFile(selectedVault, path, "preview")
+          setFile(refreshed)
+        } catch {
+          setFile((previous) => {
+            if (!previous) return previous
+            return {
+              ...previous,
+              content,
+              truncated: false,
+              mtime: payload?.mtime || previous.mtime,
+              size: payload?.size || previous.size,
+            }
+          })
+        }
+      }
+
+      return true
+    } catch (error) {
+      console.error("Error saving note:", error)
+      setSaveState("error")
+      setMessage({ type: "error", text: "Failed to save note." })
+      return false
+    }
+  }, [fetchVaultFile, isEditing, selectedNotePath, selectedVault])
+
+  useEffect(() => {
+    if (!isEditing || !draftDirty) return
+
+    const timeout = window.setTimeout(() => {
+      void saveCurrentDraft(false)
+    }, 1200)
+
+    return () => window.clearTimeout(timeout)
+  }, [draftContent, draftDirty, isEditing, saveCurrentDraft])
+
+  useEffect(() => {
+    const handleSaveShortcut = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey)) return
+      if (event.key.toLowerCase() !== "s") return
+      if (!isEditing) return
+      event.preventDefault()
+      void saveCurrentDraft(true)
+    }
+
+    window.addEventListener("keydown", handleSaveShortcut)
+    return () => window.removeEventListener("keydown", handleSaveShortcut)
+  }, [isEditing, saveCurrentDraft])
+
+  const startEditing = async () => {
+    if (!selectedNotePath) return
+
+    setIsLoadingFullForEdit(true)
+    try {
+      const fullFile = await fetchVaultFile(selectedVault, selectedNotePath, "full")
+      setFile(fullFile)
+      setDraftContent(fullFile.content)
+      setDraftDirty(false)
+      setSaveState("saved")
+      setIsEditing(true)
+      setMobileSection("note")
+    } catch (error) {
+      console.error("Error loading full note for editing:", error)
+      setMessage({ type: "error", text: (error as Error).message || "Unable to open editor for this note." })
+    } finally {
+      setIsLoadingFullForEdit(false)
+    }
+  }
+
+  const stopEditing = () => {
+    if (draftDirty) {
+      const shouldDiscard = window.confirm("Discard unsaved changes?")
+      if (!shouldDiscard) {
+        return
+      }
+    }
+    setIsEditing(false)
+    setDraftDirty(false)
+    setSaveState("idle")
+  }
+
+  const handleSelectFile = (path: string) => {
+    if (isEditing && draftDirty && selectedNotePath !== path) {
+      const shouldLeave = window.confirm("You have unsaved changes. Continue and discard them?")
+      if (!shouldLeave) {
+        return
+      }
+    }
+
+    setSelectedNotePath(path)
+    setMobileSection("note")
+  }
+
+  const openCreateForm = (suggestedPath?: string) => {
+    setShowCreateForm(true)
+    setCreatePathInput(suggestedPath || (selectedVault === "joined" ? "orchwiz/Untitled.md" : "Untitled.md"))
+    setCreateContentInput("")
+    setMobileSection("tree")
+  }
+
+  const handleCreateNote = async () => {
+    const normalizedPath = normalizePathInput(createPathInput)
+    if (!normalizedPath) {
+      setMessage({ type: "error", text: "Provide a valid markdown path." })
+      return
+    }
+
+    if (selectedVault === "joined" && !ensureJoinedNamespace(normalizedPath)) {
+      setMessage({ type: "error", text: "Joined vault notes must start with a vault namespace (e.g. orchwiz/...)." })
+      return
+    }
+
+    try {
+      const response = await fetch("/api/vaults/file", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          vault: selectedVault,
+          path: normalizedPath,
+          content: createContentInput || "# New Note\n",
+        }),
+      })
+
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        setMessage({ type: "error", text: payload?.error || "Failed to create note." })
+        return
+      }
+
+      setShowCreateForm(false)
+      setCreatePathInput("")
+      setCreateContentInput("")
+      setSelectedNotePath(normalizedPath)
+      setMessage({ type: "success", text: "Note created." })
+      await loadTree(selectedVault, normalizedPath)
+      setMobileSection("note")
+    } catch (error) {
+      console.error("Error creating note:", error)
+      setMessage({ type: "error", text: "Failed to create note." })
+    }
+  }
+
+  const openRenameForm = (path: string) => {
+    setRenameSourcePath(path)
+    setRenameTargetPath(path)
+    setShowRenameForm(true)
+  }
+
+  const handleRenameMove = async () => {
+    if (!renameSourcePath) {
+      setMessage({ type: "error", text: "No note selected for rename." })
+      return
+    }
+
+    const normalizedTarget = normalizePathInput(renameTargetPath)
+    if (!normalizedTarget) {
+      setMessage({ type: "error", text: "Provide a valid destination path." })
+      return
+    }
+
+    if (selectedVault === "joined" && !ensureJoinedNamespace(normalizedTarget)) {
+      setMessage({ type: "error", text: "Joined vault moves must keep a namespace prefix." })
+      return
+    }
+
+    try {
+      const response = await fetch("/api/vaults/file", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          vault: selectedVault,
+          fromPath: renameSourcePath,
+          toPath: normalizedTarget,
+        }),
+      })
+
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        setMessage({ type: "error", text: payload?.error || "Failed to rename note." })
+        return
+      }
+
+      const movedTo = typeof payload?.toPath === "string" ? payload.toPath : normalizedTarget
+
+      if (selectedNotePath === renameSourcePath) {
+        setSelectedNotePath(movedTo)
+      }
+
+      setShowRenameForm(false)
+      setRenameSourcePath(null)
+      setRenameTargetPath("")
+      setMessage({ type: "success", text: "Note moved." })
+      await loadTree(selectedVault, movedTo)
+    } catch (error) {
+      console.error("Error renaming note:", error)
+      setMessage({ type: "error", text: "Failed to rename note." })
+    }
+  }
+
+  const handleDelete = async (path: string, mode: VaultDeleteMode = "soft") => {
+    const confirmed = window.confirm(
+      mode === "soft"
+        ? "Move this note to vault trash?"
+        : "Permanently delete this note? This cannot be undone.",
+    )
+    if (!confirmed) return
+
+    try {
+      const params = new URLSearchParams({
+        vault: selectedVault,
+        path,
+        mode,
+      })
+      const response = await fetch(`/api/vaults/file?${params.toString()}`, {
+        method: "DELETE",
+      })
+
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        setMessage({ type: "error", text: payload?.error || "Failed to delete note." })
+        return
+      }
+
+      if (selectedNotePath === path) {
+        setSelectedNotePath(null)
+        setIsEditing(false)
+        setDraftDirty(false)
+        setDraftContent("")
+        setFile(null)
+      }
+
+      setMessage({
+        type: "success",
+        text: mode === "soft" ? "Note moved to trash." : "Note permanently deleted.",
+      })
+      await loadTree(selectedVault, null)
+    } catch (error) {
+      console.error("Error deleting note:", error)
+      setMessage({ type: "error", text: "Failed to delete note." })
+    }
+  }
+
   const handleOpenResolvedLink = (vaultId: VaultId, path: string) => {
     if (!isVaultId(vaultId)) return
 
@@ -257,6 +641,21 @@ export function VaultExplorer() {
     setSelectedNotePath(path)
     setMobileSection("note")
   }
+
+  const handleCreateFromUnresolvedLink = (target: string) => {
+    const suggestedPath = inferCreatePathFromUnresolved(target, selectedVault, selectedNotePath)
+    openCreateForm(suggestedPath)
+  }
+
+  const saveStatusText = isEditing
+    ? saveState === "saving"
+      ? "Saving..."
+      : saveState === "error"
+        ? "Save failed"
+        : draftDirty
+          ? "Unsaved changes"
+          : "Saved"
+    : null
 
   const treePanel = (
     <SurfaceCard className="flex h-[68vh] flex-col gap-3 overflow-hidden">
@@ -275,13 +674,17 @@ export function VaultExplorer() {
             Refresh
           </button>
         </div>
+
         <select
           value={selectedVault}
           onChange={(event) => {
             const nextVault = event.target.value as VaultId
+            if (!isVaultId(nextVault)) return
             setSelectedVault(nextVault)
             setSelectedNotePath(null)
             setMobileSection("tree")
+            setIsEditing(false)
+            setDraftDirty(false)
           }}
           className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
         >
@@ -291,12 +694,59 @@ export function VaultExplorer() {
             </option>
           ))}
         </select>
+
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => openCreateForm()}
+            className="inline-flex items-center gap-1 rounded-lg bg-slate-900 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-black dark:bg-white dark:text-slate-900"
+          >
+            <FilePlus2 className="h-3.5 w-3.5" />
+            New Note
+          </button>
+        </div>
+
         {selectedVaultSummary?.isPrivate ? (
           <p className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1.5 text-xs text-emerald-800 dark:text-emerald-200">
             {selectedVaultSummary.encryptedLabel || "Private vault"}
           </p>
         ) : null}
       </div>
+
+      {showCreateForm ? (
+        <div className="space-y-2 rounded-lg border border-slate-200/80 bg-white/70 p-2.5 text-xs dark:border-white/10 dark:bg-white/[0.03]">
+          <p className="font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Create Note</p>
+          <input
+            type="text"
+            value={createPathInput}
+            onChange={(event) => setCreatePathInput(event.target.value)}
+            placeholder={selectedVault === "joined" ? "orchwiz/path/to/note.md" : "path/to/note.md"}
+            className="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm dark:border-white/15 dark:bg-white/[0.05]"
+          />
+          <textarea
+            value={createContentInput}
+            onChange={(event) => setCreateContentInput(event.target.value)}
+            placeholder="# New Note"
+            className="h-24 w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 font-mono text-xs dark:border-white/15 dark:bg-white/[0.05]"
+          />
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleCreateNote}
+              className="rounded-md bg-slate-900 px-2 py-1 text-xs font-medium text-white hover:bg-black dark:bg-white dark:text-slate-900"
+            >
+              Create
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowCreateForm(false)}
+              className="rounded-md border border-slate-300 px-2 py-1 text-xs text-slate-700 hover:bg-slate-50 dark:border-white/15 dark:text-slate-300 dark:hover:bg-white/[0.08]"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       <form
         className="flex items-center gap-2"
@@ -305,6 +755,14 @@ export function VaultExplorer() {
           runSearch()
         }}
       >
+        <select
+          value={searchMode}
+          onChange={(event) => setSearchMode(event.target.value === "lexical" ? "lexical" : "hybrid")}
+          className="rounded-lg border border-slate-300 bg-white px-2 py-2 text-xs text-slate-800 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
+        >
+          <option value="hybrid">Hybrid</option>
+          <option value="lexical">Lexical</option>
+        </select>
         <div className="relative flex-1">
           <Search className="pointer-events-none absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
           <input
@@ -328,15 +786,15 @@ export function VaultExplorer() {
         {isLoadingTree ? (
           <p className="px-2 py-2 text-sm text-slate-500 dark:text-slate-400">Loading tree...</p>
         ) : !treeExists ? (
-          <p className="px-2 py-2 text-sm text-slate-500 dark:text-slate-400">This vault path is unavailable.</p>
+          <p className="px-2 py-2 text-sm text-slate-500 dark:text-slate-400">This vault path is unavailable. Create your first note to bootstrap it.</p>
         ) : (
           <VaultTree
             nodes={tree}
             selectedPath={selectedNotePath}
-            onSelectFile={(path) => {
-              setSelectedNotePath(path)
-              setMobileSection("note")
-            }}
+            onSelectFile={handleSelectFile}
+            onRequestRenameFile={openRenameForm}
+            onRequestDeleteFile={(path) => void handleDelete(path, "soft")}
+            onRequestNewNoteInFolder={(folderPath) => openCreateForm(inferCreatePathFromFolder(folderPath, selectedVault))}
           />
         )}
       </div>
@@ -358,9 +816,28 @@ export function VaultExplorer() {
                 }}
                 className="w-full rounded-md border border-slate-200/80 bg-white/80 px-2.5 py-2 text-left text-xs hover:border-cyan-500/40 hover:bg-cyan-50/70 dark:border-white/10 dark:bg-white/[0.03] dark:hover:bg-cyan-500/10"
               >
-                <p className="truncate font-medium text-slate-800 dark:text-slate-100">{result.path}</p>
+                <div className="flex items-center justify-between gap-2">
+                  <p className="truncate font-medium text-slate-800 dark:text-slate-100">{result.path}</p>
+                  <div className="flex items-center gap-1">
+                    {typeof result.score === "number" ? (
+                      <span className="rounded border border-slate-300 px-1.5 py-0.5 text-[10px] text-slate-500 dark:border-white/15 dark:text-slate-400">
+                        {result.score.toFixed(2)}
+                      </span>
+                    ) : null}
+                    {result.scopeType ? (
+                      <span className="rounded border border-slate-300 px-1.5 py-0.5 text-[10px] text-slate-500 dark:border-white/15 dark:text-slate-400">
+                        {result.scopeType}
+                      </span>
+                    ) : null}
+                  </div>
+                </div>
                 {result.excerpt ? (
                   <p className="mt-1 line-clamp-2 text-[11px] text-slate-600 dark:text-slate-300">{result.excerpt}</p>
+                ) : null}
+                {Array.isArray(result.citations) && result.citations.length > 0 ? (
+                  <p className="mt-1 text-[10px] uppercase tracking-wide text-cyan-700 dark:text-cyan-300">
+                    citations: {result.citations.map((citation) => citation.id).join(", ")}
+                  </p>
                 ) : null}
               </button>
             ))}
@@ -371,13 +848,138 @@ export function VaultExplorer() {
   )
 
   const notePanel = (
-    <SurfaceCard className="h-[68vh] overflow-auto">
-      <VaultNotePreview
-        file={file}
-        isLoading={isLoadingFile}
-        error={null}
-        onOpenLink={handleOpenResolvedLink}
-      />
+    <SurfaceCard className="flex h-[68vh] flex-col gap-3 overflow-hidden">
+      <div className="space-y-2 rounded-lg border border-slate-200/80 bg-white/70 p-2.5 dark:border-white/10 dark:bg-white/[0.03]">
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="min-w-0 flex-1 truncate text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+            {selectedNotePath || "No note selected"}
+          </p>
+          {saveStatusText ? (
+            <span className={`rounded border px-2 py-1 text-[11px] ${saveState === "error" ? "border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-200" : "border-slate-300 bg-white text-slate-600 dark:border-white/15 dark:bg-white/[0.03] dark:text-slate-300"}`}>
+              {saveStatusText}
+            </span>
+          ) : null}
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          {!isEditing ? (
+            <button
+              type="button"
+              onClick={() => void startEditing()}
+              disabled={!selectedNotePath || isLoadingFullForEdit}
+              className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-50 dark:border-white/15 dark:bg-white/[0.03] dark:text-slate-200"
+            >
+              <PenSquare className="h-3.5 w-3.5" />
+              {isLoadingFullForEdit ? "Preparing..." : "Edit"}
+            </button>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={() => void saveCurrentDraft(true)}
+                disabled={!draftDirty || saveState === "saving"}
+                className="inline-flex items-center gap-1 rounded-md bg-slate-900 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-black disabled:opacity-50 dark:bg-white dark:text-slate-900"
+              >
+                <Save className="h-3.5 w-3.5" />
+                Save
+              </button>
+              <button
+                type="button"
+                onClick={stopEditing}
+                className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-700 hover:bg-slate-50 dark:border-white/15 dark:bg-white/[0.03] dark:text-slate-200"
+              >
+                Preview
+              </button>
+            </>
+          )}
+
+          <button
+            type="button"
+            onClick={() => selectedNotePath && openRenameForm(selectedNotePath)}
+            disabled={!selectedNotePath}
+            className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-50 dark:border-white/15 dark:bg-white/[0.03] dark:text-slate-200"
+          >
+            <ArrowRightLeft className="h-3.5 w-3.5" />
+            Rename/Move
+          </button>
+
+          <button
+            type="button"
+            onClick={() => selectedNotePath && void handleDelete(selectedNotePath, "soft")}
+            disabled={!selectedNotePath}
+            className="inline-flex items-center gap-1 rounded-md border border-rose-500/40 bg-rose-500/10 px-2.5 py-1.5 text-xs text-rose-700 hover:bg-rose-500/15 disabled:opacity-50 dark:text-rose-200"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            Trash
+          </button>
+
+          <button
+            type="button"
+            onClick={() => selectedNotePath && void handleDelete(selectedNotePath, "hard")}
+            disabled={!selectedNotePath}
+            className="rounded-md border border-rose-500/40 px-2.5 py-1.5 text-xs text-rose-700 hover:bg-rose-500/10 disabled:opacity-50 dark:text-rose-200"
+          >
+            Hard Delete
+          </button>
+        </div>
+
+        {showRenameForm ? (
+          <div className="space-y-2 rounded-md border border-slate-200/80 bg-white/70 p-2 dark:border-white/10 dark:bg-white/[0.03]">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Rename / Move</p>
+            <p className="truncate text-[11px] text-slate-500 dark:text-slate-400">From: {renameSourcePath}</p>
+            <input
+              type="text"
+              value={renameTargetPath}
+              onChange={(event) => setRenameTargetPath(event.target.value)}
+              placeholder="new/path/to/note.md"
+              className="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs dark:border-white/15 dark:bg-white/[0.05]"
+            />
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void handleRenameMove()}
+                className="rounded-md bg-slate-900 px-2 py-1 text-xs font-medium text-white hover:bg-black dark:bg-white dark:text-slate-900"
+              >
+                Apply
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowRenameForm(false)
+                  setRenameSourcePath(null)
+                  setRenameTargetPath("")
+                }}
+                className="rounded-md border border-slate-300 px-2 py-1 text-xs text-slate-700 hover:bg-slate-50 dark:border-white/15 dark:text-slate-300 dark:hover:bg-white/[0.08]"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : null}
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-auto">
+        {isEditing ? (
+          <textarea
+            value={draftContent}
+            onChange={(event) => {
+              setDraftContent(event.target.value)
+              setDraftDirty(true)
+              if (saveState === "saved" || saveState === "error") {
+                setSaveState("idle")
+              }
+            }}
+            className="h-full min-h-[52vh] w-full rounded-lg border border-slate-200/80 bg-white/80 p-3 font-mono text-sm text-slate-900 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-100"
+          />
+        ) : (
+          <VaultNotePreview
+            file={file}
+            isLoading={isLoadingFile}
+            error={null}
+            onOpenLink={handleOpenResolvedLink}
+          />
+        )}
+      </div>
     </SurfaceCard>
   )
 
@@ -387,6 +989,7 @@ export function VaultExplorer() {
         file={file}
         selectedVaultSummary={selectedVaultSummary}
         onOpenLink={handleOpenResolvedLink}
+        onCreateFromUnresolved={handleCreateFromUnresolvedLink}
       />
     </SurfaceCard>
   )
@@ -404,7 +1007,7 @@ export function VaultExplorer() {
         </SurfaceCard>
       ) : null}
 
-      <div className="hidden gap-4 lg:grid lg:grid-cols-[280px_minmax(0,1fr)_320px]">
+      <div className="hidden gap-4 lg:grid lg:grid-cols-[320px_minmax(0,1fr)_320px]">
         {treePanel}
         {notePanel}
         {linksPanel}

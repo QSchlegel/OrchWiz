@@ -5,6 +5,8 @@ export type ShipyardApiActor =
   | {
       type: "token"
       userId: string
+      requestedUserId: string
+      impersonated: boolean
     }
   | {
       type: "session"
@@ -36,6 +38,19 @@ function asNonEmptyString(value: unknown): string | null {
 
   const trimmed = value.trim()
   return trimmed.length > 0 ? trimmed : null
+}
+
+function parseConfiguredUserIdSet(value: string | undefined): Set<string> {
+  if (!value) {
+    return new Set()
+  }
+
+  return new Set(
+    value
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0),
+  )
 }
 
 function parseBearerToken(authorizationHeader: string | null): {
@@ -125,11 +140,43 @@ export async function resolveShipyardApiActorFromRequest(
       }
     }
 
+    const enforcedUserId = asNonEmptyString(process.env.SHIPYARD_API_TOKEN_USER_ID)
+    if (enforcedUserId && requestedUserId !== enforcedUserId) {
+      return {
+        ok: false,
+        status: 403,
+        error: "Token-authenticated requests are restricted to configured userId",
+      }
+    }
+
+    const allowedUserIds = parseConfiguredUserIdSet(process.env.SHIPYARD_API_ALLOWED_USER_IDS)
+    if (allowedUserIds.size > 0 && !allowedUserIds.has(requestedUserId)) {
+      return {
+        ok: false,
+        status: 403,
+        error: "Token-authenticated requests are restricted by allowlist",
+      }
+    }
+
+    const allowImpersonation = process.env.SHIPYARD_API_ALLOW_IMPERSONATION === "true"
+    if (!allowImpersonation) {
+      const fallbackUserId = enforcedUserId || asNonEmptyString(process.env.SHIPYARD_API_DEFAULT_USER_ID)
+      if (fallbackUserId && requestedUserId !== fallbackUserId) {
+        return {
+          ok: false,
+          status: 403,
+          error: "Token-authenticated impersonation is disabled",
+        }
+      }
+    }
+
     return {
       ok: true,
       actor: {
         type: "token",
         userId: requestedUserId,
+        requestedUserId,
+        impersonated: true,
       },
     }
   }

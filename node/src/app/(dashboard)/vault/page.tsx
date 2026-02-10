@@ -1,5 +1,6 @@
 "use client"
 
+import { useEffect } from "react"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import {
   ArrowDown,
@@ -12,9 +13,13 @@ import {
   Ship,
 } from "lucide-react"
 import { PageLayout, SurfaceCard } from "@/components/dashboard/PageLayout"
+import { useNotifications } from "@/components/notifications"
+import { VAULT_TAB_NOTIFICATION_CHANNEL } from "@/lib/notifications/channels"
+import { formatUnreadBadgeCount } from "@/lib/notifications/store"
 import { VaultExplorer } from "@/components/vault/VaultExplorer"
+import { VaultGraphView } from "@/components/vault/VaultGraphView"
 
-type VaultTab = "topology" | "explorer"
+type VaultTab = "topology" | "explorer" | "graph"
 
 function VaultNode({
   icon: Icon,
@@ -192,10 +197,16 @@ function VaultTopologyView() {
 }
 
 export default function VaultPage() {
+  const { getUnread, registerActiveChannels } = useNotifications()
   const searchParams = useSearchParams()
   const router = useRouter()
   const pathname = usePathname()
-  const activeTab: VaultTab = searchParams.get("tab") === "explorer" ? "explorer" : "topology"
+  const tabParam = searchParams.get("tab")
+  const activeTab: VaultTab = tabParam === "explorer" || tabParam === "graph" ? tabParam : "topology"
+
+  useEffect(() => {
+    return registerActiveChannels([VAULT_TAB_NOTIFICATION_CHANNEL[activeTab]])
+  }, [activeTab, registerActiveChannels])
 
   const setActiveTab = (tab: VaultTab) => {
     const params = new URLSearchParams(searchParams.toString())
@@ -211,31 +222,37 @@ export default function VaultPage() {
     >
       <div className="space-y-4">
         <div className="inline-flex rounded-lg border border-slate-200/80 bg-white/80 p-1 dark:border-white/10 dark:bg-white/[0.03]">
-          <button
-            type="button"
-            onClick={() => setActiveTab("topology")}
-            className={`rounded-md px-3 py-1.5 text-sm font-medium ${
-              activeTab === "topology"
-                ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900"
-                : "text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-white/[0.08]"
-            }`}
-          >
-            Topology
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab("explorer")}
-            className={`rounded-md px-3 py-1.5 text-sm font-medium ${
-              activeTab === "explorer"
-                ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900"
-                : "text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-white/[0.08]"
-            }`}
-          >
-            Explorer
-          </button>
+          {([
+            { id: "topology", label: "Topology" },
+            { id: "explorer", label: "Explorer" },
+            { id: "graph", label: "Graph" },
+          ] as Array<{ id: VaultTab; label: string }>).map((tab) => {
+            const badgeLabel = formatUnreadBadgeCount(getUnread([VAULT_TAB_NOTIFICATION_CHANNEL[tab.id]]))
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setActiveTab(tab.id)}
+                className={`inline-flex items-center rounded-md px-3 py-1.5 text-sm font-medium ${
+                  activeTab === tab.id
+                    ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900"
+                    : "text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-white/[0.08]"
+                }`}
+              >
+                <span>{tab.label}</span>
+                {badgeLabel && (
+                  <span className="ml-2 inline-flex min-w-5 items-center justify-center rounded-full bg-rose-500 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white">
+                    {badgeLabel}
+                  </span>
+                )}
+              </button>
+            )
+          })}
         </div>
 
-        {activeTab === "topology" ? <VaultTopologyView /> : <VaultExplorer />}
+        {activeTab === "topology" ? <VaultTopologyView /> : null}
+        {activeTab === "explorer" ? <VaultExplorer /> : null}
+        {activeTab === "graph" ? <VaultGraphView /> : null}
       </div>
     </PageLayout>
   )

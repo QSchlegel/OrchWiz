@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { auth } from "@/lib/auth"
 import { headers } from "next/headers"
 import { prisma } from "@/lib/prisma"
+import { publishNotificationUpdated } from "@/lib/realtime/notifications"
 import { listBridgeDispatchDeliveries } from "@/lib/bridge/connections/dispatch"
 import {
   BridgeConnectionValidationError,
@@ -212,6 +213,12 @@ export async function POST(request: NextRequest) {
         config: toInputJsonValue(parsed.config),
         credentials: toInputJsonValue(storedCredentials),
       },
+    })
+
+    publishNotificationUpdated({
+      userId: session.user.id,
+      channel: "bridge-connections",
+      entityId: connection.id,
     })
 
     return NextResponse.json(mapConnectionForResponse(connection), { status: 201 })

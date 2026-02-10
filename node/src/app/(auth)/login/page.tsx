@@ -7,6 +7,7 @@ import {
   getPasskeySignInErrorMessage,
 } from "@/lib/auth-utils"
 import { KeyRound, Mail, Sparkles, UserRound } from "lucide-react"
+import Link from "next/link"
 import { FormEvent, useState } from "react"
 
 export default function LoginPage() {
@@ -143,6 +144,14 @@ export default function LoginPage() {
       </h1>
       <p className="text-sm text-slate-500 dark:text-slate-400 mb-8">
         Use a passkey for instant access, or enter your email.
+      </p>
+      <p className="text-xs text-slate-500 dark:text-slate-400 mb-6">
+        <Link
+          href="/?ref=login_back_to_landing"
+          className="underline underline-offset-2 hover:text-slate-700 dark:hover:text-slate-200 transition-colors"
+        >
+          Back to landing page
+        </Link>
       </p>
 
       {/* Passkey sign-in for returning users */}

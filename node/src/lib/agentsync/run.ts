@@ -83,10 +83,11 @@ function isEligibleBridgeCrewSubagent(subagent: Pick<Subagent, "name" | "isShare
   return isEligibleBridgeCrewCallsign(subagent.name)
 }
 
-async function listEligibleBridgeCrewSubagents(): Promise<Subagent[]> {
+async function listEligibleBridgeCrewSubagents(userId: string): Promise<Subagent[]> {
   return prisma.subagent.findMany({
     where: {
       isShared: false,
+      ownerUserId: userId,
       name: {
         in: ELIGIBLE_BRIDGE_CREW_CALLSIGNS,
       },
@@ -98,6 +99,7 @@ async function listEligibleBridgeCrewSubagents(): Promise<Subagent[]> {
 }
 
 async function resolveTargetSubagents(args: {
+  userId: string
   scope: AgentSyncScope
   subagentId?: string | null
 }): Promise<Subagent[]> {
@@ -106,9 +108,10 @@ async function resolveTargetSubagents(args: {
       throw new AgentSyncError("subagentId is required for selected_agent scope", 400)
     }
 
-    const selected = await prisma.subagent.findUnique({
+    const selected = await prisma.subagent.findFirst({
       where: {
         id: args.subagentId,
+        ownerUserId: args.userId,
       },
     })
 
@@ -119,7 +122,7 @@ async function resolveTargetSubagents(args: {
     return [selected]
   }
 
-  return listEligibleBridgeCrewSubagents()
+  return listEligibleBridgeCrewSubagents(args.userId)
 }
 
 function toEditableFiles(files: Array<{ fileName: string; content: string }>): Array<{ fileName: string; content: string }> {
@@ -384,6 +387,7 @@ export async function runAgentSyncForUser(args: {
   }
 
   const targets = await resolveTargetSubagents({
+    userId: args.userId,
     scope: args.scope,
     subagentId: args.subagentId || null,
   })
@@ -404,6 +408,7 @@ export async function runAgentSyncForUser(args: {
 
   publishRealtimeEvent({
     type: "agentsync.updated",
+    userId: args.userId,
     payload: {
       kind: "run",
       runId: run.id,
@@ -487,6 +492,7 @@ export async function runAgentSyncForUser(args: {
 
   publishRealtimeEvent({
     type: "agentsync.updated",
+    userId: args.userId,
     payload: {
       kind: "run",
       runId: updatedRun.id,
@@ -692,6 +698,7 @@ export async function applyAgentSyncSuggestion(args: {
 
     publishRealtimeEvent({
       type: "agentsync.updated",
+      userId: args.userId,
       payload: {
         kind: "suggestion",
         suggestionId: updated.id,
@@ -715,6 +722,7 @@ export async function applyAgentSyncSuggestion(args: {
 
     publishRealtimeEvent({
       type: "agentsync.updated",
+      userId: args.userId,
       payload: {
         kind: "suggestion",
         suggestionId: updated.id,
@@ -757,6 +765,7 @@ export async function rejectAgentSyncSuggestion(args: {
 
   publishRealtimeEvent({
     type: "agentsync.updated",
+    userId: args.userId,
     payload: {
       kind: "suggestion",
       suggestionId: updated.id,

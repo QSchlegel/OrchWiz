@@ -9,6 +9,9 @@ This directory contains the main Next.js application (`node/`) for OrchWiz.
 - Forwarding ingest/config/test routes are implemented with auth/signature/replay/rate-limit checks.
 - Forwarded aggregate reads are implemented across sessions, commands, actions, tasks, verification, deployments, and applications.
 - SSE realtime stream is implemented at `/api/events/stream` and used by dashboard pages.
+- Vault is implemented as an Obsidian-lite workspace (create/edit/save/rename/move/delete, soft-trash safety, and joined graph view).
+- Vault RAG is implemented with hybrid retrieval (OpenAI embeddings + lexical fallback), ship/fleet/global scope ranking, and quartermaster citation enforcement.
+- Ship knowledge base APIs are implemented at `/api/ships/:id/knowledge*` with owner-scoped read/write/query/resync support.
 
 ## Prerequisites
 
@@ -36,17 +39,23 @@ Copy `node/.env.example`. Key groups:
 - Core auth/db: `DATABASE_URL`, `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`, `NEXT_PUBLIC_APP_URL`
 - User role bootstrap: `ORCHWIZ_ADMIN_EMAILS` (comma-separated emails promoted to `admin`; default role is `captain`)
 - GitHub auth/webhooks: `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_WEBHOOK_SECRET`, `ENABLE_GITHUB_WEBHOOK_COMMENTS`, `GITHUB_TOKEN`
-- Command execution policy: `ENABLE_LOCAL_COMMAND_EXECUTION`, `LOCAL_COMMAND_TIMEOUT_MS`, `COMMAND_EXECUTION_SHELL`, `ENABLE_LOCAL_INFRA_AUTO_INSTALL`, `LOCAL_INFRA_COMMAND_TIMEOUT_MS`
+- Command execution policy: `ENABLE_LOCAL_COMMAND_EXECUTION`, `LOCAL_COMMAND_TIMEOUT_MS`, `COMMAND_EXECUTION_SHELL`, `ENABLE_LOCAL_INFRA_AUTO_INSTALL`, `LOCAL_INFRA_COMMAND_TIMEOUT_MS`, `CLOUD_DEPLOY_ONLY` (set `true` to block local starship launches and force cloud-only Ship Yard posture)
 - Runtime provider: `OPENCLAW_*`, `OPENCLAW_DISPATCH_PATH`, `OPENCLAW_DISPATCH_TIMEOUT_MS`, `ENABLE_OPENAI_RUNTIME_FALLBACK`, `OPENAI_API_KEY`, `OPENAI_RUNTIME_FALLBACK_MODEL`, `CODEX_CLI_PATH`, `CODEX_RUNTIME_TIMEOUT_MS`, `CODEX_RUNTIME_MODEL`, `RUNTIME_PROFILE_DEFAULT`, `RUNTIME_PROFILE_QUARTERMASTER`
 - Bridge chat compatibility auth: `BRIDGE_ADMIN_TOKEN`
 - Ship Yard machine auth: `SHIPYARD_API_TOKEN`
+- Ship Yard token scope controls: `SHIPYARD_API_ALLOWED_USER_IDS`, `SHIPYARD_API_TOKEN_USER_ID`, `SHIPYARD_API_ALLOW_IMPERSONATION`, `SHIPYARD_API_DEFAULT_USER_ID`
+- Landing XO teaser controls: `LANDING_XO_ENABLED` (default `true`), `LANDING_XO_STAGE` (default `public-preview`)
 - Wallet enclave: `WALLET_ENCLAVE_ENABLED`, `WALLET_ENCLAVE_URL`, `WALLET_ENCLAVE_TIMEOUT_MS`, `WALLET_ENCLAVE_REQUIRE_BRIDGE_SIGNATURES`, `WALLET_ENCLAVE_REQUIRE_PRIVATE_MEMORY_ENCRYPTION`, `WALLET_ENCLAVE_SHARED_SECRET`
 - Encrypted Langfuse traces: `TRACE_ENCRYPT_ENABLED`, `TRACE_ENCRYPT_REQUIRED`, `TRACE_ENCRYPT_FIELDS`, `LANGFUSE_BASE_URL`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `OBSERVABILITY_DECRYPT_ADMIN_TOKEN`
 - Deployment connector: `DEPLOYMENT_CONNECTOR_URL`, `DEPLOYMENT_CONNECTOR_API_KEY`, `DEPLOYMENT_AGENT_PATH`, `DEPLOYMENT_APPLICATION_PATH`
 - Forwarding ingest/source defaults: `ENABLE_FORWARDING_INGEST`, `FORWARDING_RATE_LIMIT`, `FORWARDING_RATE_WINDOW_MS`, `DEFAULT_FORWARDING_API_KEY`, `DEFAULT_SOURCE_NODE_ID`, `DEFAULT_SOURCE_NODE_NAME`, `FORWARD_TARGET_URL`, `FORWARD_API_KEY`, `FORWARDING_FEATURE_ENABLED`
+- Forwarding test guardrails: `FORWARDING_TEST_TARGET_ALLOWLIST`
 - Bridge dispatch queue: `BRIDGE_DISPATCH_RETRY_BASE_MS`, `BRIDGE_DISPATCH_MAX_ATTEMPTS`, `BRIDGE_DISPATCH_RETAIN_COUNT`
 - AgentSync loop + nightly cron: `AGENTSYNC_ENABLED`, `AGENTSYNC_CRON_TOKEN`, `AGENTSYNC_LOOKBACK_DAYS`, `AGENTSYNC_MIN_SIGNALS`
+- Security audits: `SECURITY_AUDIT_CRON_TOKEN`, `STRICT_RESOURCE_OWNERSHIP`, `ENABLE_BRIDGE_CREW_LIVE_STRESS`
 - Realtime toggle: `ENABLE_SSE_EVENTS`
+- Vault limits: `VAULT_MAX_PREVIEW_BYTES`, `VAULT_MAX_EDIT_BYTES`, `VAULT_SEARCH_MAX_BYTES`, `VAULT_GRAPH_MAX_NOTES`, `VAULT_GRAPH_MAX_EDGES`
+- Vault RAG: `VAULT_RAG_ENABLED`, `VAULT_RAG_EMBEDDING_MODEL`, `VAULT_RAG_TOP_K`, `VAULT_RAG_SYNC_ON_WRITE`, `VAULT_RAG_CHUNK_CHARS`, `VAULT_RAG_MAX_CHUNKS_PER_DOC`, `VAULT_RAG_EMBED_BATCH_SIZE`, `VAULT_RAG_QUERY_CANDIDATE_LIMIT`
 
 Optional magic-link email config used by auth in non-local environments:
 
@@ -75,6 +84,7 @@ Create flows for both agent and application deployments support profile-aware fi
 - Request option: `saneBootstrap?: boolean` (defaults to `true` for local profile)
 - Assisted mode (`saneBootstrap=true`) can auto-install missing local CLIs when `ENABLE_LOCAL_INFRA_AUTO_INSTALL=true`
 - Local provisioning execution still requires `ENABLE_LOCAL_COMMAND_EXECUTION=true`
+- Local launch requests are rejected when `CLOUD_DEPLOY_ONLY=true`
 - Local flow validates kube context presence but does not auto-create/start clusters
 - Failures return structured non-2xx responses with `error`, `code`, and optional `details.suggestedCommands`
 
@@ -82,8 +92,71 @@ Machine-auth for Ship Yard can use `Authorization: Bearer ${SHIPYARD_API_TOKEN}`
 
 - If bearer auth is used, `userId` is required (`body.userId`, `?userId=...`, or `x-orchwiz-user-id` header).
 - If no bearer header is provided, the route falls back to session auth.
+- Optional scope controls can restrict token-auth targeting (`SHIPYARD_API_ALLOWED_USER_IDS`, `SHIPYARD_API_TOKEN_USER_ID`, and impersonation flags).
 
 `GET /api/ship-yard/status/:id` returns deployment + bridge crew state with the same auth behavior.
+
+### Ship Yard Secret Vault Templates
+
+`/api/ship-yard/secrets` provides per-user, per-profile setup templates for Ship Yard wizard secrets.
+
+- `GET /api/ship-yard/secrets?deploymentProfile=<local_starship_build|cloud_shipyard>&includeValues=true|false`
+  - Returns template summary + generated snippets (`.env` and `terraform.tfvars`).
+  - `includeValues=true` includes plaintext template values in the response.
+  - `includeValues=false` omits plaintext values and returns redacted snippets.
+- `PUT /api/ship-yard/secrets`
+  - Body: `{ "deploymentProfile": "...", "values": { ... } }`
+  - Upserts the template for the authenticated owner and profile.
+- `DELETE /api/ship-yard/secrets?deploymentProfile=<...>`
+  - Deletes the owner-scoped template for the selected profile.
+
+Storage behavior:
+
+- Encrypted envelope mode is used when wallet-enclave is enabled.
+- Plaintext fallback mode is used only when enclave encryption is not required by policy.
+- If encryption is required but wallet-enclave is unavailable, the API fails closed (`503` with stable error code).
+
+### Ship Yard Self-Healing (Beta)
+
+Ship Yard self-healing APIs are currently in beta and may change before GA.
+
+- `GET /api/ship-yard/self-heal/preferences`
+- `PUT /api/ship-yard/self-heal/preferences`
+- `GET /api/ship-yard/self-heal/run`
+- `POST /api/ship-yard/self-heal/run`
+- `GET /api/ship-yard/self-heal/runs`
+- `POST /api/ship-yard/self-heal/cron`
+
+Beta response contract:
+
+- JSON payloads include `feature: { key: "shipyard-self-heal", stage: "beta" }`
+- Responses include headers:
+  - `X-Orchwiz-Feature-Key: shipyard-self-heal`
+  - `X-Orchwiz-Feature-Stage: beta`
+
+The beta tag is informational and does not change auth or execution policy.
+
+### Landing XO Teaser (Public Preview)
+
+Landing page includes a passkey-gated XO teaser chat window with slash commands and docs linkage.
+
+- Public docs hub: `/docs`
+- Config endpoint (client-authoritative gating): `GET /api/landing/config`
+- XO chat endpoint: `POST /api/landing/chat`
+- Registration completion endpoint: `POST /api/landing/register`
+- Newsletter endpoint: `POST /api/landing/newsletter`
+
+Operational controls:
+
+- `LANDING_XO_ENABLED=true|false` (default `true`)
+  - When `false`, landing XO APIs return feature-disabled responses and the landing XO UI is hidden.
+- `LANDING_XO_STAGE=public-preview` (optional stage label for response metadata/headers)
+
+Observability:
+
+- Landing routes emit traces via the existing `emitTrace` pipeline.
+- `source` values are `landing.xo.chat`, `landing.xo.register`, and `landing.xo.newsletter`.
+- Trace payloads include full request/response payload structures (subject to existing trace encryption settings).
 
 ### Ship Yard curl examples
 
@@ -149,16 +222,33 @@ Quartermaster prompts set `metadata.runtime.profile=quartermaster` and include s
 - Bridge connections: `/api/bridge/connections`, `/api/bridge/connections/:id`, `/api/bridge/connections/:id/test`, `/api/bridge/connections/dispatch`
 - Bridge chat compatibility: `/api/threads`, `/api/threads/:threadId/messages`
 - Deployments: `/api/deployments`, `/api/applications`
-- Ship Yard: `/api/ship-yard/launch`, `/api/ship-yard/status/:id`
+- Ship Yard: `/api/ship-yard/launch`, `/api/ship-yard/status/:id`, `/api/ship-yard/secrets`
+- Ship Yard self-healing (beta): `/api/ship-yard/self-heal/preferences`, `/api/ship-yard/self-heal/run`, `/api/ship-yard/self-heal/runs`, `/api/ship-yard/self-heal/cron`
 - Ship Quartermaster: `/api/ships/:id/quartermaster` (GET/POST), `/api/ships/:id/quartermaster/provision` (POST)
+- Ship Knowledge Base:
+  - `/api/ships/:id/knowledge` (`GET` query retrieval, `POST` upsert note, `PATCH` rename/move, `DELETE` delete note)
+  - `/api/ships/:id/knowledge/tree` (`GET` scoped tree + latest sync summary)
+  - `/api/ships/:id/knowledge/resync` (`POST` manual `ship|fleet|all` RAG resync)
 - Docs: `/api/docs/claude`, `/api/docs/guidance`
+- Public docs page: `/docs`
+- Landing XO teaser: `/api/landing/config`, `/api/landing/chat`, `/api/landing/register`, `/api/landing/newsletter`
 - GitHub: `/api/github/prs`, `/api/github/webhook`
 - Forwarding: `/api/forwarding/config`, `/api/forwarding/events`, `/api/forwarding/test`
   - `GET/POST /api/forwarding/config` returns masked `targetApiKey` metadata (no plaintext key in response).
+  - `POST /api/forwarding/config` no longer echoes plaintext `sourceApiKey`; only fingerprint metadata is returned when generated.
+  - `POST /api/forwarding/test` is owner-scoped and enforces `FORWARDING_TEST_TARGET_ALLOWLIST`.
   - `targetApiKey` response fields: `storageMode`, `hasValue`, `maskedValue`.
+- Security: `/api/security/audits/run`, `/api/security/audits/latest`, `/api/security/audits/nightly`, `/api/security/bridge-crew/stress`, `/api/security/bridge-crew/scorecard`
 - Realtime: `/api/events/stream`
 - AgentSync: `/api/agentsync/runs`, `/api/agentsync/runs/:id`, `/api/agentsync/preferences`, `/api/agentsync/suggestions/:id/apply`, `/api/agentsync/suggestions/:id/reject`, `/api/agentsync/nightly`
 - Observability decrypt: `/api/observability/traces/:traceId/decrypt` (session owner, session `admin`, or bearer admin token)
+- Vault: `/api/vaults`, `/api/vaults/tree`, `/api/vaults/file` (`GET/POST/PATCH/DELETE`), `/api/vaults/search`, `/api/vaults/graph`
+  - `/api/vaults/search` accepts `mode=hybrid|lexical` and `k=<topK>` and may return `score`, `scopeType`, and `citations` per result.
+
+Ship knowledge path conventions in `Ship-Vault`:
+
+- `kb/ships/<shipDeploymentId>/...` for ship-local notes
+- `kb/fleet/...` for fleet-wide notes
 
 Forwarded aggregate list endpoints support:
 

@@ -4,11 +4,17 @@ import { SYSTEM_PERMISSION_POLICY_PRESETS } from "./policy-presets"
 
 test("SYSTEM_PERMISSION_POLICY_PRESETS includes required profile slugs", () => {
   const slugs = SYSTEM_PERMISSION_POLICY_PRESETS.map((preset) => preset.slug)
-  assert.deepEqual(slugs, ["safe-core", "balanced-devops", "power-operator"])
+  assert.deepEqual(slugs, [
+    "safe-core",
+    "quartermaster-readonly",
+    "balanced-devops",
+    "power-operator",
+    "github-ingest",
+  ])
 })
 
-test("safe-core and balanced-devops end with catch-all ask", () => {
-  for (const slug of ["safe-core", "balanced-devops"]) {
+test("safe-core, balanced-devops, and github-ingest end with catch-all ask", () => {
+  for (const slug of ["safe-core", "balanced-devops", "github-ingest"]) {
     const preset = SYSTEM_PERMISSION_POLICY_PRESETS.find((entry) => entry.slug === slug)
     assert.ok(preset)
     const tail = preset?.rules[preset.rules.length - 1]
@@ -53,6 +59,24 @@ test("system presets include hardened deny defaults", () => {
 
   assert.equal(
     power?.rules.some((rule) => rule.commandPattern === "dd if=* of=/dev/*" && rule.status === "deny"),
+    true,
+  )
+})
+
+test("github-ingest includes gh allow rules and hardened denies", () => {
+  const preset = SYSTEM_PERMISSION_POLICY_PRESETS.find((entry) => entry.slug === "github-ingest")
+  assert.ok(preset)
+
+  assert.equal(
+    preset?.rules.some((rule) => rule.commandPattern === "gh pr list*" && rule.status === "allow"),
+    true,
+  )
+  assert.equal(
+    preset?.rules.some((rule) => rule.commandPattern === "gh api repos/*/pulls*" && rule.status === "allow"),
+    true,
+  )
+  assert.equal(
+    preset?.rules.some((rule) => rule.commandPattern === "rm -rf *" && rule.status === "deny"),
     true,
   )
 })

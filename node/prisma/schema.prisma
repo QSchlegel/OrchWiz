@@ -13,6 +13,7 @@ model User {
   id        String   @id @default(cuid())
   email     String   @unique
   emailVerified Boolean @default(false)
+  isAnonymous Boolean @default(false)
   name      String?
   githubId  String?  @unique
   avatarUrl String?
@@ -38,6 +39,13 @@ model User {
   agentSyncSignals      AgentSyncSignal[]
   agentSyncRuns         AgentSyncRun[]
   agentSyncSuggestions  AgentSyncSuggestion[]
+  ownedCommands         Command[]             @relation("CommandOwner")
+  ownedSubagents        Subagent[]            @relation("SubagentOwner")
+  ownedPermissions      Permission[]          @relation("PermissionOwner")
+  ownedPermissionPolicies PermissionPolicy[]  @relation("PermissionPolicyOwner")
+  ownedNodeSources      NodeSource[]          @relation("NodeSourceOwner")
+  shipyardSecretTemplates ShipyardSecretTemplate[]
+  newsletterSubscriptions NewsletterSubscription[]
 }
 
 enum UserRole {
@@ -355,13 +363,16 @@ model Command {
   path          String?
   isShared      Boolean  @default(false)
   teamId        String?
+  ownerUserId   String?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
   executions CommandExecution[]
+  owner      User?              @relation("CommandOwner", fields: [ownerUserId], references: [id], onDelete: SetNull)
 
   @@unique([name, teamId])
   @@index([teamId])
+  @@index([ownerUserId])
 }
 
 model CommandExecution {
@@ -403,6 +414,7 @@ model Subagent {
   settings    Json?
   isShared    Boolean  @default(false)
   teamId      String?
+  ownerUserId String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -413,9 +425,11 @@ model Subagent {
   agentSyncSignals AgentSyncSignal[]
   agentSyncRuns AgentSyncRun[]
   agentSyncSuggestions AgentSyncSuggestion[]
+  owner User? @relation("SubagentOwner", fields: [ownerUserId], references: [id], onDelete: SetNull)
 
   @@unique([name, teamId])
   @@index([teamId])
+  @@index([ownerUserId])
 }
 
 model AgentSyncPreference {
@@ -607,14 +621,17 @@ model Permission {
   subagentId   String?
   sourceFile   String?
   isShared     Boolean         @default(false)
+  ownerUserId  String?
   createdAt    DateTime        @default(now())
   updatedAt    DateTime        @updatedAt
 
   subagent     Subagent?       @relation(fields: [subagentId], references: [id], onDelete: SetNull)
+  owner        User?           @relation("PermissionOwner", fields: [ownerUserId], references: [id], onDelete: SetNull)
 
   @@index([commandPattern])
   @@index([scope])
   @@index([subagentId])
+  @@index([ownerUserId])
 }
 
 model PermissionPolicy {
@@ -623,11 +640,14 @@ model PermissionPolicy {
   name        String
   description String?
   isSystem    Boolean                 @default(false)
+  ownerUserId String?
   createdAt   DateTime                @default(now())
   updatedAt   DateTime                @updatedAt
 
   rules       PermissionPolicyRule[]
   assignments SubagentPermissionPolicy[]
+  owner       User?                   @relation("PermissionPolicyOwner", fields: [ownerUserId], references: [id], onDelete: SetNull)
+  @@index([ownerUserId])
 }
 
 model PermissionPolicyRule {
@@ -862,6 +882,110 @@ model BridgeConnection {
   @@index([updatedAt])
 }
 
+model ShipyardSecretTemplate {
+  id                String            @id @default(cuid())
+  userId            String
+  deploymentProfile DeploymentProfile
+  secrets           Json
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  user              User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, deploymentProfile])
+  @@index([userId])
+}
+
+enum VaultRagScopeType {
+  ship
+  fleet
+  global
+}
+
+enum VaultRagSyncScope {
+  ship
+  fleet
+  all
+}
+
+enum VaultRagSyncTrigger {
+  auto
+  manual
+}
+
+enum VaultRagSyncStatus {
+  running
+  completed
+  failed
+}
+
+model VaultRagDocument {
+  id               String           @id @default(cuid())
+  joinedPath       String           @unique
+  physicalVaultId  String
+  physicalPath     String
+  title            String
+  scopeType        VaultRagScopeType
+  shipDeploymentId String?
+  contentHash      String
+  byteSize         Int
+  mtime            DateTime
+  chunkCount       Int              @default(0)
+  lastIndexedAt    DateTime         @default(now())
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  chunks           VaultRagChunk[]
+
+  @@index([scopeType, shipDeploymentId])
+  @@index([physicalVaultId])
+  @@index([updatedAt])
+}
+
+model VaultRagChunk {
+  id               String           @id @default(cuid())
+  documentId       String
+  joinedPath       String
+  scopeType        VaultRagScopeType
+  shipDeploymentId String?
+  chunkIndex       Int
+  heading          String?
+  content          String
+  normalizedContent String
+  embedding        Json?
+  tokenCount       Int
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  document         VaultRagDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@unique([documentId, chunkIndex])
+  @@index([joinedPath])
+  @@index([scopeType, shipDeploymentId])
+}
+
+model VaultRagSyncRun {
+  id               String           @id @default(cuid())
+  trigger          VaultRagSyncTrigger
+  scope            VaultRagSyncScope
+  status           VaultRagSyncStatus @default(running)
+  shipDeploymentId String?
+  initiatedByUserId String?
+  mode             String?
+  documentsScanned Int              @default(0)
+  documentsUpserted Int             @default(0)
+  documentsRemoved Int              @default(0)
+  chunksUpserted   Int              @default(0)
+  error            String?
+  startedAt        DateTime         @default(now())
+  completedAt      DateTime?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  @@index([status, createdAt])
+  @@index([scope, shipDeploymentId, createdAt])
+}
+
 model BridgeDispatchDelivery {
   id                String               @id @default(cuid())
   deploymentId      String
@@ -1071,19 +1195,24 @@ enum ProjectCategory {
 
 model NodeSource {
   id         String   @id @default(cuid())
-  nodeId     String   @unique
+  nodeId     String
   name       String?
   nodeType   NodeType?
   nodeUrl    String?
   apiKeyHash String
   isActive   Boolean  @default(true)
   lastSeenAt DateTime?
+  ownerUserId String?
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
   events          ForwardingEvent[]
   nonces          ForwardingNonce[]
   sourceConfigs   ForwardingConfig[] @relation("ForwardingConfigSource")
+  owner           User?              @relation("NodeSourceOwner", fields: [ownerUserId], references: [id], onDelete: SetNull)
+
+  @@unique([ownerUserId, nodeId])
+  @@index([ownerUserId])
 }
 
 model ForwardingEvent {
@@ -1169,6 +1298,29 @@ model ObservabilityTraceDecryptAudit {
   trace     ObservabilityTrace @relation(fields: [traceId], references: [id], onDelete: Cascade)
   @@index([traceId, createdAt])
   @@index([actorType, createdAt])
+}
+
+enum NewsletterSubscriptionStatus {
+  subscribed
+  unsubscribed
+}
+
+model NewsletterSubscription {
+  id            String                       @id @default(cuid())
+  email         String                       @unique
+  userId        String?
+  source        String
+  status        NewsletterSubscriptionStatus @default(subscribed)
+  metadata      Json?
+  subscribedAt  DateTime                     @default(now())
+  unsubscribedAt DateTime?
+  createdAt     DateTime                     @default(now())
+  updatedAt     DateTime                     @updatedAt
+
+  user          User?                        @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
 }
 
 enum ForwardingEventType {

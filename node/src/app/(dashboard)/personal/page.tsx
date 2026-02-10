@@ -4,6 +4,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import { ContextOrchestrationBoard } from "@/components/subagents/ContextOrchestrationBoard"
 import { EmptyState, InlineNotice, PageLayout, SurfaceCard } from "@/components/dashboard/PageLayout"
+import { useNotifications } from "@/components/notifications"
+import { formatUnreadBadgeCount } from "@/lib/notifications/store"
+import {
+  PERSONAL_DETAIL_NOTIFICATION_CHANNEL,
+  PERSONAL_TAB_NOTIFICATION_CHANNEL,
+} from "@/lib/notifications/channels"
 import { useEventStream } from "@/lib/realtime/useEventStream"
 import { buildInitialBridgeCrewSubagents } from "@/lib/subagents/bridge-crew-bootstrap"
 
@@ -159,7 +165,7 @@ const EMPTY_FORM: SubagentFormState = {
   path: "",
 }
 
-const QUICK_PRESET_SLUGS = ["safe-core", "balanced-devops", "power-operator"]
+const QUICK_PRESET_SLUGS = ["safe-core", "balanced-devops", "power-operator", "github-ingest"]
 
 const DEFAULT_AGENTSYNC_PREFERENCE: AgentSyncPreference = {
   timezone: "UTC",
@@ -485,6 +491,7 @@ async function readApiError(response: Response): Promise<string> {
 }
 
 export default function PersonalPage() {
+  const { getUnread, registerActiveChannels } = useNotifications()
   const searchParams = useSearchParams()
   const router = useRouter()
   const pathname = usePathname()
@@ -551,6 +558,8 @@ export default function PersonalPage() {
   const autoBootstrapAttemptedRef = useRef(false)
 
   const activeTab = parseTab(searchParams.get("tab"))
+  const activeTopChannel = PERSONAL_TAB_NOTIFICATION_CHANNEL[activeTab]
+  const activeDetailChannel = PERSONAL_DETAIL_NOTIFICATION_CHANNEL[activeTab][detailTab]
   const initialBridgeCrew = useMemo(() => buildInitialBridgeCrewSubagents(), [])
 
   const personalSubagents = useMemo(
@@ -926,6 +935,17 @@ export default function PersonalPage() {
       setFormData(EMPTY_FORM)
     }
   }, [activeTab])
+
+  useEffect(() => {
+    return registerActiveChannels([activeTopChannel])
+  }, [activeTopChannel, registerActiveChannels])
+
+  useEffect(() => {
+    if (!selectedSubagent) {
+      return
+    }
+    return registerActiveChannels([activeDetailChannel])
+  }, [activeDetailChannel, registerActiveChannels, selectedSubagent])
 
   useEffect(() => {
     if (activeSubagents.length === 0) {
@@ -1721,24 +1741,42 @@ export default function PersonalPage() {
           <button
             type="button"
             onClick={() => setActiveTab("personal")}
-            className={`rounded-md px-3 py-1.5 text-sm font-medium ${
+            className={`inline-flex items-center rounded-md px-3 py-1.5 text-sm font-medium ${
               activeTab === "personal"
                 ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900"
                 : "text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-white/[0.08]"
             }`}
           >
-            Personal
+            <span>Personal</span>
+            {(() => {
+              const badgeLabel = formatUnreadBadgeCount(getUnread([PERSONAL_TAB_NOTIFICATION_CHANNEL.personal]))
+              if (!badgeLabel) return null
+              return (
+                <span className="ml-2 inline-flex min-w-5 items-center justify-center rounded-full bg-rose-500 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white">
+                  {badgeLabel}
+                </span>
+              )
+            })()}
           </button>
           <button
             type="button"
             onClick={() => setActiveTab("shared")}
-            className={`rounded-md px-3 py-1.5 text-sm font-medium ${
+            className={`inline-flex items-center rounded-md px-3 py-1.5 text-sm font-medium ${
               activeTab === "shared"
                 ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900"
                 : "text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-white/[0.08]"
             }`}
           >
-            Shared
+            <span>Shared</span>
+            {(() => {
+              const badgeLabel = formatUnreadBadgeCount(getUnread([PERSONAL_TAB_NOTIFICATION_CHANNEL.shared]))
+              if (!badgeLabel) return null
+              return (
+                <span className="ml-2 inline-flex min-w-5 items-center justify-center rounded-full bg-rose-500 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white">
+                  {badgeLabel}
+                </span>
+              )
+            })()}
           </button>
         </div>
 
@@ -1868,20 +1906,29 @@ export default function PersonalPage() {
                   </div>
 
                   <div className="flex flex-wrap gap-2">
-                    {DETAIL_TABS.map((tab) => (
-                      <button
-                        key={tab.id}
-                        type="button"
-                        onClick={() => setDetailTab(tab.id)}
-                        className={`rounded-lg border px-3 py-1.5 text-sm ${
-                          detailTab === tab.id
-                            ? "border-cyan-500/45 bg-cyan-500/12 text-cyan-700 dark:text-cyan-200"
-                            : "border-slate-300/70 text-slate-600 hover:bg-slate-50 dark:border-white/10 dark:text-slate-300 dark:hover:bg-white/[0.06]"
-                        }`}
-                      >
-                        {tab.label}
-                      </button>
-                    ))}
+                    {DETAIL_TABS.map((tab) => {
+                      const channel = PERSONAL_DETAIL_NOTIFICATION_CHANNEL[activeTab][tab.id]
+                      const badgeLabel = formatUnreadBadgeCount(getUnread([channel]))
+                      return (
+                        <button
+                          key={tab.id}
+                          type="button"
+                          onClick={() => setDetailTab(tab.id)}
+                          className={`inline-flex items-center rounded-lg border px-3 py-1.5 text-sm ${
+                            detailTab === tab.id
+                              ? "border-cyan-500/45 bg-cyan-500/12 text-cyan-700 dark:text-cyan-200"
+                              : "border-slate-300/70 text-slate-600 hover:bg-slate-50 dark:border-white/10 dark:text-slate-300 dark:hover:bg-white/[0.06]"
+                          }`}
+                        >
+                          <span>{tab.label}</span>
+                          {badgeLabel && (
+                            <span className="ml-2 inline-flex min-w-5 items-center justify-center rounded-full bg-rose-500 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white">
+                              {badgeLabel}
+                            </span>
+                          )}
+                        </button>
+                      )
+                    })}
                   </div>
 
                   <div className="rounded-lg border border-slate-200/80 bg-slate-50/70 p-3 text-xs text-slate-600 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-300">

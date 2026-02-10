@@ -55,9 +55,13 @@ export async function GET(request: NextRequest) {
     const forwardedEvents = await prisma.forwardingEvent.findMany({
       where: {
         eventType: "task",
+        sourceNode: {
+          ownerUserId: session.user.id,
+        },
         ...(sourceNodeId
           ? {
               sourceNode: {
+                ownerUserId: session.user.id,
                 nodeId: sourceNodeId,
               },
             }
@@ -154,6 +158,7 @@ export async function POST(request: NextRequest) {
 
     publishRealtimeEvent({
       type: "task.updated",
+      userId: session.user.id,
       payload: {
         taskId: task.id,
         sessionId: task.sessionId,

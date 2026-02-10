@@ -43,6 +43,91 @@ function toJsonMetadata(value: Record<string, unknown>): Prisma.InputJsonValue {
   return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue
 }
 
+interface QuartermasterCitationSource {
+  id: string
+  path: string
+  title: string
+}
+
+function normalizeQuartermasterCitationSource(value: unknown, index: number): QuartermasterCitationSource | null {
+  if (!value || typeof value !== "object") {
+    return null
+  }
+
+  const record = value as Record<string, unknown>
+  const id = nonEmptyString(record.id) || `S${index + 1}`
+  const path = nonEmptyString(record.path)
+  if (!path) {
+    return null
+  }
+
+  return {
+    id: id.startsWith("S") ? id : `S${id}`,
+    path,
+    title: nonEmptyString(record.title) || "Untitled",
+  }
+}
+
+function quartermasterCitationSources(metadata: Record<string, unknown>): QuartermasterCitationSource[] {
+  const quartermaster = asRecord(metadata.quartermaster)
+  const knowledge = asRecord(quartermaster.knowledge)
+  if (!Array.isArray(knowledge.sources)) {
+    return []
+  }
+
+  const normalized = knowledge.sources
+    .map((source, index) => normalizeQuartermasterCitationSource(source, index))
+    .filter((source): source is QuartermasterCitationSource => Boolean(source))
+
+  const deduped = new Map<string, QuartermasterCitationSource>()
+  for (const source of normalized) {
+    deduped.set(source.id, source)
+  }
+
+  return [...deduped.values()].sort((left, right) => left.id.localeCompare(right.id))
+}
+
+export function buildQuartermasterCitationFooter(sources: QuartermasterCitationSource[]): string {
+  if (sources.length === 0) {
+    return "Sources:\n[S0] No indexed knowledge sources retrieved."
+  }
+
+  const lines = ["Sources:"]
+  for (const source of sources) {
+    lines.push(`[${source.id}] ${source.title} - ${source.path}`)
+  }
+  return lines.join("\n")
+}
+
+export function enforceQuartermasterCitationFooter(
+  output: string,
+  sources: QuartermasterCitationSource[],
+): string {
+  const trimmed = output.trimEnd()
+  const footer = buildQuartermasterCitationFooter(sources)
+
+  if (!trimmed) {
+    return footer
+  }
+
+  const hasSourceSection = /(^|\n)Sources:\n/iu.test(trimmed)
+  if (hasSourceSection) {
+    return trimmed
+  }
+
+  const hasCitationMarker = /\[S\d+\]/u.test(trimmed)
+  if (hasCitationMarker) {
+    return `${trimmed}\n\n${footer}`
+  }
+
+  if (sources.length > 0) {
+    const references = sources.map((source) => `[${source.id}]`).join(" ")
+    return `${trimmed}\n\nCitations: ${references}\n\n${footer}`
+  }
+
+  return `${trimmed}\n\n${footer}`
+}
+
 async function resolveBridgeShipDeploymentId(args: {
   userId: string
   bridgeMetadata: Record<string, unknown>
@@ -177,6 +262,12 @@ export async function executeSessionPrompt(args: ExecuteSessionPromptArgs): Prom
   }
 
   const bridgeMetadata = asRecord(metadataAsRecord.bridge)
+  const quartermasterMetadata = asRecord(metadataAsRecord.quartermaster)
+  const isQuartermasterChannel = quartermasterMetadata.channel === "ship-quartermaster"
+  const finalOutput = isQuartermasterChannel
+    ? enforceQuartermasterCitationFooter(runtimeResult.output, quartermasterCitationSources(metadataAsRecord))
+    : runtimeResult.output
+
   const isBridgeAgentChannel = bridgeMetadata.channel === "bridge-agent"
   const bridgeCrewId = nonEmptyString(bridgeMetadata.bridgeCrewId)
   const bridgeStationKey = nonEmptyString(bridgeMetadata.stationKey)
@@ -191,7 +282,7 @@ export async function executeSessionPrompt(args: ExecuteSessionPromptArgs): Prom
       bridgeCrewId,
       bridgeStationKey,
       provider: runtimeResult.provider,
-      content: runtimeResult.output,
+      content: finalOutput,
       signedAt,
     })
 
@@ -284,7 +375,7 @@ export async function executeSessionPrompt(args: ExecuteSessionPromptArgs): Prom
     data: {
       sessionId: args.sessionId,
       type: "ai_response",
-      content: runtimeResult.output,
+      content: finalOutput,
       metadata: responseMetadata,
     },
   })
@@ -300,7 +391,7 @@ export async function executeSessionPrompt(args: ExecuteSessionPromptArgs): Prom
         const deliveries = await enqueueBridgeDispatchDeliveries({
           deploymentId: shipDeploymentId,
           source: "cou_auto",
-          message: runtimeResult.output,
+          message: finalOutput,
           autoRelayOnly: true,
           payload: {
             type: "bridge.cou.auto-relay",
@@ -338,6 +429,7 @@ export async function executeSessionPrompt(args: ExecuteSessionPromptArgs): Prom
 
   publishRealtimeEvent({
     type: "session.prompted",
+    userId: args.userId,
     payload: {
       sessionId: args.sessionId,
       userInteractionId: interaction.id,

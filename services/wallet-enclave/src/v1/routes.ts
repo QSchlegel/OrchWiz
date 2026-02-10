@@ -26,6 +26,20 @@ function authToken(): string | null {
   return token && token.trim().length > 0 ? token : null
 }
 
+function timingSafeEqualStrings(a: string, b: string): boolean {
+  const aBuffer = Buffer.from(a, "utf8")
+  const bBuffer = Buffer.from(b, "utf8")
+  if (aBuffer.length !== bBuffer.length) {
+    return false
+  }
+
+  try {
+    return crypto.timingSafeEqual(aBuffer, bBuffer)
+  } catch {
+    return false
+  }
+}
+
 function isAuthorized(req: Request): boolean {
   const token = authToken()
   if (!token) {
@@ -33,7 +47,11 @@ function isAuthorized(req: Request): boolean {
   }
 
   const headerToken = req.header("x-wallet-enclave-token")
-  return Boolean(headerToken && crypto.timingSafeEqual(Buffer.from(headerToken), Buffer.from(token)))
+  if (!headerToken || !headerToken.trim()) {
+    return false
+  }
+
+  return timingSafeEqualStrings(headerToken, token)
 }
 
 function sendError(

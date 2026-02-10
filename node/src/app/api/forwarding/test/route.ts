@@ -1,28 +1,84 @@
 import crypto from "node:crypto"
 import { NextRequest, NextResponse } from "next/server"
-import { auth } from "@/lib/auth"
-import { headers } from "next/headers"
 import { signForwardingPayload } from "@/lib/forwarding/security"
+import { verifyApiKeyHash } from "@/lib/forwarding/security"
+import { prisma } from "@/lib/prisma"
+import { configuredForwardingTestTargetAllowlist, isForwardingTestTargetAllowed } from "@/lib/forwarding/test-targets"
+import { AccessControlError, requireAccessActor } from "@/lib/security/access-control"
 
 export const dynamic = "force-dynamic"
 
 export async function POST(request: NextRequest) {
   try {
-    const session = await auth.api.getSession({ headers: await headers() })
-    if (!session) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-    }
+    const actor = await requireAccessActor()
 
     const body = await request.json()
 
-    const targetUrl = typeof body?.targetUrl === "string" ? body.targetUrl : null
+    const targetUrlInput = typeof body?.targetUrl === "string" ? body.targetUrl.trim() : null
     const sourceNodeId = typeof body?.sourceNodeId === "string" ? body.sourceNodeId : null
     const sourceApiKey = typeof body?.sourceApiKey === "string" ? body.sourceApiKey : null
 
-    if (!targetUrl || !sourceNodeId || !sourceApiKey) {
+    if (!sourceNodeId || !sourceApiKey) {
       return NextResponse.json(
-        { error: "targetUrl, sourceNodeId, and sourceApiKey are required" },
+        { error: "sourceNodeId and sourceApiKey are required" },
         { status: 400 }
+      )
+    }
+
+    const sourceNode = await prisma.nodeSource.findFirst({
+      where: actor.isAdmin
+        ? {
+            id: sourceNodeId,
+          }
+        : {
+            id: sourceNodeId,
+            ownerUserId: actor.userId,
+          },
+      select: {
+        id: true,
+        nodeId: true,
+        apiKeyHash: true,
+      },
+    })
+    if (!sourceNode) {
+      return NextResponse.json({ error: "sourceNodeId not found" }, { status: 404 })
+    }
+    if (!verifyApiKeyHash(sourceApiKey, sourceNode.apiKeyHash)) {
+      return NextResponse.json({ error: "sourceApiKey mismatch" }, { status: 401 })
+    }
+
+    let targetUrl = targetUrlInput
+    if (!targetUrl) {
+      const forwardingConfig = await prisma.forwardingConfig.findFirst({
+        where: {
+          userId: actor.userId,
+          sourceNodeId: sourceNode.id,
+        },
+        orderBy: {
+          updatedAt: "desc",
+        },
+        select: {
+          targetUrl: true,
+        },
+      })
+      if (!forwardingConfig) {
+        return NextResponse.json(
+          { error: "targetUrl is required when no forwarding config exists for this source node" },
+          { status: 400 },
+        )
+      }
+
+      targetUrl = forwardingConfig.targetUrl
+    }
+
+    const allowlist = configuredForwardingTestTargetAllowlist()
+    if (!isForwardingTestTargetAllowed(targetUrl, allowlist)) {
+      return NextResponse.json(
+        {
+          error: "targetUrl is not allowed for forwarding test mode",
+          allowlist,
+        },
+        { status: 403 },
       )
     }
 
@@ -33,7 +89,7 @@ export async function POST(request: NextRequest) {
       payload: {
         status: "ok",
         message: "Forwarding connection test",
-        requestedBy: session.user.email,
+        requestedBy: actor.email || actor.userId,
       },
       metadata: {
         test: true,
@@ -48,7 +104,7 @@ export async function POST(request: NextRequest) {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-orchwiz-source-node": sourceNodeId,
+        "x-orchwiz-source-node": sourceNode.nodeId,
         "x-orchwiz-api-key": sourceApiKey,
         "x-orchwiz-timestamp": timestamp,
         "x-orchwiz-nonce": nonce,
@@ -65,6 +121,10 @@ export async function POST(request: NextRequest) {
       response: responsePayload,
     })
   } catch (error) {
+    if (error instanceof AccessControlError) {
+      return NextResponse.json({ error: error.message }, { status: error.status })
+    }
+
     console.error("Forwarding test failed:", error)
     return NextResponse.json({ error: "Internal server error" }, { status: 500 })
   }

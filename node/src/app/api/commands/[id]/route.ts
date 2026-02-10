@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from "next/server"
-import { auth } from "@/lib/auth"
 import { prisma } from "@/lib/prisma"
-import { headers } from "next/headers"
+import {
+  AccessControlError,
+  assertCanReadOwnedResource,
+  assertCanWriteOwnedResource,
+  requireAccessActor,
+} from "@/lib/security/access-control"
 
 export const dynamic = 'force-dynamic'
 
@@ -10,10 +14,7 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const session = await auth.api.getSession({ headers: await headers() })
-    if (!session) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-    }
+    const actor = await requireAccessActor()
 
     const { id } = await params
     const command = await prisma.command.findUnique({
@@ -32,8 +33,20 @@ export async function GET(
       return NextResponse.json({ error: "Command not found" }, { status: 404 })
     }
 
+    assertCanReadOwnedResource({
+      actor,
+      ownerUserId: command.ownerUserId,
+      isShared: command.isShared,
+      allowSharedRead: true,
+      notFoundMessage: "Command not found",
+    })
+
     return NextResponse.json(command)
   } catch (error) {
+    if (error instanceof AccessControlError) {
+      return NextResponse.json({ error: error.message }, { status: error.status })
+    }
+
     console.error("Error fetching command:", error)
     return NextResponse.json(
       { error: "Internal server error" },
@@ -47,12 +60,26 @@ export async function PUT(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const session = await auth.api.getSession({ headers: await headers() })
-    if (!session) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-    }
+    const actor = await requireAccessActor()
 
     const { id } = await params
+    const existing = await prisma.command.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        ownerUserId: true,
+      },
+    })
+    if (!existing) {
+      return NextResponse.json({ error: "Command not found" }, { status: 404 })
+    }
+
+    assertCanWriteOwnedResource({
+      actor,
+      ownerUserId: existing.ownerUserId,
+      notFoundMessage: "Command not found",
+    })
+
     const body = await request.json()
     const { name, description, scriptContent, path, isShared, teamId } = body
 
@@ -71,6 +98,10 @@ export async function PUT(
 
     return NextResponse.json(command)
   } catch (error) {
+    if (error instanceof AccessControlError) {
+      return NextResponse.json({ error: error.message }, { status: error.status })
+    }
+
     console.error("Error updating command:", error)
     return NextResponse.json(
       { error: "Internal server error" },
@@ -84,18 +115,36 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const session = await auth.api.getSession({ headers: await headers() })
-    if (!session) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-    }
+    const actor = await requireAccessActor()
 
     const { id } = await params
+    const existing = await prisma.command.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        ownerUserId: true,
+      },
+    })
+    if (!existing) {
+      return NextResponse.json({ error: "Command not found" }, { status: 404 })
+    }
+
+    assertCanWriteOwnedResource({
+      actor,
+      ownerUserId: existing.ownerUserId,
+      notFoundMessage: "Command not found",
+    })
+
     await prisma.command.delete({
       where: { id },
     })
 
     return NextResponse.json({ success: true })
   } catch (error) {
+    if (error instanceof AccessControlError) {
+      return NextResponse.json({ error: error.message }, { status: error.status })
+    }
+
     console.error("Error deleting command:", error)
     return NextResponse.json(
       { error: "Internal server error" },

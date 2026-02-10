@@ -7,8 +7,10 @@ OrchWiz exposes REST API routes under `node/src/app/api/`. Most routes are sessi
 ## Authentication and Security
 
 - Session cookie auth (Better Auth) is required for most routes.
+- Resource APIs are owner-scoped for non-admin users (`commands`, `subagents`, `permissions`, `permission policies`, `forwarding sources`).
 - `POST /api/forwarding/events` is machine-authenticated via signed headers (no session cookie).
 - `POST /api/ship-yard/launch` and `GET /api/ship-yard/status/[id]` optionally support bearer token auth via `SHIPYARD_API_TOKEN`.
+- `GET|PUT|DELETE /api/ship-yard/secrets` is session-authenticated and owner-scoped (no machine-token mode in v1).
 - `POST /api/github/webhook` verifies signature when `GITHUB_WEBHOOK_SECRET` is configured.
 
 ## Common Conventions
@@ -60,6 +62,9 @@ Forwarded records include metadata fields (for example `isForwarded`, `sourceNod
 - `GET /api/commands/[id]` fetch a command.
 - `POST /api/commands/[id]/execute` execute command via policy-gated adapter.
   - Response preserves existing execution fields and adds optional fields: `policy`, `blocked`, `metadata`.
+- Access behavior:
+  - non-admin users can mutate only owned commands
+  - shared commands are read-only for non-owners
 
 ### Subagents
 
@@ -68,6 +73,9 @@ Forwarded records include metadata fields (for example `isForwarded`, `sourceNod
 - `GET /api/subagents/[id]` fetch one.
 - `PUT /api/subagents/[id]` update one.
 - `DELETE /api/subagents/[id]` delete one.
+- Access behavior:
+  - non-admin users can mutate only owned subagents
+  - shared subagents are read-only for non-owners
 
 ### Ships and Applications
 
@@ -93,8 +101,56 @@ Forwarded records include metadata fields (for example `isForwarded`, `sourceNod
     - query param `userId`
     - header `x-orchwiz-user-id`
   - If an `Authorization` header is present and invalid, request is rejected (`401`) with no session fallback.
+  - Response includes top-level `baseRequirementsEstimate` for advisory compute/memory sizing.
+  - Persisted ship metadata includes `metadata.baseRequirementsEstimate` (schema version `shipyard_base_v1`).
 - `GET /api/ship-yard/status/[id]` fetch Ship Yard deployment status + bridge crew state.
   - Uses the same auth rules as `POST /api/ship-yard/launch`.
+  - Response includes top-level `baseRequirementsEstimate` (persisted value when valid; otherwise server-computed fallback).
+- `GET /api/ship-yard/secrets?deploymentProfile=<profile>&includeValues=true|false` fetch Ship Yard secret template for the authenticated user + profile.
+  - Query:
+    - `deploymentProfile` required (`local_starship_build|cloud_shipyard`)
+    - `includeValues` optional (`true|false`, default `false`)
+  - Response:
+    - `deploymentProfile`, `exists`
+    - `template`: `{ id, updatedAt, summary, values? }`
+      - `values` is included only when `includeValues=true`
+      - `summary.storageMode` is one of `none|encrypted|plaintext-fallback|legacy-plaintext|unknown`
+    - `snippets`: `{ envSnippet, terraformTfvarsSnippet }`
+      - snippets are redacted when `includeValues=false`
+- `PUT /api/ship-yard/secrets` upsert Ship Yard secret template for authenticated user + profile.
+  - Body:
+    - `deploymentProfile` required (`local_starship_build|cloud_shipyard`)
+    - `values` object supports:
+      - common: `better_auth_secret`, `github_client_id`, `github_client_secret`, `openai_api_key`, `openclaw_api_key`
+      - local-only: `postgres_password`
+      - cloud-only: `database_url`
+  - Response:
+    - `deploymentProfile`, `exists=true`
+    - `template`: `{ id, updatedAt, summary, values }`
+    - `snippets`: `{ envSnippet, terraformTfvarsSnippet }`
+- `DELETE /api/ship-yard/secrets?deploymentProfile=<profile>` delete template for authenticated user + profile.
+  - Response: `{ deploymentProfile, deleted }`
+- Ship Yard self-healing APIs are **beta** and may change before GA:
+  - `GET /api/ship-yard/self-heal/preferences`
+  - `PUT /api/ship-yard/self-heal/preferences`
+  - `GET /api/ship-yard/self-heal/run`
+  - `POST /api/ship-yard/self-heal/run`
+  - `GET /api/ship-yard/self-heal/runs`
+  - `POST /api/ship-yard/self-heal/cron`
+- Self-healing beta response contract:
+  - JSON payloads include `feature: { key: "shipyard-self-heal", stage: "beta" }`.
+  - HTTP headers include:
+    - `X-Orchwiz-Feature-Key: shipyard-self-heal`
+    - `X-Orchwiz-Feature-Stage: beta`
+  - Beta tagging is informational and does not change auth or execution behavior.
+- Secret-vault error behavior:
+  - Validation/profile mismatch errors return `400`.
+  - If private-memory encryption is required but wallet-enclave is unavailable, API returns `503` with a stable `code`.
+  - Unauthorized requests return `401` through normal session auth enforcement.
+- Encryption/fallback behavior:
+  - Encrypted envelope mode is used when wallet-enclave is enabled.
+  - Plaintext fallback is only allowed when private-memory encryption is not required by policy.
+  - Existing legacy plaintext rows remain readable for backward compatibility and are reported as `legacy-plaintext`.
 - Legacy compatibility aliases:
   - `GET /api/deployments` defaults to ship deployments when `deploymentType` is omitted.
   - `deploymentType=agent` still returns agent deployments.
@@ -154,6 +210,20 @@ Forwarded records include metadata fields (for example `isForwarded`, `sourceNod
 - `GET /api/permissions/[id]` fetch permission.
 - `PUT /api/permissions/[id]` update permission.
 - `DELETE /api/permissions/[id]` delete permission.
+- Access behavior:
+  - non-admin users can mutate only owned permissions
+  - shared permissions are read-only for non-owners
+
+### Permission Policies
+
+- `GET /api/permission-policies` list policies.
+- `POST /api/permission-policies` create custom policy.
+- `GET /api/permission-policies/[id]` fetch policy.
+- `PUT /api/permission-policies/[id]` update custom policy.
+- `DELETE /api/permission-policies/[id]` delete custom policy.
+- Access behavior:
+  - system policies are visible to all authenticated users and immutable
+  - custom policies are owner-scoped for non-admin users
 
 ### Actions
 
@@ -192,13 +262,32 @@ Forwarded records include metadata fields (for example `isForwarded`, `sourceNod
   - Request still accepts plaintext `targetApiKey`.
   - Stored secret format now uses an encoded envelope (encrypted with wallet-enclave when available/required, plaintext-fallback otherwise).
   - Existing legacy plaintext rows remain readable internally for backward compatibility.
+  - Response no longer returns plaintext source API key. It returns one-time credential fingerprint metadata when a source key is issued.
 - `POST /api/forwarding/test` run signed connectivity test from source to target.
+  - Requires owned `sourceNodeId` and matching `sourceApiKey`.
+  - `targetUrl` must match `FORWARDING_TEST_TARGET_ALLOWLIST` (or localhost defaults).
 
 ### Realtime (SSE)
 
 - `GET /api/events/stream` stream server-sent events.
   - Optional `types=typeA,typeB` query param filters event types.
+  - Event delivery is user-scoped; non-admin consumers receive only events tagged to their `userId`.
   - Emits event frames for session prompts, command execution, deployment/application updates, task/verification updates, forwarding ingestion, docs updates, webhook ingestion, and bridge updates.
+
+### Security
+
+- `POST /api/security/audits/run` run on-demand security audit for current user.
+  - Body:
+    - `shipDeploymentId?: string`
+    - `includeBridgeCrewStress?: boolean`
+    - `mode?: \"safe_sim\" | \"live\"`
+  - Persists markdown + json reports under `OWZ-Vault/00-Inbox/Security-Audits/`.
+  - Persists summary to `VerificationRun` (`type=test_suite`) and publishes `verification.updated`.
+- `GET /api/security/audits/latest` fetch latest security audit metadata for current user.
+- `POST /api/security/audits/nightly` cron-triggered audit fanout.
+  - Requires `Authorization: Bearer <SECURITY_AUDIT_CRON_TOKEN>`.
+- `POST /api/security/bridge-crew/stress` run bridge-crew pen/stress scorecard evaluation.
+- `GET /api/security/bridge-crew/scorecard` fetch latest bridge-crew scorecard for current user.
 
 ### Bridge and Topology
 
@@ -241,13 +330,54 @@ Forwarded records include metadata fields (for example `isForwarded`, `sourceNod
 - `GET /api/vaults` list vault summaries.
 - `GET /api/vaults/tree?vault=<id>` fetch tree for vault.
 - `GET /api/vaults/file?vault=<id>&path=<path.md>` fetch note preview/links.
+  - Optional query: `mode=preview|full` (default `preview`).
+  - `mode=full` is intended for editor loads and returns `413` when the note exceeds edit byte limits.
   - `agent-private` notes are decrypted on read.
   - Plaintext `agent-private` notes are lazily migrated to encrypted envelopes on direct read.
 - `POST /api/vaults/file` upsert a note.
   - Request: `{ vault, path, content }`
   - Response: `{ vaultId, path, size, mtime, encrypted, originVaultId }`
-- `GET /api/vaults/search?vault=<id>&q=<query>` search notes.
-  - `agent-private` encrypted notes are decrypted for indexing/search.
+- `PATCH /api/vaults/file` rename/move note within the same physical vault.
+  - Request: `{ vault, fromPath, toPath }`
+  - Response: `{ vaultId, fromPath, toPath, size, mtime, encrypted, originVaultId }`
+  - Cross-vault moves (namespace changes in joined scope) are rejected.
+- `DELETE /api/vaults/file?vault=<id>&path=<path.md>&mode=soft|hard` delete note.
+  - Default `mode=soft` moves note under `_trash/<ISO-timestamp>/...`.
+  - `mode=hard` permanently removes note.
+  - Response: `{ vaultId, path, mode, deletedPath, originVaultId }`
+- `GET /api/vaults/search?vault=<id>&q=<query>&mode=hybrid|lexical&k=<topK>` search notes.
+  - `mode` defaults to `hybrid`.
+  - `k` clamps to `1..100`.
+  - Response remains backward-compatible and may include per-result `score`, `scopeType`, `shipDeploymentId`, and `citations[]`.
+  - If embeddings are unavailable or RAG query fails, lexical fallback is used.
+- `GET /api/vaults/graph?vault=<id>&focusPath=<optional>&depth=<1..4>&includeUnresolved=<bool>&includeTrash=<bool>&q=<optional>`
+  - Returns graph nodes/edges for Vault graph view.
+  - Unresolved wiki/markdown links can be emitted as ghost nodes.
+
+### Ship Knowledge Base (Quartermaster-Scoped)
+
+- All endpoints require an authenticated owner of `shipDeploymentId`.
+- Shared KB path conventions in `Ship-Vault`:
+  - `kb/ships/<shipDeploymentId>/...` (ship-local)
+  - `kb/fleet/...` (fleet-wide)
+
+- `GET /api/ships/:id/knowledge?q=<query>&scope=ship|fleet|all&mode=hybrid|lexical&k=<topK>`
+  - Runs scoped RAG retrieval for ship context.
+  - Returns ranked citations with source ids (`S1..Sn`), scope type, and score fields.
+- `POST /api/ships/:id/knowledge`
+  - Create/update a KB note under allowed ship/fleet prefixes.
+  - Body: `{ path, content }` or `{ scope: \"ship\"|\"fleet\", relativePath, content }`.
+- `PATCH /api/ships/:id/knowledge`
+  - Rename/move KB note within allowed prefixes.
+  - Body: `{ fromPath, toPath }`.
+- `DELETE /api/ships/:id/knowledge?path=<kb-path>&mode=soft|hard`
+  - Delete KB note (default `hard`).
+- `GET /api/ships/:id/knowledge/tree?scope=ship|fleet|all`
+  - Returns scoped KB tree and latest sync summary.
+- `POST /api/ships/:id/knowledge/resync`
+  - Manual RAG resync for `ship|fleet|all`.
+  - Body: `{ scope, mode }`.
+  - Response includes run id + sync counters.
 
 ### Projects
 

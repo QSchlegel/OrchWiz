@@ -140,10 +140,12 @@ export async function PUT(
         shipId: deployment.id,
         status: deployment.status,
         nodeId: deployment.nodeId,
+        userId: session.user.id,
       })
     } else {
       publishRealtimeEvent({
         type: "deployment.updated",
+        userId: session.user.id,
         payload: {
           deploymentId: deployment.id,
           status: deployment.status,
@@ -202,10 +204,12 @@ export async function DELETE(
         shipId: existingDeployment.id,
         status: "deleted",
         nodeId: existingDeployment.nodeId,
+        userId: session.user.id,
       })
     } else {
       publishRealtimeEvent({
         type: "deployment.updated",
+        userId: session.user.id,
         payload: {
           deploymentId: id,
           status: "deleted",

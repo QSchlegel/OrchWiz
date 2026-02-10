@@ -26,6 +26,7 @@ export interface TraceEmitInput {
   status?: string | null
   payload: Record<string, unknown>
   metadata?: Record<string, unknown>
+  skipEncryption?: boolean
 }
 
 export interface TraceDecryptInput {
@@ -76,7 +77,7 @@ export function createTraceGateway(deps: TraceGatewayDependencies = {}): TraceGa
   return {
     async emitTrace(input: TraceEmitInput): Promise<void> {
       const normalizedPayload = deepClonePayload(input.payload)
-      const encryptEnabled = traceEncryptionEnabled()
+      const encryptEnabled = traceEncryptionEnabled() && input.skipEncryption !== true
 
       if (encryptEnabled) {
         const paths = sensitiveTraceFieldPaths()

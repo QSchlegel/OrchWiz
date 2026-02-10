@@ -7,9 +7,10 @@ interface VaultLinksPanelProps {
   file: VaultFileResponse | null
   selectedVaultSummary: VaultSummary | null
   onOpenLink: (vaultId: VaultId, path: string) => void
+  onCreateFromUnresolved?: (target: string) => void
 }
 
-export function VaultLinksPanel({ file, selectedVaultSummary, onOpenLink }: VaultLinksPanelProps) {
+export function VaultLinksPanel({ file, selectedVaultSummary, onOpenLink, onCreateFromUnresolved }: VaultLinksPanelProps) {
   if (!file) {
     return <p className="text-sm text-slate-500 dark:text-slate-400">Select a note to inspect metadata and links.</p>
   }
@@ -73,9 +74,20 @@ export function VaultLinksPanel({ file, selectedVaultSummary, onOpenLink }: Vaul
                     <ArrowRight className="h-3.5 w-3.5" />
                   </button>
                 ) : (
-                  <div className="mt-1.5 inline-flex items-center gap-1 text-slate-500 dark:text-slate-400">
-                    <Link2Off className="h-3.5 w-3.5" />
-                    <span className="truncate">Unresolved: {link.target}</span>
+                  <div className="mt-1.5 space-y-1.5 text-slate-500 dark:text-slate-400">
+                    <div className="inline-flex items-center gap-1">
+                      <Link2Off className="h-3.5 w-3.5" />
+                      <span className="truncate">Unresolved in current scope: {link.target}</span>
+                    </div>
+                    {onCreateFromUnresolved ? (
+                      <button
+                        type="button"
+                        onClick={() => onCreateFromUnresolved(link.target)}
+                        className="inline-flex items-center rounded border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50 dark:border-white/15 dark:bg-white/[0.03] dark:text-slate-200"
+                      >
+                        Create note from link
+                      </button>
+                    ) : null}
                   </div>
                 )}
               </div>

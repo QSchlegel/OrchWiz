@@ -1,4 +1,6 @@
 import type { ElementType } from "react"
+import { notificationChannelsForSidebarHref } from "@/lib/notifications/channels"
+import type { NotificationChannel } from "@/lib/types/notifications"
 import {
   Crosshair,
   Rocket,
@@ -30,6 +32,7 @@ export interface NavItem {
   href: string
   label: string
   icon: ElementType
+  channels: NotificationChannel[]
 }
 
 export interface NavGroup {
@@ -39,15 +42,24 @@ export interface NavGroup {
   items: NavItem[]
 }
 
+function navItem(href: string, label: string, icon: ElementType): NavItem {
+  return {
+    href,
+    label,
+    icon,
+    channels: notificationChannelsForSidebarHref(href),
+  }
+}
+
 export const sidebarNav: NavGroup[] = [
   {
     key: "mission-control",
     label: "Mission Control",
     icon: Crosshair,
     items: [
-      { href: "/sessions", label: "Sessions", icon: MonitorDot },
-      { href: "/tasks", label: "Tasks", icon: ListChecks },
-      { href: "/actions", label: "Actions", icon: Zap },
+      navItem("/sessions", "Sessions", MonitorDot),
+      navItem("/tasks", "Tasks", ListChecks),
+      navItem("/actions", "Actions", Zap),
     ],
   },
   {
@@ -55,10 +67,18 @@ export const sidebarNav: NavGroup[] = [
     label: "Fleet",
     icon: Rocket,
     items: [
-      { href: "/personal", label: "Personal", icon: Bot },
-      { href: "/ship-yard", label: "Ship Yard", icon: Ship },
-      { href: "/ships", label: "Ships", icon: Container },
-      { href: "/applications", label: "Applications", icon: AppWindow },
+      navItem("/ship-yard", "Ship Yard", Ship),
+      navItem("/ships", "Ships", Container),
+      navItem("/applications", "Applications", AppWindow),
+    ],
+  },
+  {
+    key: "personal",
+    label: "Personal",
+    icon: Bot,
+    items: [
+      navItem("/personal", "Agents", Bot),
+      navItem("/skills", "Skills", ShieldCheck),
     ],
   },
   {
@@ -66,12 +86,12 @@ export const sidebarNav: NavGroup[] = [
     label: "Bridge Ops",
     icon: Radio,
     items: [
-      { href: "/bridge", label: "Bridge", icon: Network },
-      { href: "/bridge-call", label: "Bridge Call", icon: Video },
-      { href: "/bridge-chat", label: "Bridge Chat", icon: Radio },
-      { href: "/bridge-connections", label: "Connections", icon: Webhook },
-      { href: "/uss-k8s", label: "USS-K8S", icon: Ship },
-      { href: "/vault", label: "Vault", icon: Database },
+      navItem("/bridge", "Bridge", Network),
+      navItem("/bridge-call", "Bridge Call", Video),
+      navItem("/bridge-chat", "Bridge Chat", Radio),
+      navItem("/bridge-connections", "Connections", Webhook),
+      navItem("/uss-k8s", "USS-K8S", Ship),
+      navItem("/vault", "Vault", Database),
     ],
   },
   {
@@ -79,9 +99,9 @@ export const sidebarNav: NavGroup[] = [
     label: "Arsenal",
     icon: Wrench,
     items: [
-      { href: "/commands", label: "Commands", icon: Terminal },
-      { href: "/permissions", label: "Permissions", icon: ShieldCheck },
-      { href: "/hooks", label: "Hooks", icon: Webhook },
+      navItem("/commands", "Commands", Terminal),
+      navItem("/permissions", "Permissions", ShieldCheck),
+      navItem("/hooks", "Hooks", Webhook),
     ],
   },
   {
@@ -89,9 +109,10 @@ export const sidebarNav: NavGroup[] = [
     label: "Intel",
     icon: ScanSearch,
     items: [
-      { href: "/verification", label: "Verification", icon: BadgeCheck },
-      { href: "/github/prs", label: "GitHub PRs", icon: Github },
-      { href: "/docs/claude", label: "Docs", icon: BookOpen },
+      navItem("/verification", "Verification", BadgeCheck),
+      navItem("/security", "Security", ShieldCheck),
+      navItem("/github/prs", "GitHub PRs", Github),
+      navItem("/docs/claude", "Docs", BookOpen),
     ],
   },
   {
@@ -99,7 +120,7 @@ export const sidebarNav: NavGroup[] = [
     label: "Community",
     icon: Globe,
     items: [
-      { href: "/projects", label: "Projects", icon: FolderKanban },
+      navItem("/projects", "Projects", FolderKanban),
     ],
   },
 ]

@@ -1,0 +1,58 @@
+name: Bug report
+description: Report incorrect or unstable behavior in OrchWiz.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Describe the bug and what you expected.
+      placeholder: Actual behavior vs expected behavior.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Exact steps so another contributor can reproduce quickly.
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, browser, Node.js version, and relevant config.
+      placeholder: |
+        - OS:
+        - Node:
+        - Browser:
+        - Relevant env vars:
+    validations:
+      required: true
+
+  - type: dropdown
+    id: pillar
+    attributes:
+      label: Impacted Agent VPC pillar
+      options:
+        - Boundary
+        - Control
+        - Traceability
+        - Unsure
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or evidence
+      description: Paste logs, API responses, screenshots, or trace references.
+      placeholder: Include evidence that helps triage.

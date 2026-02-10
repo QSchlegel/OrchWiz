@@ -111,6 +111,7 @@ export async function PUT(
 
     publishRealtimeEvent({
       type: "session.prompted",
+      userId: session.user.id,
       payload: {
         sessionId: updatedSession.id,
         status: updatedSession.status,
@@ -147,6 +148,7 @@ export async function DELETE(
 
     publishRealtimeEvent({
       type: "session.prompted",
+      userId: session.user.id,
       payload: {
         sessionId: id,
         status: "deleted",

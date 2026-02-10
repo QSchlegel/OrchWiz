@@ -626,6 +626,11 @@ async function processSessionToThreadJob(job: BridgeMirrorJob): Promise<void> {
 
   publishRealtimeEvent({
     type: "bridge.updated",
+    ...(thread.userId
+      ? {
+          userId: thread.userId,
+        }
+      : {}),
     payload: {
       source: "session_to_thread",
       threadId: thread.id,
@@ -725,6 +730,7 @@ async function processThreadToSessionJob(job: BridgeMirrorJob): Promise<void> {
 
   publishRealtimeEvent({
     type: "session.prompted",
+    userId: session.userId,
     payload: {
       sessionId: session.id,
       interactionId,
@@ -735,6 +741,7 @@ async function processThreadToSessionJob(job: BridgeMirrorJob): Promise<void> {
 
   publishRealtimeEvent({
     type: "bridge.updated",
+    userId: session.userId,
     payload: {
       source: "thread_to_session",
       threadId: thread.id,

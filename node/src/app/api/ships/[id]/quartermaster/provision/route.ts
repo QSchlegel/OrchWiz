@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { headers } from "next/headers"
 import { auth } from "@/lib/auth"
+import { publishNotificationUpdated } from "@/lib/realtime/notifications"
 import { ensureShipQuartermaster } from "@/lib/quartermaster/service"
 
 export const dynamic = "force-dynamic"
@@ -19,6 +20,12 @@ export async function POST(
     const quartermaster = await ensureShipQuartermaster({
       userId: session.user.id,
       shipDeploymentId: id,
+    })
+
+    publishNotificationUpdated({
+      userId: session.user.id,
+      channel: "quartermaster.chat",
+      entityId: id,
     })
 
     return NextResponse.json({

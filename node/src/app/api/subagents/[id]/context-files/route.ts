@@ -1,14 +1,20 @@
 import { NextRequest, NextResponse } from "next/server"
 import { existsSync } from "node:fs"
 import { resolve } from "node:path"
-import { headers } from "next/headers"
-import { auth } from "@/lib/auth"
 import { prisma } from "@/lib/prisma"
+import { publishNotificationUpdated } from "@/lib/realtime/notifications"
+import { personalDetailChannelForSubagent } from "@/lib/realtime/notification-routing"
 import {
   persistSubagentContextFiles,
   loadSubagentContextFiles,
   type EditableContextFile,
 } from "@/lib/subagents/context-files"
+import {
+  AccessControlError,
+  assertCanReadOwnedResource,
+  assertCanWriteOwnedResource,
+  requireAccessActor,
+} from "@/lib/security/access-control"
 
 export const dynamic = "force-dynamic"
 
@@ -61,10 +67,7 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> },
 ) {
   try {
-    const session = await auth.api.getSession({ headers: await headers() })
-    if (!session) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-    }
+    const actor = await requireAccessActor()
 
     const { id } = await params
     const subagent = await prisma.subagent.findUnique({
@@ -74,12 +77,22 @@ export async function GET(
         name: true,
         content: true,
         path: true,
+        ownerUserId: true,
+        isShared: true,
       },
     })
 
     if (!subagent) {
       return NextResponse.json({ error: "Subagent not found" }, { status: 404 })
     }
+
+    assertCanReadOwnedResource({
+      actor,
+      ownerUserId: subagent.ownerUserId,
+      isShared: subagent.isShared,
+      allowSharedRead: true,
+      notFoundMessage: "Subagent not found",
+    })
 
     const contextFiles = await loadSubagentContextFiles({
       repoRoot: resolveWorkspaceRoot(),
@@ -88,6 +101,10 @@ export async function GET(
 
     return NextResponse.json(contextFiles)
   } catch (error) {
+    if (error instanceof AccessControlError) {
+      return NextResponse.json({ error: error.message }, { status: error.status })
+    }
+
     console.error("Error loading subagent context files:", error)
     return NextResponse.json({ error: "Internal server error" }, { status: 500 })
   }
@@ -98,10 +115,7 @@ export async function PUT(
   { params }: { params: Promise<{ id: string }> },
 ) {
   try {
-    const session = await auth.api.getSession({ headers: await headers() })
-    if (!session) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-    }
+    const actor = await requireAccessActor()
 
     const { id } = await params
     const subagent = await prisma.subagent.findUnique({
@@ -111,12 +125,19 @@ export async function PUT(
         name: true,
         path: true,
         isShared: true,
+        ownerUserId: true,
       },
     })
 
     if (!subagent) {
       return NextResponse.json({ error: "Subagent not found" }, { status: 404 })
     }
+
+    assertCanWriteOwnedResource({
+      actor,
+      ownerUserId: subagent.ownerUserId,
+      notFoundMessage: "Subagent not found",
+    })
 
     if (subagent.isShared) {
       return NextResponse.json({ error: "Shared agents are read-only on this page." }, { status: 403 })
@@ -142,8 +163,18 @@ export async function PUT(
       },
     })
 
+    publishNotificationUpdated({
+      userId: subagent.ownerUserId || actor.userId,
+      channel: personalDetailChannelForSubagent(subagent.isShared, "context"),
+      entityId: subagent.id,
+    })
+
     return NextResponse.json(saved)
   } catch (error) {
+    if (error instanceof AccessControlError) {
+      return NextResponse.json({ error: error.message }, { status: error.status })
+    }
+
     const message = error instanceof Error ? error.message : "Internal server error"
     const status = message.includes("Invalid context file name") || message.includes("required") ? 400 : 500
     if (status === 500) {

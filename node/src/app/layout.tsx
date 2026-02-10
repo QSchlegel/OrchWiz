@@ -2,10 +2,26 @@ import type { Metadata } from "next";
 import "./globals.css";
 import { ThemeProvider } from "@/components/theme/ThemeProvider";
 import { ThemeFooter } from "@/components/theme/ThemeFooter";
+import { NotificationProvider } from "@/components/notifications";
 
 export const metadata: Metadata = {
-  title: "OrchWiz - Orchestration Wizard",
-  description: "Agent Ops command deck: orchestration sessions with passkeys, deploy agents across distributed nodes, every decision traceable.",
+  title: "OrchWiz | Agent VPC for AI Systems",
+  description:
+    "OrchWiz is the Agent VPC for AI infra engineers: run agents across local and cloud nodes with policy controls and full decision traceability.",
+  openGraph: {
+    title: "OrchWiz | Agent VPC for AI Systems",
+    description:
+      "Private-by-default runtime boundaries, policy controls, and auditable agent operations across local and cloud nodes.",
+    url: "https://github.com/QSchlegel/OrchWiz",
+    siteName: "OrchWiz",
+    type: "website",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "OrchWiz | Agent VPC for AI Systems",
+    description:
+      "Run agents across local and cloud nodes with policy controls and full decision traceability.",
+  },
 };
 
 const themeInitScript = `
@@ -42,8 +58,10 @@ export default function RootLayout({
       </head>
       <body>
         <ThemeProvider>
-          {children}
-          <ThemeFooter />
+          <NotificationProvider>
+            {children}
+            <ThemeFooter />
+          </NotificationProvider>
         </ThemeProvider>
       </body>
     </html>

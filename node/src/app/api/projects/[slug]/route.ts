@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { auth } from "@/lib/auth"
 import { prisma } from "@/lib/prisma"
 import { headers } from "next/headers"
+import { publishNotificationUpdated } from "@/lib/realtime/notifications"
 
 export const dynamic = 'force-dynamic'
 
@@ -96,6 +97,12 @@ export async function PUT(
       },
     })
 
+    publishNotificationUpdated({
+      userId: session.user.id,
+      channel: "projects",
+      entityId: updated.id,
+    })
+
     return NextResponse.json(updated)
   } catch (error) {
     console.error("Error updating project:", error)
@@ -131,6 +138,12 @@ export async function DELETE(
 
     await prisma.project.delete({
       where: { id: project.id },
+    })
+
+    publishNotificationUpdated({
+      userId: session.user.id,
+      channel: "projects",
+      entityId: project.id,
     })
 
     return NextResponse.json({ success: true })

@@ -21,6 +21,31 @@ function getEventBus(): EventBus {
   return globalThis.__orchwizEventBus
 }
 
+function asNonEmptyString(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null
+  }
+
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : null
+}
+
+function resolveEventUserId(event: { userId?: string; payload: unknown }): string | undefined {
+  const explicit = asNonEmptyString(event.userId)
+  if (explicit) {
+    return explicit
+  }
+
+  if (event.payload && typeof event.payload === "object") {
+    const candidate = asNonEmptyString((event.payload as Record<string, unknown>).userId)
+    if (candidate) {
+      return candidate
+    }
+  }
+
+  return undefined
+}
+
 export function subscribeRealtimeEvents(listener: EventListener): () => void {
   const bus = getEventBus()
   bus.listeners.add(listener)
@@ -30,10 +55,20 @@ export function subscribeRealtimeEvents(listener: EventListener): () => void {
 }
 
 export function publishRealtimeEvent<T = unknown>(event: Omit<RealtimeEvent<T>, "id" | "timestamp">): RealtimeEvent<T> {
+  const userId = resolveEventUserId({
+    userId: event.userId,
+    payload: event.payload,
+  })
+
   const fullEvent: RealtimeEvent<T> = {
     id: crypto.randomUUID(),
     timestamp: new Date().toISOString(),
     ...event,
+    ...(userId
+      ? {
+          userId,
+        }
+      : {}),
   }
 
   const bus = getEventBus()

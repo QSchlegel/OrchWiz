@@ -5,6 +5,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation"
 
 const SHIP_DEPLOYMENT_QUERY_KEY = "shipDeploymentId"
 const SHIP_DEPLOYMENT_STORAGE_KEY = "orchwiz:selected-ship-deployment"
+export const SHIP_SELECTION_CHANGED_EVENT = "orchwiz:ship-selection-changed"
 
 function sanitizeId(value: string | null): string | null {
   if (!value) return null
@@ -40,6 +41,11 @@ export function useShipSelection() {
       } else {
         window.localStorage.removeItem(SHIP_DEPLOYMENT_STORAGE_KEY)
       }
+      window.dispatchEvent(
+        new CustomEvent(SHIP_SELECTION_CHANGED_EVENT, {
+          detail: { shipDeploymentId: sanitizedId },
+        }),
+      )
 
       const params = new URLSearchParams(window.location.search)
       if (sanitizedId) {

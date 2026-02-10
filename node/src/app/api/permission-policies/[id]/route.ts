@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from "next/server"
-import { headers } from "next/headers"
-import { auth } from "@/lib/auth"
 import {
   deleteCustomPermissionPolicy,
   getPermissionPolicyById,
   PermissionPolicyError,
   updateCustomPermissionPolicy,
 } from "@/lib/execution/permission-policies"
+import { publishNotificationUpdated } from "@/lib/realtime/notifications"
+import { AccessControlError, requireAccessActor } from "@/lib/security/access-control"
 
 export const dynamic = "force-dynamic"
 
@@ -15,10 +15,7 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> },
 ) {
   try {
-    const session = await auth.api.getSession({ headers: await headers() })
-    if (!session) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-    }
+    const actor = await requireAccessActor()
 
     const { id } = await params
     const policy = await getPermissionPolicyById(id)
@@ -26,8 +23,16 @@ export async function GET(
       return NextResponse.json({ error: "Permission policy not found" }, { status: 404 })
     }
 
+    if (!actor.isAdmin && !(policy.isSystem || policy.ownerUserId === actor.userId)) {
+      return NextResponse.json({ error: "Permission policy not found" }, { status: 404 })
+    }
+
     return NextResponse.json(policy)
   } catch (error) {
+    if (error instanceof AccessControlError) {
+      return NextResponse.json({ error: error.message }, { status: error.status })
+    }
+
     console.error("Error fetching permission policy:", error)
     return NextResponse.json({ error: "Internal server error" }, { status: 500 })
   }
@@ -38,12 +43,17 @@ export async function PUT(
   { params }: { params: Promise<{ id: string }> },
 ) {
   try {
-    const session = await auth.api.getSession({ headers: await headers() })
-    if (!session) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-    }
+    const actor = await requireAccessActor()
 
     const { id } = await params
+    const existing = await getPermissionPolicyById(id)
+    if (!existing) {
+      return NextResponse.json({ error: "Permission policy not found" }, { status: 404 })
+    }
+    if (!actor.isAdmin && existing.ownerUserId !== actor.userId) {
+      return NextResponse.json({ error: "Permission policy not found" }, { status: 404 })
+    }
+
     const body = await request.json()
 
     const updated = await updateCustomPermissionPolicy(id, {
@@ -53,8 +63,20 @@ export async function PUT(
       rules: body?.rules,
     })
 
+    if (updated.ownerUserId) {
+      publishNotificationUpdated({
+        userId: updated.ownerUserId,
+        channel: "skills",
+        entityId: updated.id,
+      })
+    }
+
     return NextResponse.json(updated)
   } catch (error) {
+    if (error instanceof AccessControlError) {
+      return NextResponse.json({ error: error.message }, { status: error.status })
+    }
+
     if (error instanceof PermissionPolicyError) {
       return NextResponse.json({ error: error.message }, { status: error.status })
     }
@@ -69,16 +91,33 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> },
 ) {
   try {
-    const session = await auth.api.getSession({ headers: await headers() })
-    if (!session) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-    }
+    const actor = await requireAccessActor()
 
     const { id } = await params
+    const existing = await getPermissionPolicyById(id)
+    if (!existing) {
+      return NextResponse.json({ error: "Permission policy not found" }, { status: 404 })
+    }
+    if (!actor.isAdmin && existing.ownerUserId !== actor.userId) {
+      return NextResponse.json({ error: "Permission policy not found" }, { status: 404 })
+    }
+
     await deleteCustomPermissionPolicy(id)
+
+    if (existing.ownerUserId) {
+      publishNotificationUpdated({
+        userId: existing.ownerUserId,
+        channel: "skills",
+        entityId: existing.id,
+      })
+    }
 
     return NextResponse.json({ success: true })
   } catch (error) {
+    if (error instanceof AccessControlError) {
+      return NextResponse.json({ error: error.message }, { status: error.status })
+    }
+
     if (error instanceof PermissionPolicyError) {
       return NextResponse.json({ error: error.message }, { status: error.status })
     }

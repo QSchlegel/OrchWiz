@@ -12,6 +12,7 @@ import {
   normalizeDeploymentProfileInput,
   type InfrastructureConfig,
 } from "@/lib/deployment/profile"
+import { isCloudDeployOnlyEnabled } from "@/lib/deployment/cloud-deploy-only"
 import { publishShipUpdated } from "@/lib/shipyard/events"
 import {
   BRIDGE_CREW_ROLE_ORDER,
@@ -19,6 +20,11 @@ import {
   isBridgeCrewRole,
   type BridgeCrewRole,
 } from "@/lib/shipyard/bridge-crew"
+import { estimateShipBaseRequirements } from "@/lib/shipyard/resource-estimation"
+import {
+  buildShipDeploymentOverview,
+  hasCompleteBridgeCrewCoverage,
+} from "@/lib/shipyard/deployment-overview"
 import { buildOpenClawBridgeCrewContextBundle } from "@/lib/deployment/openclaw-context"
 import { resolveShipyardApiActorFromRequest } from "@/lib/shipyard/api-auth"
 import { ensureShipQuartermaster } from "@/lib/quartermaster/service"
@@ -132,6 +138,18 @@ export async function POST(request: NextRequest) {
         { status: 400 },
       )
     }
+    if (!hasCompleteBridgeCrewCoverage(crewRoles)) {
+      return NextResponse.json(
+        {
+          error: "Ship launch requires all six bridge crew roles (XO, OPS, ENG, SEC, MED, COU).",
+          details: {
+            requiredCrewRoles: BRIDGE_CREW_ROLE_ORDER,
+            receivedCrewRoles: crewRoles,
+          },
+        },
+        { status: 400 },
+      )
+    }
 
     const crewOverrides = parseCrewOverrides(body?.crewOverrides)
 
@@ -142,10 +160,45 @@ export async function POST(request: NextRequest) {
       advancedNodeTypeOverride: body?.advancedNodeTypeOverride,
       config: body?.config,
     })
+
+    if (
+      normalizedProfile.deploymentProfile === "local_starship_build"
+      && isCloudDeployOnlyEnabled()
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "Local Starship Build launches are disabled because CLOUD_DEPLOY_ONLY=true. Use Cloud Shipyard instead.",
+          code: "CLOUD_DEPLOY_ONLY",
+          details: {
+            blockedDeploymentProfile: "local_starship_build",
+            requiredDeploymentProfile: "cloud_shipyard",
+            suggestedCommands: [
+              "Set deploymentProfile to cloud_shipyard and retry launch.",
+              "Unset CLOUD_DEPLOY_ONLY to re-enable local starship launches.",
+            ],
+          },
+        },
+        { status: 403 },
+      )
+    }
+
     const saneBootstrap =
       normalizedProfile.deploymentProfile === "local_starship_build"
         ? (asBoolean(body?.saneBootstrap) ?? true)
         : false
+    const baseRequirementsEstimate = estimateShipBaseRequirements({
+      deploymentProfile: normalizedProfile.deploymentProfile,
+      crewRoles,
+    })
+    const deploymentOverview = buildShipDeploymentOverview({
+      deploymentProfile: normalizedProfile.deploymentProfile,
+      provisioningMode: normalizedProfile.provisioningMode,
+      nodeType: normalizedProfile.nodeType,
+      infrastructure: normalizedProfile.infrastructure,
+      crewRoles,
+      baseRequirementsEstimate,
+    })
 
     const created = await prisma.$transaction(async (tx) => {
       const deployment = await tx.agentDeployment.create({
@@ -163,6 +216,21 @@ export async function POST(request: NextRequest) {
           metadata: {
             shipYard: true,
             bridgeCrewRoles: crewRoles,
+            baseRequirementsEstimate:
+              baseRequirementsEstimate as unknown as Prisma.InputJsonValue,
+            deploymentOverview:
+              deploymentOverview as unknown as Prisma.InputJsonValue,
+            apiActor: {
+              type: actorResolution.actor.type,
+              requestedUserId:
+                actorResolution.actor.type === "token"
+                  ? actorResolution.actor.requestedUserId
+                  : actorResolution.actor.userId,
+              impersonated:
+                actorResolution.actor.type === "token"
+                  ? actorResolution.actor.impersonated
+                  : false,
+            },
             ...(normalizedProfile.deploymentProfile === "local_starship_build"
               ? { saneBootstrap }
               : {}),
@@ -251,6 +319,7 @@ export async function POST(request: NextRequest) {
           shipId: deployment.id,
           status: deployment.status,
           nodeId: deployment.nodeId,
+          userId: ownerUserId,
         })
 
         return NextResponse.json(
@@ -261,6 +330,8 @@ export async function POST(request: NextRequest) {
             deployment,
             bridgeCrew,
             quartermaster,
+            baseRequirementsEstimate,
+            deploymentOverview,
           },
           { status: launchResult.httpStatus },
         )
@@ -305,12 +376,15 @@ export async function POST(request: NextRequest) {
       shipId: deployment.id,
       status: deployment.status,
       nodeId: deployment.nodeId,
+      userId: ownerUserId,
     })
 
     return NextResponse.json({
       deployment,
       bridgeCrew,
       quartermaster,
+      baseRequirementsEstimate,
+      deploymentOverview,
     })
   } catch (error) {
     console.error("Error launching ship yard deployment:", error)

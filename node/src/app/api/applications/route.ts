@@ -90,9 +90,13 @@ export async function GET(request: NextRequest) {
     const forwardedEvents = await prisma.forwardingEvent.findMany({
       where: {
         eventType: "application",
+        sourceNode: {
+          ownerUserId: session.user.id,
+        },
         ...(sourceNodeId
           ? {
               sourceNode: {
+                ownerUserId: session.user.id,
                 nodeId: sourceNodeId,
               },
             }
@@ -312,6 +316,7 @@ export async function POST(request: NextRequest) {
       status: updatedApplication.status,
       nodeId: updatedApplication.nodeId,
       shipDeploymentId: updatedApplication.shipDeploymentId,
+      userId: updatedApplication.userId,
     })
 
     const normalizedInfrastructure = normalizeInfrastructureInConfig(

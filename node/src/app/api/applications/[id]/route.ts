@@ -186,6 +186,7 @@ export async function PUT(
       status: application.status,
       nodeId: application.nodeId,
       shipDeploymentId: application.shipDeploymentId,
+      userId: session.user.id,
     })
 
     const normalizedInfrastructure = normalizeInfrastructureInConfig(
@@ -253,6 +254,7 @@ export async function DELETE(
       status: "deleted",
       nodeId: existingApplication.nodeId,
       shipDeploymentId: existingApplication.shipDeploymentId,
+      userId: session.user.id,
     })
 
     return NextResponse.json({ success: true })

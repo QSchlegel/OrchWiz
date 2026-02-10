@@ -1,6 +1,9 @@
 "use client"
 
 import { useEffect, useState } from "react"
+import { useNotifications } from "@/components/notifications"
+import { PERMISSIONS_TAB_NOTIFICATION_CHANNEL } from "@/lib/notifications/channels"
+import { formatUnreadBadgeCount } from "@/lib/notifications/store"
 
 interface Permission {
   id: string
@@ -16,6 +19,7 @@ interface Permission {
 type TabType = "allow" | "ask" | "deny" | "workspace"
 
 export default function PermissionsPage() {
+  const { getUnread, registerActiveChannels } = useNotifications()
   const [permissions, setPermissions] = useState<Permission[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [activeTab, setActiveTab] = useState<TabType>("allow")
@@ -34,6 +38,11 @@ export default function PermissionsPage() {
   useEffect(() => {
     fetchPermissions()
   }, [activeTab])
+
+  useEffect(() => {
+    const channel = PERMISSIONS_TAB_NOTIFICATION_CHANNEL[activeTab]
+    return registerActiveChannels([channel])
+  }, [activeTab, registerActiveChannels])
 
   const fetchPermissions = async () => {
     setIsLoading(true)
@@ -130,24 +139,31 @@ export default function PermissionsPage() {
         {/* Tabs */}
         <div className="mb-6 border-b border-gray-200 dark:border-gray-700">
           <nav className="flex space-x-8">
-            {(["allow", "ask", "deny", "workspace"] as TabType[]).map(
-              (tab) => (
+            {(["allow", "ask", "deny", "workspace"] as TabType[]).map((tab) => {
+              const channel = PERMISSIONS_TAB_NOTIFICATION_CHANNEL[tab]
+              const badgeLabel = formatUnreadBadgeCount(getUnread([channel]))
+              return (
                 <button
                   key={tab}
                   onClick={() => {
                     setActiveTab(tab)
                     setSearchQuery("")
                   }}
-                  className={`py-4 px-1 border-b-2 font-medium text-sm capitalize ${
+                  className={`inline-flex items-center py-4 px-1 border-b-2 font-medium text-sm capitalize ${
                     activeTab === tab
                       ? "border-blue-500 text-blue-600 dark:text-blue-400"
                       : "border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 dark:text-gray-400 dark:hover:text-gray-300"
                   }`}
                 >
-                  {tab}
+                  <span>{tab}</span>
+                  {badgeLabel && (
+                    <span className="ml-2 inline-flex min-w-5 items-center justify-center rounded-full bg-rose-500 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white">
+                      {badgeLabel}
+                    </span>
+                  )}
                 </button>
               )
-            )}
+            })}
           </nav>
         </div>
 

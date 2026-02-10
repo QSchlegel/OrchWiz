@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { auth } from "@/lib/auth"
 import { headers } from "next/headers"
 import { prisma } from "@/lib/prisma"
+import { publishNotificationUpdated } from "@/lib/realtime/notifications"
 import {
   BridgeConnectionValidationError,
   validateBridgeConnectionConfig,
@@ -152,6 +153,12 @@ export async function PATCH(
       data: updateData,
     })
 
+    publishNotificationUpdated({
+      userId: session.user.id,
+      channel: "bridge-connections",
+      entityId: updated.id,
+    })
+
     return NextResponse.json(mapConnectionForResponse(updated))
   } catch (error) {
     if (error instanceof BridgeConnectionValidationError) {
@@ -193,6 +200,12 @@ export async function DELETE(
       where: {
         id: existing.id,
       },
+    })
+
+    publishNotificationUpdated({
+      userId: session.user.id,
+      channel: "bridge-connections",
+      entityId: existing.id,
     })
 
     return NextResponse.json({ deleted: true })

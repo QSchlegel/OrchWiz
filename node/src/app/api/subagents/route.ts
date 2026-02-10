@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server"
 import { Prisma } from "@prisma/client"
-import { auth } from "@/lib/auth"
 import { prisma } from "@/lib/prisma"
-import { headers } from "next/headers"
+import { publishNotificationUpdated } from "@/lib/realtime/notifications"
+import { personalTopChannelForSubagent } from "@/lib/realtime/notification-routing"
 import { normalizeSubagentSettings } from "@/lib/subagents/settings"
 import { ensureDefaultPolicyAssignmentForSubagent } from "@/lib/execution/permission-policies"
+import { AccessControlError, ownerScopedSharedReadWhere, requireAccessActor } from "@/lib/security/access-control"
 
 export const dynamic = 'force-dynamic'
 
@@ -21,24 +22,28 @@ async function assignDefaultPolicyProfile(subagent: { id: string; isShared: bool
 
 export async function GET(request: NextRequest) {
   try {
-    const session = await auth.api.getSession({ headers: await headers() })
-    if (!session) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-    }
+    const actor = await requireAccessActor()
 
     const searchParams = request.nextUrl.searchParams
     const teamId = searchParams.get("teamId")
     const isShared = searchParams.get("isShared")
 
-    const where: any = {
-      OR: [
-        { isShared: true },
-        { teamId: teamId || null },
-      ],
+    const where: any = ownerScopedSharedReadWhere({
+      actor,
+      includeShared: true,
+    })
+
+    const andClauses: Record<string, unknown>[] = []
+    if (teamId !== null) {
+      andClauses.push({ teamId: teamId || null })
     }
 
     if (isShared === "true") {
-      where.isShared = true
+      andClauses.push({ isShared: true })
+    }
+
+    if (andClauses.length > 0) {
+      where.AND = andClauses
     }
 
     const subagents = await prisma.subagent.findMany({
@@ -55,6 +60,10 @@ export async function GET(request: NextRequest) {
       })),
     )
   } catch (error) {
+    if (error instanceof AccessControlError) {
+      return NextResponse.json({ error: error.message }, { status: error.status })
+    }
+
     console.error("Error fetching subagents:", error)
     return NextResponse.json(
       { error: "Internal server error" },
@@ -65,11 +74,10 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   let parsedBody: any = null
+  let actorUserId: string | null = null
   try {
-    const session = await auth.api.getSession({ headers: await headers() })
-    if (!session) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-    }
+    const actor = await requireAccessActor()
+    actorUserId = actor.userId
 
     const body = await request.json()
     parsedBody = body
@@ -91,10 +99,17 @@ export async function POST(request: NextRequest) {
         settings: normalizeSubagentSettings(settings),
         isShared: isShared || false,
         teamId: teamId || null,
+        ownerUserId: actor.userId,
       },
     })
 
     await assignDefaultPolicyProfile(subagent)
+
+    publishNotificationUpdated({
+      userId: actor.userId,
+      channel: personalTopChannelForSubagent(subagent.isShared),
+      entityId: subagent.id,
+    })
 
     return NextResponse.json(subagent, { status: 201 })
   } catch (error) {
@@ -116,9 +131,17 @@ export async function POST(request: NextRequest) {
               path,
               isShared: isShared || false,
               teamId: teamId || null,
+              ownerUserId: actorUserId,
             },
           })
           await assignDefaultPolicyProfile(subagent)
+          if (actorUserId) {
+            publishNotificationUpdated({
+              userId: actorUserId,
+              channel: personalTopChannelForSubagent(subagent.isShared),
+              entityId: subagent.id,
+            })
+          }
           return NextResponse.json(subagent, { status: 201 })
         } catch (retryError) {
           console.error("Error creating subagent (fallback without settings):", retryError)
@@ -129,6 +152,10 @@ export async function POST(request: NextRequest) {
         { error: `Database request failed (${error.code}). ${error.message}` },
         { status: 500 }
       )
+    }
+
+    if (error instanceof AccessControlError) {
+      return NextResponse.json({ error: error.message }, { status: error.status })
     }
 
     if (error instanceof Error) {

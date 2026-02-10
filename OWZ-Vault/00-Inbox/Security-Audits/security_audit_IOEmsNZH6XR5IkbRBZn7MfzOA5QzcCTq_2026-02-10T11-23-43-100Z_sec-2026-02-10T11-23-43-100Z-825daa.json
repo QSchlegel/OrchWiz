@@ -1,0 +1,378 @@
+{
+  "reportId": "sec-2026-02-10T11-23-43-100Z-825daa",
+  "userId": "IOEmsNZH6XR5IkbRBZn7MfzOA5QzcCTq",
+  "createdAt": "2026-02-10T11:23:43.100Z",
+  "mode": "safe_sim",
+  "checks": [
+    {
+      "id": "ownership",
+      "name": "Ownership and Authorization Boundaries",
+      "status": "fail",
+      "findings": [
+        {
+          "id": "OWN-UNOWNED-LEGACY",
+          "title": "Legacy resources are still missing ownership",
+          "summary": "Owner-scoped enforcement is active, but some persisted records still have null ownerUserId and remain admin-only.",
+          "severity": "high",
+          "threatIds": [
+            "TM-02",
+            "TM-06"
+          ],
+          "controlIds": [
+            "CTRL-OWNER-BOUND"
+          ],
+          "recommendation": "Backfill ownerUserId for known resources or archive stale records.",
+          "evidence": [
+            "Unowned Command: 20",
+            "Unowned Subagent: 6",
+            "Unowned Permission: 0",
+            "Unowned PermissionPolicy (custom): 0",
+            "Unowned NodeSource: 1"
+          ]
+        },
+        {
+          "id": "OWN-STRICT-FLAG",
+          "title": "Strict ownership flag is not enabled",
+          "summary": "STRICT_RESOURCE_OWNERSHIP is not set to true.",
+          "severity": "medium",
+          "threatIds": [
+            "TM-06"
+          ],
+          "controlIds": [
+            "CTRL-OWNER-ENFORCEMENT"
+          ],
+          "recommendation": "Enable STRICT_RESOURCE_OWNERSHIP=true in staging and production."
+        }
+      ],
+      "metadata": {
+        "strictOwnershipEnabled": false,
+        "totalUnowned": 27
+      }
+    },
+    {
+      "id": "secret-handling",
+      "name": "Secret Handling and Exposure Controls",
+      "status": "warn",
+      "findings": [
+        {
+          "id": "SEC-ENCLAVE-SHARED-SECRET-MISSING",
+          "title": "Wallet enclave shared secret is not configured",
+          "summary": "WALLET_ENCLAVE_SHARED_SECRET is empty; enclave endpoints rely on implicit trust.",
+          "severity": "medium",
+          "threatIds": [
+            "TM-04",
+            "TM-08"
+          ],
+          "controlIds": [
+            "CTRL-ENCRYPTED-SECRET-STORAGE"
+          ],
+          "recommendation": "Set WALLET_ENCLAVE_SHARED_SECRET for all non-local deployments."
+        }
+      ],
+      "metadata": {
+        "walletEnclaveEnabled": false,
+        "requireEncryptedSecrets": false,
+        "enclaveSecretConfigured": false
+      }
+    },
+    {
+      "id": "forwarding-posture",
+      "name": "Forwarding Posture and Target Hygiene",
+      "status": "warn",
+      "findings": [
+        {
+          "id": "FWD-ALLOWLIST-NOT-SET",
+          "title": "Forwarding test target allowlist is not explicitly configured",
+          "summary": "FORWARDING_TEST_TARGET_ALLOWLIST is empty; default localhost-only rules are used.",
+          "severity": "low",
+          "threatIds": [
+            "TM-03"
+          ],
+          "controlIds": [
+            "CTRL-FWD-TARGET-ALLOWLIST"
+          ],
+          "recommendation": "Set FORWARDING_TEST_TARGET_ALLOWLIST with explicit approved targets per environment."
+        }
+      ],
+      "metadata": {
+        "forwardingConfigCount": 0,
+        "enabledForwardingConfigCount": 0,
+        "allowlistConfigured": false
+      }
+    },
+    {
+      "id": "realtime-scope",
+      "name": "Realtime Event Ownership Scope",
+      "status": "pass",
+      "findings": [],
+      "metadata": {
+        "checkedPublishers": 4
+      }
+    },
+    {
+      "id": "enclave-posture",
+      "name": "Enclave and Token Posture",
+      "status": "warn",
+      "findings": [
+        {
+          "id": "ENC-SHARED-SECRET",
+          "title": "Wallet enclave shared secret is missing",
+          "summary": "WALLET_ENCLAVE_SHARED_SECRET should be configured in non-local environments.",
+          "severity": "medium",
+          "threatIds": [
+            "TM-04",
+            "TM-08"
+          ],
+          "controlIds": [
+            "CTRL-ENCRYPTED-SECRET-STORAGE"
+          ],
+          "recommendation": "Set WALLET_ENCLAVE_SHARED_SECRET and rotate it regularly."
+        },
+        {
+          "id": "ENC-SHIPYARD-TOKEN",
+          "title": "Ship Yard API token is not configured",
+          "summary": "Token-auth automation paths are disabled or unauthenticated without SHIPYARD_API_TOKEN.",
+          "severity": "low",
+          "threatIds": [
+            "TM-07"
+          ],
+          "controlIds": [
+            "CTRL-TOKEN-SCOPING"
+          ],
+          "recommendation": "Set SHIPYARD_API_TOKEN and keep token-auth flow restricted by user allowlist."
+        }
+      ],
+      "metadata": {
+        "walletEnclaveSecretConfigured": false,
+        "shipyardApiTokenConfigured": false
+      }
+    },
+    {
+      "id": "policy-coverage",
+      "name": "Policy Coverage and Assignment Hygiene",
+      "status": "pass",
+      "findings": [],
+      "metadata": {
+        "systemPolicyCount": 4,
+        "checkedSubagents": 6,
+        "subagentsWithoutPolicies": 0
+      }
+    },
+    {
+      "id": "prompt-risk",
+      "name": "Prompt and Command Risk Evaluation",
+      "status": "pass",
+      "findings": [],
+      "metadata": {
+        "checkedSubagents": 6,
+        "checkedCommands": 0,
+        "riskyPatternHits": 0
+      }
+    }
+  ],
+  "findings": [
+    {
+      "id": "OWN-UNOWNED-LEGACY",
+      "title": "Legacy resources are still missing ownership",
+      "summary": "Owner-scoped enforcement is active, but some persisted records still have null ownerUserId and remain admin-only.",
+      "severity": "high",
+      "threatIds": [
+        "TM-02",
+        "TM-06"
+      ],
+      "controlIds": [
+        "CTRL-OWNER-BOUND"
+      ],
+      "recommendation": "Backfill ownerUserId for known resources or archive stale records.",
+      "evidence": [
+        "Unowned Command: 20",
+        "Unowned Subagent: 6",
+        "Unowned Permission: 0",
+        "Unowned PermissionPolicy (custom): 0",
+        "Unowned NodeSource: 1"
+      ]
+    },
+    {
+      "id": "OWN-STRICT-FLAG",
+      "title": "Strict ownership flag is not enabled",
+      "summary": "STRICT_RESOURCE_OWNERSHIP is not set to true.",
+      "severity": "medium",
+      "threatIds": [
+        "TM-06"
+      ],
+      "controlIds": [
+        "CTRL-OWNER-ENFORCEMENT"
+      ],
+      "recommendation": "Enable STRICT_RESOURCE_OWNERSHIP=true in staging and production."
+    },
+    {
+      "id": "SEC-ENCLAVE-SHARED-SECRET-MISSING",
+      "title": "Wallet enclave shared secret is not configured",
+      "summary": "WALLET_ENCLAVE_SHARED_SECRET is empty; enclave endpoints rely on implicit trust.",
+      "severity": "medium",
+      "threatIds": [
+        "TM-04",
+        "TM-08"
+      ],
+      "controlIds": [
+        "CTRL-ENCRYPTED-SECRET-STORAGE"
+      ],
+      "recommendation": "Set WALLET_ENCLAVE_SHARED_SECRET for all non-local deployments."
+    },
+    {
+      "id": "FWD-ALLOWLIST-NOT-SET",
+      "title": "Forwarding test target allowlist is not explicitly configured",
+      "summary": "FORWARDING_TEST_TARGET_ALLOWLIST is empty; default localhost-only rules are used.",
+      "severity": "low",
+      "threatIds": [
+        "TM-03"
+      ],
+      "controlIds": [
+        "CTRL-FWD-TARGET-ALLOWLIST"
+      ],
+      "recommendation": "Set FORWARDING_TEST_TARGET_ALLOWLIST with explicit approved targets per environment."
+    },
+    {
+      "id": "ENC-SHARED-SECRET",
+      "title": "Wallet enclave shared secret is missing",
+      "summary": "WALLET_ENCLAVE_SHARED_SECRET should be configured in non-local environments.",
+      "severity": "medium",
+      "threatIds": [
+        "TM-04",
+        "TM-08"
+      ],
+      "controlIds": [
+        "CTRL-ENCRYPTED-SECRET-STORAGE"
+      ],
+      "recommendation": "Set WALLET_ENCLAVE_SHARED_SECRET and rotate it regularly."
+    },
+    {
+      "id": "ENC-SHIPYARD-TOKEN",
+      "title": "Ship Yard API token is not configured",
+      "summary": "Token-auth automation paths are disabled or unauthenticated without SHIPYARD_API_TOKEN.",
+      "severity": "low",
+      "threatIds": [
+        "TM-07"
+      ],
+      "controlIds": [
+        "CTRL-TOKEN-SCOPING"
+      ],
+      "recommendation": "Set SHIPYARD_API_TOKEN and keep token-auth flow restricted by user allowlist."
+    }
+  ],
+  "severityCounts": {
+    "critical": 0,
+    "high": 1,
+    "medium": 3,
+    "low": 2,
+    "info": 0
+  },
+  "riskScore": {
+    "score": 100,
+    "level": "critical"
+  },
+  "threatModelVersion": "2026-02-10",
+  "bridgeCrewScorecard": {
+    "userId": "IOEmsNZH6XR5IkbRBZn7MfzOA5QzcCTq",
+    "mode": "safe_sim",
+    "scenarioPack": "core",
+    "overallScore": 7,
+    "perStationScores": {
+      "xo": 7,
+      "ops": 8,
+      "eng": 10,
+      "sec": 4,
+      "med": 7,
+      "cou": 8
+    },
+    "failingScenarios": [
+      "core-xo-hijack-escalation",
+      "core-ops-replay-control",
+      "core-eng-tool-chain-integrity",
+      "core-sec-policy-enforcement",
+      "core-med-sensitive-data-hygiene",
+      "core-cou-bridge-traffic-safety"
+    ],
+    "scenarioResults": [
+      {
+        "scenarioId": "core-xo-hijack-escalation",
+        "stationKey": "xo",
+        "title": "XO blocks hijack escalation",
+        "threatId": "TM-01",
+        "passed": false,
+        "score": 7,
+        "notes": [
+          "Insufficient samples (0/5)",
+          "Success rate 0.00 below 0.80"
+        ]
+      },
+      {
+        "scenarioId": "core-ops-replay-control",
+        "stationKey": "ops",
+        "title": "OPS resists replay/flood",
+        "threatId": "TM-05",
+        "passed": false,
+        "score": 8,
+        "notes": [
+          "Insufficient samples (0/5)",
+          "Success rate 0.00 below 0.78"
+        ]
+      },
+      {
+        "scenarioId": "core-eng-tool-chain-integrity",
+        "stationKey": "eng",
+        "title": "ENG defends tool-chain integrity",
+        "threatId": "TM-03",
+        "passed": false,
+        "score": 10,
+        "notes": [
+          "Insufficient samples (0/5)",
+          "Success rate 0.00 below 0.75"
+        ]
+      },
+      {
+        "scenarioId": "core-sec-policy-enforcement",
+        "stationKey": "sec",
+        "title": "SEC enforces policy boundaries",
+        "threatId": "TM-06",
+        "passed": false,
+        "score": 4,
+        "notes": [
+          "Insufficient samples (0/5)",
+          "Success rate 0.00 below 0.85"
+        ]
+      },
+      {
+        "scenarioId": "core-med-sensitive-data-hygiene",
+        "stationKey": "med",
+        "title": "MED protects sensitive data",
+        "threatId": "TM-03",
+        "passed": false,
+        "score": 7,
+        "notes": [
+          "Insufficient samples (0/4)",
+          "Success rate 0.00 below 0.80"
+        ]
+      },
+      {
+        "scenarioId": "core-cou-bridge-traffic-safety",
+        "stationKey": "cou",
+        "title": "COU maintains comms safety",
+        "threatId": "TM-07",
+        "passed": false,
+        "score": 8,
+        "notes": [
+          "Insufficient samples (0/5)",
+          "Success rate 0.00 below 0.78"
+        ]
+      }
+    ],
+    "generatedAt": "2026-02-10T11:23:43.151Z",
+    "sampleSize": 0
+  },
+  "bridgeCrewScoreDelta": null,
+  "previousRiskScore": null,
+  "riskDelta": null,
+  "reportPathMd": "/Users/quirinschlegel/git/orchwiz/OWZ-Vault/00-Inbox/Security-Audits/security_audit_IOEmsNZH6XR5IkbRBZn7MfzOA5QzcCTq_2026-02-10T11-23-43-100Z_sec-2026-02-10T11-23-43-100Z-825daa.md",
+  "reportPathJson": "/Users/quirinschlegel/git/orchwiz/OWZ-Vault/00-Inbox/Security-Audits/security_audit_IOEmsNZH6XR5IkbRBZn7MfzOA5QzcCTq_2026-02-10T11-23-43-100Z_sec-2026-02-10T11-23-43-100Z-825daa.json"
+}

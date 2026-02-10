@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { auth } from "@/lib/auth"
 import { prisma } from "@/lib/prisma"
 import { headers } from "next/headers"
+import { publishNotificationUpdated } from "@/lib/realtime/notifications"
 
 export const dynamic = 'force-dynamic'
 
@@ -129,6 +130,12 @@ export async function POST(request: NextRequest) {
           },
         },
       },
+    })
+
+    publishNotificationUpdated({
+      userId: session.user.id,
+      channel: "projects",
+      entityId: project.id,
     })
 
     return NextResponse.json(project)

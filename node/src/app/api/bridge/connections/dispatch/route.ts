@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { auth } from "@/lib/auth"
 import { headers } from "next/headers"
 import { prisma } from "@/lib/prisma"
+import { publishNotificationUpdated } from "@/lib/realtime/notifications"
 import {
   drainBridgeDispatchQueueSafely,
   enqueueBridgeDispatchDeliveries,
@@ -97,6 +98,12 @@ export async function POST(request: NextRequest) {
       orderBy: {
         createdAt: "desc",
       },
+    })
+
+    publishNotificationUpdated({
+      userId: session.user.id,
+      channel: "bridge-connections",
+      entityId: deploymentId,
     })
 
     return NextResponse.json({

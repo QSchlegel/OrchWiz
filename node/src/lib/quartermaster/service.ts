@@ -395,6 +395,7 @@ export async function ensureShipQuartermaster(args: EnsureShipQuartermasterArgs)
         content: quartermasterPromptTemplate(shipName),
         isShared: false,
         teamId: args.userId,
+        ownerUserId: args.userId,
         settings: {
           quartermaster: {
             roleKey: QUARTERMASTER_ROLE_KEY,

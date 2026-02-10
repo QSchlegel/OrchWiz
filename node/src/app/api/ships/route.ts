@@ -11,6 +11,7 @@ import {
   normalizeInfrastructureInConfig,
 } from "@/lib/deployment/profile"
 import { ensureShipQuartermaster } from "@/lib/quartermaster/service"
+import { publishNotificationUpdated } from "@/lib/realtime/notifications"
 
 export const dynamic = "force-dynamic"
 
@@ -61,9 +62,13 @@ export async function GET(request: NextRequest) {
     const forwardedEvents = await prisma.forwardingEvent.findMany({
       where: {
         eventType: "deployment",
+        sourceNode: {
+          ownerUserId: session.user.id,
+        },
         ...(sourceNodeId
           ? {
               sourceNode: {
+                ownerUserId: session.user.id,
                 nodeId: sourceNodeId,
               },
             }
@@ -208,6 +213,12 @@ export async function POST(request: NextRequest) {
       shipId: updatedShip.id,
       status: updatedShip.status,
       nodeId: updatedShip.nodeId,
+    })
+
+    publishNotificationUpdated({
+      userId: updatedShip.userId,
+      channel: "ships",
+      entityId: updatedShip.id,
     })
 
     return NextResponse.json({

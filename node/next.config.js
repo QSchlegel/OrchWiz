@@ -6,6 +6,10 @@ const appRoot = path.resolve(__dirname)
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  env: {
+    NEXT_PUBLIC_CLOUD_DEPLOY_ONLY:
+      process.env.NEXT_PUBLIC_CLOUD_DEPLOY_ONLY || process.env.CLOUD_DEPLOY_ONLY || "",
+  },
   experimental: {
     serverActions: {
       bodySizeLimit: '2mb',

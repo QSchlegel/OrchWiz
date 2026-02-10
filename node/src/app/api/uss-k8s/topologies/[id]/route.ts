@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server"
 import { auth } from "@/lib/auth"
 import { prisma } from "@/lib/prisma"
 import { headers } from "next/headers"
+import { publishNotificationUpdated } from "@/lib/realtime/notifications"
 
 export const dynamic = "force-dynamic"
 
@@ -67,6 +68,12 @@ export async function PUT(
       },
     })
 
+    publishNotificationUpdated({
+      userId: session.user.id,
+      channel: "uss-k8s",
+      entityId: topology.id,
+    })
+
     return NextResponse.json(topology)
   } catch (error) {
     console.error("Error updating topology:", error)
@@ -94,6 +101,13 @@ export async function DELETE(
     }
 
     await prisma.shipTopology.delete({ where: { id } })
+
+    publishNotificationUpdated({
+      userId: session.user.id,
+      channel: "uss-k8s",
+      entityId: id,
+    })
+
     return NextResponse.json({ success: true })
   } catch (error) {
     console.error("Error deleting topology:", error)

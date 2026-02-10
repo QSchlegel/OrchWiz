@@ -1,7 +1,5 @@
 import crypto from "node:crypto"
 import { NextRequest, NextResponse } from "next/server"
-import { auth } from "@/lib/auth"
-import { headers } from "next/headers"
 import { prisma } from "@/lib/prisma"
 import { hashApiKey } from "@/lib/forwarding/security"
 import {
@@ -10,6 +8,7 @@ import {
   summarizeStoredForwardingTargetApiKey,
 } from "@/lib/forwarding/secrets"
 import type { ForwardingEventType, ForwardingTargetStatus } from "@prisma/client"
+import { AccessControlError, requireAccessActor } from "@/lib/security/access-control"
 
 export const dynamic = "force-dynamic"
 
@@ -45,14 +44,11 @@ function mapForwardingConfigForResponse<T extends { targetApiKey: string | null 
 
 export async function GET() {
   try {
-    const session = await auth.api.getSession({ headers: await headers() })
-    if (!session) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-    }
+    const actor = await requireAccessActor()
 
     const configs = await prisma.forwardingConfig.findMany({
       where: {
-        userId: session.user.id,
+        userId: actor.userId,
       },
       include: {
         sourceNode: {
@@ -74,6 +70,10 @@ export async function GET() {
 
     return NextResponse.json(configs.map(mapForwardingConfigForResponse))
   } catch (error) {
+    if (error instanceof AccessControlError) {
+      return NextResponse.json({ error: error.message }, { status: error.status })
+    }
+
     console.error("Error fetching forwarding config:", error)
     return NextResponse.json({ error: "Internal server error" }, { status: 500 })
   }
@@ -81,10 +81,7 @@ export async function GET() {
 
 export async function POST(request: NextRequest) {
   try {
-    const session = await auth.api.getSession({ headers: await headers() })
-    if (!session) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-    }
+    const actor = await requireAccessActor()
 
     const body = await request.json()
     const targetUrl = body?.targetUrl
@@ -101,7 +98,7 @@ export async function POST(request: NextRequest) {
 
     const sourceNodeInput = body?.sourceNode
     let sourceNodeId: string | null = null
-    let sourceApiKey: string | null = null
+    let sourceApiKeyFingerprint: string | null = null
 
     if (sourceNodeInput && typeof sourceNodeInput === "object") {
       const requestedApiKey =
@@ -109,7 +106,7 @@ export async function POST(request: NextRequest) {
           ? sourceNodeInput.apiKey
           : generateApiKey()
 
-      sourceApiKey = requestedApiKey
+      sourceApiKeyFingerprint = hashApiKey(requestedApiKey).slice(0, 12)
       const nodeId =
         typeof sourceNodeInput.nodeId === "string" && sourceNodeInput.nodeId.trim().length > 0
           ? sourceNodeInput.nodeId.trim()
@@ -117,9 +114,13 @@ export async function POST(request: NextRequest) {
 
       const sourceNode = await prisma.nodeSource.upsert({
         where: {
-          nodeId,
+          ownerUserId_nodeId: {
+            ownerUserId: actor.userId,
+            nodeId,
+          },
         },
         update: {
+          ownerUserId: actor.userId,
           name: typeof sourceNodeInput.name === "string" ? sourceNodeInput.name : null,
           nodeType: sourceNodeInput.nodeType || null,
           nodeUrl: typeof sourceNodeInput.nodeUrl === "string" ? sourceNodeInput.nodeUrl : null,
@@ -127,6 +128,7 @@ export async function POST(request: NextRequest) {
           isActive: sourceNodeInput.isActive !== false,
         },
         create: {
+          ownerUserId: actor.userId,
           nodeId,
           name: typeof sourceNodeInput.name === "string" ? sourceNodeInput.name : null,
           nodeType: sourceNodeInput.nodeType || null,
@@ -138,9 +140,17 @@ export async function POST(request: NextRequest) {
 
       sourceNodeId = sourceNode.id
     } else if (typeof body?.sourceNodeId === "string" && body.sourceNodeId.length > 0) {
-      const sourceNode = await prisma.nodeSource.findUnique({
-        where: {
-          id: body.sourceNodeId,
+      const sourceNode = await prisma.nodeSource.findFirst({
+        where: actor.isAdmin
+          ? {
+              id: body.sourceNodeId,
+            }
+          : {
+              id: body.sourceNodeId,
+              ownerUserId: actor.userId,
+            },
+        select: {
+          id: true,
         },
       })
       if (!sourceNode) {
@@ -159,7 +169,7 @@ export async function POST(request: NextRequest) {
 
     const config = await prisma.forwardingConfig.create({
       data: {
-        userId: session.user.id,
+        userId: actor.userId,
         sourceNodeId,
         targetUrl,
         targetApiKey: storedTargetApiKey,
@@ -185,11 +195,20 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       {
         ...mapForwardingConfigForResponse(config),
-        sourceApiKey,
+        sourceNodeCredentials: sourceApiKeyFingerprint
+          ? {
+              issued: true,
+              apiKeyFingerprint: sourceApiKeyFingerprint,
+            }
+          : null,
       },
       { status: 201 }
     )
   } catch (error) {
+    if (error instanceof AccessControlError) {
+      return NextResponse.json({ error: error.message }, { status: error.status })
+    }
+
     if (error instanceof ForwardingSecretsError) {
       return NextResponse.json(
         {

@@ -66,6 +66,10 @@ export function getVaultDefinition(vaultId: PhysicalVaultId): VaultDefinition {
 }
 
 export function getRepoRootPath(): string {
+  const override = process.env.VAULT_REPO_ROOT?.trim()
+  if (override) {
+    return resolve(override)
+  }
   return resolve(process.cwd(), "..")
 }
 

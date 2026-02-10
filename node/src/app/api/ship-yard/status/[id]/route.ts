@@ -4,6 +4,14 @@ import { auth } from "@/lib/auth"
 import { prisma } from "@/lib/prisma"
 import { normalizeInfrastructureInConfig } from "@/lib/deployment/profile"
 import { BRIDGE_CREW_ROLE_ORDER } from "@/lib/shipyard/bridge-crew"
+import {
+  estimateShipBaseRequirements,
+  readBaseRequirementsEstimate,
+} from "@/lib/shipyard/resource-estimation"
+import {
+  buildShipDeploymentOverview,
+  readShipDeploymentOverview,
+} from "@/lib/shipyard/deployment-overview"
 import { resolveShipyardApiActorFromRequest } from "@/lib/shipyard/api-auth"
 
 export const dynamic = "force-dynamic"
@@ -77,6 +85,23 @@ export async function GET(
     const sortedBridgeCrew = bridgeCrew.sort(
       (a, b) => BRIDGE_CREW_ROLE_ORDER.indexOf(a.role) - BRIDGE_CREW_ROLE_ORDER.indexOf(b.role),
     )
+    const baseRequirementsEstimate =
+      readBaseRequirementsEstimate(deployment.metadata) ||
+      estimateShipBaseRequirements({
+        deploymentProfile: deployment.deploymentProfile,
+        crewRoles: sortedBridgeCrew.map((member) => member.role),
+      })
+    const persistedDeploymentOverview = readShipDeploymentOverview(deployment.metadata)
+    const deploymentOverview =
+      persistedDeploymentOverview ||
+      buildShipDeploymentOverview({
+        deploymentProfile: deployment.deploymentProfile,
+        provisioningMode: deployment.provisioningMode,
+        nodeType: deployment.nodeType,
+        infrastructure: normalizedInfrastructure.infrastructure,
+        crewRoles: sortedBridgeCrew.map((member) => member.role),
+        baseRequirementsEstimate,
+      })
 
     return NextResponse.json({
       deployment: {
@@ -84,6 +109,9 @@ export async function GET(
         config: normalizedInfrastructure.config,
       },
       bridgeCrew: sortedBridgeCrew,
+      baseRequirementsEstimate,
+      deploymentOverview,
+      deploymentOverviewDerived: !persistedDeploymentOverview,
     })
   } catch (error) {
     console.error("Error fetching ship yard status:", error)

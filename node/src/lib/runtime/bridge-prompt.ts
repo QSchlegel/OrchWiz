@@ -37,6 +37,23 @@ export interface QuartermasterPromptMetadata {
   callsign?: string
   shipDeploymentId?: string
   subagentId?: string
+  knowledge?: QuartermasterKnowledgeMetadata
+}
+
+export interface QuartermasterKnowledgeSource {
+  id?: string
+  path?: string
+  title?: string
+  excerpt?: string
+  scopeType?: "ship" | "fleet" | "global"
+  shipDeploymentId?: string | null
+}
+
+export interface QuartermasterKnowledgeMetadata {
+  query?: string
+  mode?: "hybrid" | "lexical"
+  fallbackUsed?: boolean
+  sources?: QuartermasterKnowledgeSource[]
 }
 
 export interface QuartermasterShipContext {
@@ -228,6 +245,65 @@ function sanitizeQuartermasterShipContext(value: unknown): QuartermasterShipCont
   }
 }
 
+function sanitizeQuartermasterKnowledge(value: unknown): QuartermasterKnowledgeMetadata | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined
+  }
+
+  const record = value as Record<string, unknown>
+  const rawSources = Array.isArray(record.sources) ? record.sources : []
+
+  return {
+    query: typeof record.query === "string" ? record.query : undefined,
+    mode: record.mode === "lexical" ? "lexical" : "hybrid",
+    fallbackUsed: typeof record.fallbackUsed === "boolean" ? record.fallbackUsed : undefined,
+    sources: rawSources
+      .filter((entry): entry is Record<string, unknown> => Boolean(entry && typeof entry === "object"))
+      .map((entry) => ({
+        id: typeof entry.id === "string" ? entry.id : undefined,
+        path: typeof entry.path === "string" ? entry.path : undefined,
+        title: typeof entry.title === "string" ? entry.title : undefined,
+        excerpt: typeof entry.excerpt === "string" ? entry.excerpt : undefined,
+        scopeType:
+          entry.scopeType === "ship" || entry.scopeType === "fleet" || entry.scopeType === "global"
+            ? entry.scopeType
+            : undefined,
+        shipDeploymentId:
+          typeof entry.shipDeploymentId === "string" || entry.shipDeploymentId === null
+            ? (entry.shipDeploymentId as string | null)
+            : undefined,
+      })),
+  }
+}
+
+function summarizeQuartermasterKnowledge(knowledge?: QuartermasterKnowledgeMetadata): string {
+  if (!knowledge || !knowledge.sources || knowledge.sources.length === 0) {
+    return "No indexed Vault evidence was retrieved. Include a Sources section and mark this as [S0]."
+  }
+
+  const lines: string[] = []
+  const retrievalMode = knowledge.mode || "hybrid"
+  lines.push(`Retrieval Mode: ${retrievalMode}${knowledge.fallbackUsed ? " (lexical fallback)" : ""}`)
+  if (knowledge.query) {
+    lines.push(`Knowledge Query: ${knowledge.query}`)
+  }
+  lines.push("Evidence Sources:")
+
+  for (const source of knowledge.sources.slice(0, 12)) {
+    const id = source.id || "S?"
+    const scope = source.scopeType || "global"
+    const path = source.path || "unknown-path"
+    const title = source.title || "Untitled"
+    const excerpt = source.excerpt || ""
+    lines.push(`[${id}] ${title} (${scope}) :: ${path}`)
+    if (excerpt) {
+      lines.push(`  Snippet: ${excerpt}`)
+    }
+  }
+
+  return lines.join("\n")
+}
+
 function buildQuartermasterRuntimePrompt(args: {
   userPrompt: string
   quartermaster: QuartermasterPromptMetadata
@@ -237,19 +313,26 @@ function buildQuartermasterRuntimePrompt(args: {
     ? args.quartermaster.callsign
     : "QTM-LGR"
   const shipContextSummary = summarizeQuartermasterShipContext(args.shipContext)
+  const knowledgeSummary = summarizeQuartermasterKnowledge(args.quartermaster.knowledge)
 
   return [
     `You are ${callsign}, Quartermaster for this ship inside the OrchWiz control surface.`,
     "Scope: setup guidance, maintenance planning, readiness checks, and diagnostics triage.",
     "Constraint: treat all actions as read-only diagnostics/planning. Do not assume destructive execution.",
+    "Evidence rule: every factual claim must cite one or more knowledge source markers like [S1].",
+    "Evidence rule: always end with a Sources section listing cited IDs and their paths.",
     "Response format:",
     "1) Situation Summary",
     "2) Setup/Maintenance Actions (read-only-first sequence)",
     "3) Risks and Guardrails",
     "4) Next Operator Action",
+    "5) Sources",
     "",
     "Ship context:",
     shipContextSummary,
+    "",
+    "Knowledge evidence:",
+    knowledgeSummary,
     "",
     "Operator request:",
     args.userPrompt,
@@ -338,14 +421,19 @@ export function resolveSessionRuntimePrompt(args: {
   metadata?: Record<string, unknown>
 }): SessionRuntimePromptResolution {
   const metadata = asRecord(args.metadata)
-  const quartermaster = asRecord(metadata.quartermaster) as QuartermasterPromptMetadata
+  const quartermasterRaw = asRecord(metadata.quartermaster)
+  const quartermaster = quartermasterRaw as QuartermasterPromptMetadata
   if (quartermaster.channel === "ship-quartermaster") {
     const shipContext = sanitizeQuartermasterShipContext(metadata.shipContext)
+    const knowledge = sanitizeQuartermasterKnowledge(quartermasterRaw.knowledge)
     return {
       interactionContent: args.userPrompt,
       runtimePrompt: buildQuartermasterRuntimePrompt({
         userPrompt: args.userPrompt,
-        quartermaster,
+        quartermaster: {
+          ...quartermaster,
+          knowledge,
+        },
         shipContext,
       }),
     }

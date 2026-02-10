@@ -21,6 +21,7 @@ export interface PermissionPolicyCreateInput {
   description?: string | null
   slug?: string | null
   rules: PermissionPolicyRuleInput[]
+  ownerUserId?: string | null
 }
 
 export interface PermissionPolicyUpdateInput {
@@ -48,6 +49,13 @@ export interface PermissionPolicyWithRulesAndCounts extends PermissionPolicyWith
 
 export interface SubagentPolicyAssignmentWithPolicy extends SubagentPermissionPolicy {
   policy: PermissionPolicyWithRules
+}
+
+export interface PolicySubagentAssignment {
+  subagentId: string
+  policyId: string
+  priority: number
+  enabled: boolean
 }
 
 export interface FlattenedAssignedPolicyRule {
@@ -108,6 +116,19 @@ function normalizePolicyDescription(value: unknown): string | null {
   if (typeof value !== "string") {
     throw new PermissionPolicyError("description must be a string or null")
   }
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : null
+}
+
+function normalizeOwnerUserId(value: unknown): string | null {
+  if (value === undefined || value === null) {
+    return null
+  }
+
+  if (typeof value !== "string") {
+    throw new PermissionPolicyError("ownerUserId must be a string or null")
+  }
+
   const trimmed = value.trim()
   return trimmed.length > 0 ? trimmed : null
 }
@@ -424,6 +445,7 @@ export async function createCustomPermissionPolicy(input: PermissionPolicyCreate
   const description = normalizePolicyDescription(input.description)
   const rules = normalizeRulesInput(input.rules)
   const requestedSlug = normalizeProvidedSlug(input.slug)
+  const ownerUserId = normalizeOwnerUserId(input.ownerUserId)
 
   let slug = requestedSlug || slugify(name)
   if (!slug) {
@@ -445,6 +467,7 @@ export async function createCustomPermissionPolicy(input: PermissionPolicyCreate
       name,
       description,
       isSystem: false,
+      ownerUserId,
       rules: {
         createMany: {
           data: toPolicyRuleCreateData("", rules).map((rule) => ({
@@ -629,6 +652,33 @@ function normalizeAssignmentInput(value: unknown): SubagentPolicyAssignmentInput
   })
 }
 
+function normalizeSubagentIdsInput(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    throw new PermissionPolicyError("subagentIds must be an array")
+  }
+
+  const seen = new Set<string>()
+  const normalized: string[] = []
+
+  for (const entry of value) {
+    if (typeof entry !== "string") {
+      throw new PermissionPolicyError("subagentIds entries must be strings")
+    }
+
+    const subagentId = entry.trim()
+    if (!subagentId) {
+      throw new PermissionPolicyError("subagentIds entries must be non-empty strings")
+    }
+
+    if (!seen.has(subagentId)) {
+      seen.add(subagentId)
+      normalized.push(subagentId)
+    }
+  }
+
+  return normalized
+}
+
 export async function listSubagentPermissionPolicyAssignments(
   subagentId: string,
 ): Promise<SubagentPolicyAssignmentWithPolicy[]> {
@@ -708,6 +758,148 @@ export async function replaceSubagentPermissionPolicyAssignments(args: {
   })
 
   return listSubagentPermissionPolicyAssignments(args.subagentId)
+}
+
+export async function listPolicySubagentAssignmentsForOwner(args: {
+  policyId: string
+  ownerUserId: string
+}): Promise<PolicySubagentAssignment[]> {
+  await ensureSystemPermissionPolicies()
+
+  const assignments = await prisma.subagentPermissionPolicy.findMany({
+    where: {
+      policyId: args.policyId,
+      subagent: {
+        ownerUserId: args.ownerUserId,
+        isShared: false,
+      },
+    },
+    select: {
+      subagentId: true,
+      policyId: true,
+      priority: true,
+      enabled: true,
+      createdAt: true,
+    },
+    orderBy: [
+      { priority: "asc" },
+      { createdAt: "asc" },
+    ],
+  })
+
+  return assignments.map((assignment) => ({
+    subagentId: assignment.subagentId,
+    policyId: assignment.policyId,
+    priority: assignment.priority,
+    enabled: assignment.enabled,
+  }))
+}
+
+export async function replacePolicySubagentAssignmentsForOwner(args: {
+  policyId: string
+  ownerUserId: string
+  subagentIds: unknown
+}): Promise<PolicySubagentAssignment[]> {
+  await ensureSystemPermissionPolicies()
+
+  const selectedSubagentIds = normalizeSubagentIdsInput(args.subagentIds)
+  const selectedSet = new Set(selectedSubagentIds)
+
+  const ownedSubagents = await prisma.subagent.findMany({
+    where: {
+      ownerUserId: args.ownerUserId,
+      isShared: false,
+    },
+    select: {
+      id: true,
+    },
+  })
+  const ownedSubagentIds = ownedSubagents.map((subagent) => subagent.id)
+  const ownedSet = new Set(ownedSubagentIds)
+
+  for (const subagentId of selectedSubagentIds) {
+    if (!ownedSet.has(subagentId)) {
+      throw new PermissionPolicyError(`subagentId not found: ${subagentId}`, 404)
+    }
+  }
+
+  const existingAssignments =
+    ownedSubagentIds.length > 0
+      ? await prisma.subagentPermissionPolicy.findMany({
+          where: {
+            policyId: args.policyId,
+            subagentId: {
+              in: ownedSubagentIds,
+            },
+          },
+          select: {
+            subagentId: true,
+            priority: true,
+            enabled: true,
+          },
+        })
+      : []
+
+  const existingBySubagentId = new Map(
+    existingAssignments.map((assignment) => [assignment.subagentId, assignment]),
+  )
+
+  const subagentIdsToDelete = existingAssignments
+    .filter((assignment) => !selectedSet.has(assignment.subagentId))
+    .map((assignment) => assignment.subagentId)
+
+  const subagentIdsToCreate = selectedSubagentIds.filter(
+    (subagentId) => !existingBySubagentId.has(subagentId),
+  )
+
+  const subagentIdsToEnable = selectedSubagentIds.filter((subagentId) => {
+    const existing = existingBySubagentId.get(subagentId)
+    return Boolean(existing && !existing.enabled)
+  })
+
+  await prisma.$transaction(async (tx) => {
+    if (subagentIdsToDelete.length > 0) {
+      await tx.subagentPermissionPolicy.deleteMany({
+        where: {
+          policyId: args.policyId,
+          subagentId: {
+            in: subagentIdsToDelete,
+          },
+        },
+      })
+    }
+
+    if (subagentIdsToCreate.length > 0) {
+      await tx.subagentPermissionPolicy.createMany({
+        data: subagentIdsToCreate.map((subagentId) => ({
+          subagentId,
+          policyId: args.policyId,
+          priority: DEFAULT_PERSONAL_POLICY_PRIORITY,
+          enabled: true,
+        })),
+      })
+    }
+
+    if (subagentIdsToEnable.length > 0) {
+      await tx.subagentPermissionPolicy.updateMany({
+        where: {
+          policyId: args.policyId,
+          subagentId: {
+            in: subagentIdsToEnable,
+          },
+          enabled: false,
+        },
+        data: {
+          enabled: true,
+        },
+      })
+    }
+  })
+
+  return listPolicySubagentAssignmentsForOwner({
+    policyId: args.policyId,
+    ownerUserId: args.ownerUserId,
+  })
 }
 
 export async function loadAssignedPolicyRulesForSubagent(args: {

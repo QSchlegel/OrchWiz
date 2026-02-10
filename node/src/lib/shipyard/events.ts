@@ -4,6 +4,7 @@ interface ShipUpdatedInput {
   shipId: string
   status: string
   nodeId?: string | null
+  userId?: string | null
 }
 
 interface ShipApplicationUpdatedInput {
@@ -11,11 +12,17 @@ interface ShipApplicationUpdatedInput {
   status: string
   nodeId?: string | null
   shipDeploymentId?: string | null
+  userId?: string | null
 }
 
 export function publishShipUpdated(input: ShipUpdatedInput) {
   publishRealtimeEvent({
     type: "ship.updated",
+    ...(input.userId
+      ? {
+          userId: input.userId,
+        }
+      : {}),
     payload: {
       shipId: input.shipId,
       status: input.status,
@@ -25,6 +32,11 @@ export function publishShipUpdated(input: ShipUpdatedInput) {
 
   publishRealtimeEvent({
     type: "deployment.updated",
+    ...(input.userId
+      ? {
+          userId: input.userId,
+        }
+      : {}),
     payload: {
       deploymentId: input.shipId,
       status: input.status,
@@ -36,6 +48,11 @@ export function publishShipUpdated(input: ShipUpdatedInput) {
 export function publishShipApplicationUpdated(input: ShipApplicationUpdatedInput) {
   publishRealtimeEvent({
     type: "ship.application.updated",
+    ...(input.userId
+      ? {
+          userId: input.userId,
+        }
+      : {}),
     payload: {
       applicationId: input.applicationId,
       status: input.status,
@@ -46,6 +63,11 @@ export function publishShipApplicationUpdated(input: ShipApplicationUpdatedInput
 
   publishRealtimeEvent({
     type: "application.updated",
+    ...(input.userId
+      ? {
+          userId: input.userId,
+        }
+      : {}),
     payload: {
       applicationId: input.applicationId,
       status: input.status,

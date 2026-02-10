@@ -19,21 +19,23 @@ import {
   Bot,
   RefreshCw,
   ExternalLink,
-  Settings,
   Copy,
   Search,
+  ChevronDown,
+  X,
+  Anchor,
+  Info,
+  MessageSquare,
+  Check,
+  Radio,
 } from "lucide-react"
-import { OrchestrationSurface } from "@/components/orchestration/OrchestrationSurface"
-import { NodeInfoCard, nodeTypeInfo, UseCaseBadge } from "@/components/orchestration/NodeInfoCard"
-import { FlipCard } from "@/components/orchestration/FlipCard"
+import { NodeInfoCard } from "@/components/orchestration/NodeInfoCard"
 import { ShipQuartermasterPanel } from "@/components/quartermaster/ShipQuartermasterPanel"
-import { FlowCanvas } from "@/components/flow/FlowCanvas"
-import { DeploymentNode, SystemNode } from "@/components/flow/nodes"
-import { layoutColumns } from "@/lib/flow/layout"
-import { buildEdgesToAnchors, mapAnchorsToNodes, mapDeploymentsToNodes } from "@/lib/flow/mappers"
-import type { Node } from "reactflow"
 import { useEventStream } from "@/lib/realtime/useEventStream"
 
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
 type DeploymentProfile = "local_starship_build" | "cloud_shipyard"
 type ProvisioningMode = "terraform_ansible" | "terraform_only" | "ansible_only"
 type NodeType = "local" | "cloud" | "hybrid"
@@ -62,6 +64,9 @@ interface DeploymentFormData {
   infrastructure: InfrastructureConfig
 }
 
+// ---------------------------------------------------------------------------
+// Label Maps
+// ---------------------------------------------------------------------------
 const deploymentProfileLabels: Record<DeploymentProfile, string> = {
   local_starship_build: "Local Starship Build",
   cloud_shipyard: "Cloud Shipyard",
@@ -76,20 +81,19 @@ const provisioningModeLabels: Record<ProvisioningMode, string> = {
 const infrastructureKindLabels: Record<InfrastructureKind, string> = {
   kind: "KIND",
   minikube: "Minikube",
-  existing_k8s: "Existing Kubernetes",
+  existing_k8s: "Existing K8s",
 }
 
+// ---------------------------------------------------------------------------
+// Utility functions
+// ---------------------------------------------------------------------------
 function isInfrastructureKind(value: unknown): value is InfrastructureKind {
   return value === "kind" || value === "minikube" || value === "existing_k8s"
 }
 
 function kubeContextForKind(kind: InfrastructureKind): string {
-  if (kind === "kind") {
-    return "kind-orchwiz"
-  }
-  if (kind === "minikube") {
-    return "minikube"
-  }
+  if (kind === "kind") return "kind-orchwiz"
+  if (kind === "minikube") return "minikube"
   return "existing-cluster"
 }
 
@@ -105,7 +109,6 @@ function defaultInfrastructure(profile: DeploymentProfile): InfrastructureConfig
       ansiblePlaybook: "infra/ansible/playbooks/shipyard_cloud.yml",
     }
   }
-
   return {
     kind: "kind",
     kubeContext: "kind-orchwiz",
@@ -119,20 +122,17 @@ function defaultInfrastructure(profile: DeploymentProfile): InfrastructureConfig
 
 function deriveNodeType(
   profile: DeploymentProfile,
-  advancedNodeTypeOverride: boolean,
-  requestedNodeType: NodeType,
+  advancedOverride: boolean,
+  requested: NodeType,
 ): NodeType {
-  if (profile === "local_starship_build") {
-    return "local"
-  }
-
-  if (advancedNodeTypeOverride && requestedNodeType === "hybrid") {
-    return "hybrid"
-  }
-
+  if (profile === "local_starship_build") return "local"
+  if (advancedOverride && requested === "hybrid") return "hybrid"
   return "cloud"
 }
 
+// ---------------------------------------------------------------------------
+// Data interfaces
+// ---------------------------------------------------------------------------
 interface Deployment {
   id: string
   name: string
@@ -150,11 +150,7 @@ interface Deployment {
   lastHealthCheck: string | null
   healthStatus: string | null
   createdAt: string
-  subagent?: {
-    id: string
-    name: string
-    description: string | null
-  }
+  subagent?: { id: string; name: string; description: string | null }
 }
 
 interface RuntimeSnapshot {
@@ -162,13 +158,7 @@ interface RuntimeSnapshot {
   docker: {
     available: boolean
     currentContext: string | null
-    contexts: {
-      name: string
-      description: string
-      dockerEndpoint: string
-      current: boolean
-      error: string | null
-    }[]
+    contexts: { name: string; description: string; dockerEndpoint: string; current: boolean; error: string | null }[]
     error?: string
   }
   kubernetes: {
@@ -186,1360 +176,864 @@ interface RuntimeSnapshot {
       controlPlaneContainer: string | null
       runningNodeCount: number
       totalNodeCount: number
-      nodeContainers: {
-        name: string
-        image: string
-        state: string | null
-        status: string
-      }[]
+      nodeContainers: { name: string; image: string; state: string | null; status: string }[]
     }[]
     error?: string
   }
 }
 
-interface DeploymentWithInfrastructure extends Deployment {
+interface DeploymentWithInfra extends Deployment {
   infrastructure: InfrastructureConfig | null
 }
 
-const statusConfig = {
-  pending: {
-    icon: Clock,
-    color: "text-yellow-400",
-    bg: "bg-yellow-500/20",
-    border: "border-yellow-500/30",
-    label: "Pending",
-    pulse: true
-  },
-  deploying: {
-    icon: Rocket,
-    color: "text-blue-400",
-    bg: "bg-blue-500/20",
-    border: "border-blue-500/30",
-    label: "Deploying",
-    pulse: true
-  },
-  active: {
-    icon: Activity,
-    color: "text-green-400",
-    bg: "bg-green-500/20",
-    border: "border-green-500/30",
-    label: "Active",
-    pulse: false
-  },
-  inactive: {
-    icon: Square,
-    color: "text-gray-400",
-    bg: "bg-gray-500/20",
-    border: "border-gray-500/30",
-    label: "Inactive",
-    pulse: false
-  },
-  failed: {
-    icon: XCircle,
-    color: "text-red-400",
-    bg: "bg-red-500/20",
-    border: "border-red-500/30",
-    label: "Failed",
-    pulse: false
-  },
-  updating: {
-    icon: Package,
-    color: "text-orange-400",
-    bg: "bg-orange-500/20",
-    border: "border-orange-500/30",
-    label: "Updating",
-    pulse: true
-  },
-}
+// ---------------------------------------------------------------------------
+// Visual configuration
+// ---------------------------------------------------------------------------
+const statusCfg = {
+  pending: { icon: Clock, color: "text-amber-500 dark:text-yellow-400", bg: "bg-amber-500/15 dark:bg-yellow-500/20", border: "border-amber-500/25 dark:border-yellow-500/30", accent: "bg-amber-400 dark:bg-yellow-400", label: "Pending", pulse: true },
+  deploying: { icon: Rocket, color: "text-blue-600 dark:text-blue-400", bg: "bg-blue-500/15 dark:bg-blue-500/20", border: "border-blue-500/25 dark:border-blue-500/30", accent: "bg-blue-500 dark:bg-blue-400", label: "Deploying", pulse: true },
+  active: { icon: Activity, color: "text-emerald-600 dark:text-green-400", bg: "bg-emerald-500/15 dark:bg-green-500/20", border: "border-emerald-500/25 dark:border-green-500/30", accent: "bg-emerald-500 dark:bg-green-400", label: "Active", pulse: false },
+  inactive: { icon: Square, color: "text-slate-500 dark:text-gray-400", bg: "bg-slate-500/10 dark:bg-gray-500/20", border: "border-slate-400/20 dark:border-gray-500/30", accent: "bg-slate-400 dark:bg-gray-500", label: "Inactive", pulse: false },
+  failed: { icon: XCircle, color: "text-rose-600 dark:text-red-400", bg: "bg-rose-500/15 dark:bg-red-500/20", border: "border-rose-500/25 dark:border-red-500/30", accent: "bg-rose-500 dark:bg-red-400", label: "Failed", pulse: false },
+  updating: { icon: Package, color: "text-orange-600 dark:text-orange-400", bg: "bg-orange-500/15 dark:bg-orange-500/20", border: "border-orange-500/25 dark:border-orange-500/30", accent: "bg-orange-500 dark:bg-orange-400", label: "Updating", pulse: true },
+} as const
 
-const nodeTypeConfig = {
-  local: { icon: HardDrive, label: "Local", color: "text-purple-400" },
-  cloud: { icon: Cloud, label: "Cloud", color: "text-blue-400" },
-  hybrid: { icon: Network, label: "Hybrid", color: "text-pink-400" },
-}
+const nodeTypeCfg = {
+  local: { icon: HardDrive, label: "Local", color: "text-violet-600 dark:text-purple-400", bg: "bg-violet-500/12 dark:bg-purple-500/15", border: "border-violet-500/20 dark:border-purple-500/30" },
+  cloud: { icon: Cloud, label: "Cloud", color: "text-sky-600 dark:text-blue-400", bg: "bg-sky-500/12 dark:bg-blue-500/15", border: "border-sky-500/20 dark:border-blue-500/30" },
+  hybrid: { icon: Network, label: "Hybrid", color: "text-pink-600 dark:text-pink-400", bg: "bg-pink-500/12 dark:bg-pink-500/15", border: "border-pink-500/20 dark:border-pink-500/30" },
+} as const
 
-const nodeTypes = {
-  deploymentNode: DeploymentNode,
-  systemNode: SystemNode,
-}
-
-// Helper function to format uptime
+// ---------------------------------------------------------------------------
+// Formatters
+// ---------------------------------------------------------------------------
 function formatUptime(deployedAt: Date): string {
-  const now = new Date()
-  const diff = now.getTime() - deployedAt.getTime()
-  const days = Math.floor(diff / (1000 * 60 * 60 * 24))
-  const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60))
-  const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60))
-
-  if (days > 0) return `${days}d ${hours}h`
-  if (hours > 0) return `${hours}h ${minutes}m`
-  return `${minutes}m`
+  const diff = Date.now() - deployedAt.getTime()
+  const d = Math.floor(diff / 86_400_000)
+  const h = Math.floor((diff % 86_400_000) / 3_600_000)
+  const m = Math.floor((diff % 3_600_000) / 60_000)
+  if (d > 0) return `${d}d ${h}h`
+  if (h > 0) return `${h}h ${m}m`
+  return `${m}m`
 }
 
-function extractInfrastructureConfig(
-  config: unknown,
-  deploymentProfile?: DeploymentProfile,
-): InfrastructureConfig | null {
-  if (!config || typeof config !== "object") {
-    return null
-  }
+function extractInfrastructure(config: unknown, profile?: DeploymentProfile): InfrastructureConfig | null {
+  if (!config || typeof config !== "object") return null
+  const infra = (config as Record<string, unknown>).infrastructure
+  if (!infra || typeof infra !== "object") return null
 
-  const infrastructure = (config as Record<string, unknown>).infrastructure
-  if (!infrastructure || typeof infrastructure !== "object") {
-    return null
-  }
-
-  const raw = infrastructure as Record<string, unknown>
-  const defaultConfig = defaultInfrastructure(deploymentProfile || "local_starship_build")
-  const inferredKind = isInfrastructureKind(raw.kind)
-    ? raw.kind
-    : deploymentProfile === "cloud_shipyard"
-      ? "existing_k8s"
-    : typeof raw.kubeContext === "string" && raw.kubeContext.toLowerCase().includes("minikube")
-      ? "minikube"
-      : "kind"
+  const raw = infra as Record<string, unknown>
+  const def = defaultInfrastructure(profile || "local_starship_build")
+  const kind = isInfrastructureKind(raw.kind) ? raw.kind
+    : profile === "cloud_shipyard" ? "existing_k8s"
+    : typeof raw.kubeContext === "string" && raw.kubeContext.toLowerCase().includes("minikube") ? "minikube"
+    : "kind"
 
   return {
-    kind: inferredKind,
-    kubeContext: typeof raw.kubeContext === "string" ? raw.kubeContext : kubeContextForKind(inferredKind),
-    namespace: typeof raw.namespace === "string" ? raw.namespace : defaultConfig.namespace,
-    terraformWorkspace:
-      typeof raw.terraformWorkspace === "string"
-        ? raw.terraformWorkspace
-        : defaultConfig.terraformWorkspace,
-    terraformEnvDir:
-      typeof raw.terraformEnvDir === "string" ? raw.terraformEnvDir : defaultConfig.terraformEnvDir,
-    ansibleInventory:
-      typeof raw.ansibleInventory === "string" ? raw.ansibleInventory : defaultConfig.ansibleInventory,
-    ansiblePlaybook:
-      typeof raw.ansiblePlaybook === "string" ? raw.ansiblePlaybook : defaultConfig.ansiblePlaybook,
+    kind,
+    kubeContext: typeof raw.kubeContext === "string" ? raw.kubeContext : kubeContextForKind(kind),
+    namespace: typeof raw.namespace === "string" ? raw.namespace : def.namespace,
+    terraformWorkspace: typeof raw.terraformWorkspace === "string" ? raw.terraformWorkspace : def.terraformWorkspace,
+    terraformEnvDir: typeof raw.terraformEnvDir === "string" ? raw.terraformEnvDir : def.terraformEnvDir,
+    ansibleInventory: typeof raw.ansibleInventory === "string" ? raw.ansibleInventory : def.ansibleInventory,
+    ansiblePlaybook: typeof raw.ansiblePlaybook === "string" ? raw.ansiblePlaybook : def.ansiblePlaybook,
   }
 }
 
-function formatRelativeTime(value: string | null | undefined): string {
+function relativeTime(value: string | null | undefined): string {
   if (!value) return "Never"
   const then = new Date(value)
   if (Number.isNaN(then.getTime())) return "Unknown"
-
-  const diffMs = Date.now() - then.getTime()
-  if (diffMs < 60_000) return "Just now"
-  const minutes = Math.floor(diffMs / 60_000)
-  if (minutes < 60) return `${minutes}m ago`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours}h ago`
-  const days = Math.floor(hours / 24)
-  return `${days}d ago`
+  const ms = Date.now() - then.getTime()
+  if (ms < 60_000) return "Just now"
+  const min = Math.floor(ms / 60_000)
+  if (min < 60) return `${min}m ago`
+  const hr = Math.floor(min / 60)
+  if (hr < 24) return `${hr}h ago`
+  return `${Math.floor(hr / 24)}d ago`
 }
 
+// ---------------------------------------------------------------------------
+// Detail Panel Tab
+// ---------------------------------------------------------------------------
+type DetailTab = "overview" | "quartermaster"
+
+// ---------------------------------------------------------------------------
+// Page
+// ---------------------------------------------------------------------------
 export default function ShipsPage() {
-  const initialDeploymentProfile: DeploymentProfile = "local_starship_build"
+  const initialProfile: DeploymentProfile = "local_starship_build"
 
   const [deployments, setDeployments] = useState<Deployment[]>([])
   const [isLoading, setIsLoading] = useState(true)
-  const [selectedDeploymentId, setSelectedDeploymentId] = useState<string | null>(null)
+  const [selectedId, setSelectedId] = useState<string | null>(null)
   const [isCreating, setIsCreating] = useState(false)
-  const [showCreateForm, setShowCreateForm] = useState(false)
-  const [includeForwarded, setIncludeForwarded] = useState(false)
-  const [sourceNodeId, setSourceNodeId] = useState("")
-  const [searchQuery, setSearchQuery] = useState("")
+  const [showModal, setShowModal] = useState(false)
+  const [search, setSearch] = useState("")
   const [statusFilter, setStatusFilter] = useState<"all" | Deployment["status"]>("all")
-  const [infrastructureFilter, setInfrastructureFilter] = useState<"all" | InfrastructureKind>("all")
+  const [infraFilter, setInfraFilter] = useState<"all" | InfrastructureKind>("all")
   const [subagents, setSubagents] = useState<any[]>([])
   const [runtime, setRuntime] = useState<RuntimeSnapshot | null>(null)
-  const [isRuntimeLoading, setIsRuntimeLoading] = useState(true)
-  const [formData, setFormData] = useState<DeploymentFormData>({
-    name: "",
-    description: "",
-    subagentId: "",
-    nodeId: "",
-    nodeType: "local" as NodeType,
-    deploymentProfile: initialDeploymentProfile,
-    provisioningMode: "terraform_ansible" as ProvisioningMode,
-    advancedNodeTypeOverride: false,
-    nodeUrl: "",
-    infrastructure: defaultInfrastructure(initialDeploymentProfile),
+  const [runtimeLoading, setRuntimeLoading] = useState(true)
+  const [runtimeOpen, setRuntimeOpen] = useState(false)
+  const [tab, setTab] = useState<DetailTab>("overview")
+  const [copied, setCopied] = useState(false)
+
+  const [form, setForm] = useState<DeploymentFormData>({
+    name: "", description: "", subagentId: "", nodeId: "",
+    nodeType: "local", deploymentProfile: initialProfile,
+    provisioningMode: "terraform_ansible", advancedNodeTypeOverride: false,
+    nodeUrl: "", infrastructure: defaultInfrastructure(initialProfile),
   })
 
   const derivedNodeType = useMemo(
-    () => deriveNodeType(formData.deploymentProfile, formData.advancedNodeTypeOverride, formData.nodeType),
-    [formData.advancedNodeTypeOverride, formData.deploymentProfile, formData.nodeType],
+    () => deriveNodeType(form.deploymentProfile, form.advancedNodeTypeOverride, form.nodeType),
+    [form.advancedNodeTypeOverride, form.deploymentProfile, form.nodeType],
   )
 
+  // ── Fetching ──────────────────────────────────────────────────────────
+  useEffect(() => { fetchDeployments() }, [])
   useEffect(() => {
-    fetchDeployments()
-  }, [includeForwarded, sourceNodeId])
-
-  useEffect(() => {
-    fetchSubagents()
-    fetchRuntime()
-    const timer = window.setInterval(() => {
-      fetchRuntime()
-    }, 20_000)
-
-    return () => {
-      window.clearInterval(timer)
-    }
+    fetchSubagents(); fetchRuntime()
+    const t = window.setInterval(fetchRuntime, 20_000)
+    return () => window.clearInterval(t)
   }, [])
 
   useEventStream({
     enabled: true,
     types: ["ship.updated", "deployment.updated", "forwarding.received"],
-    onEvent: () => {
-      fetchDeployments()
-      fetchRuntime()
-    },
+    onEvent: () => { fetchDeployments(); fetchRuntime() },
   })
 
   useEffect(() => {
-    if (!showCreateForm) return
-    if (!runtime || runtime.kind.clusters.length === 0) return
-    if (formData.deploymentProfile !== "local_starship_build") return
-    if (formData.infrastructure.kind !== "kind") return
+    if (!showModal || !runtime || !runtime.kind.clusters.length) return
+    if (form.deploymentProfile !== "local_starship_build" || form.infrastructure.kind !== "kind") return
+    const defCtx = defaultInfrastructure("local_starship_build").kubeContext
+    if (form.infrastructure.kubeContext !== defCtx) return
+    const ctx = runtime.kind.clusters.find(c => c.runningNodeCount > 0)?.kubeContext || runtime.kind.clusters[0]?.kubeContext
+    if (!ctx || ctx === form.infrastructure.kubeContext) return
+    setForm(f => ({ ...f, infrastructure: { ...f.infrastructure, kubeContext: ctx } }))
+  }, [form.deploymentProfile, form.infrastructure.kind, form.infrastructure.kubeContext, runtime, showModal])
 
-    const defaultLocalContext = defaultInfrastructure("local_starship_build").kubeContext
-    if (formData.infrastructure.kubeContext !== defaultLocalContext) return
-
-    const preferredContext =
-      runtime.kind.clusters.find((cluster) => cluster.runningNodeCount > 0)?.kubeContext ||
-      runtime.kind.clusters[0]?.kubeContext
-
-    if (!preferredContext || preferredContext === formData.infrastructure.kubeContext) {
-      return
-    }
-
-    setFormData((current) => ({
-      ...current,
-      infrastructure: {
-        ...current.infrastructure,
-        kubeContext: preferredContext,
-      },
-    }))
-  }, [formData.deploymentProfile, formData.infrastructure.kind, formData.infrastructure.kubeContext, runtime, showCreateForm])
-
-  const fetchDeployments = async () => {
+  async function fetchDeployments() {
     setIsLoading(true)
     try {
-      const params = new URLSearchParams()
-      if (includeForwarded) params.append("includeForwarded", "true")
-      if (sourceNodeId.trim()) params.append("sourceNodeId", sourceNodeId.trim())
-      const response = await fetch(`/api/ships?${params.toString()}`)
-      if (response.ok) {
-        const data = await response.json()
-        setDeployments(data)
-      }
-    } catch (error) {
-      console.error("Error fetching ships:", error)
-    } finally {
-      setIsLoading(false)
-    }
+      const r = await fetch("/api/ships")
+      if (r.ok) setDeployments(await r.json())
+    } catch (e) { console.error("Error fetching ships:", e) }
+    finally { setIsLoading(false) }
   }
 
-  const fetchSubagents = async () => {
-    try {
-      const response = await fetch("/api/subagents")
-      if (response.ok) {
-        const data = await response.json()
-        setSubagents(data)
-      }
-    } catch (error) {
-      console.error("Error fetching subagents:", error)
-    }
+  async function fetchSubagents() {
+    try { const r = await fetch("/api/subagents"); if (r.ok) setSubagents(await r.json()) }
+    catch (e) { console.error("Error fetching subagents:", e) }
   }
 
-  const fetchRuntime = async () => {
-    setIsRuntimeLoading(true)
-    try {
-      const response = await fetch("/api/ships/runtime")
-      if (response.ok) {
-        const payload = (await response.json()) as RuntimeSnapshot
-        setRuntime(payload)
-      }
-    } catch (error) {
-      console.error("Error fetching local runtime state:", error)
-    } finally {
-      setIsRuntimeLoading(false)
-    }
+  async function fetchRuntime() {
+    setRuntimeLoading(true)
+    try { const r = await fetch("/api/ships/runtime"); if (r.ok) setRuntime(await r.json()) }
+    catch (e) { console.error("Error fetching runtime:", e) }
+    finally { setRuntimeLoading(false) }
   }
 
-  const handleCreate = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setIsCreating(true)
-
+  // ── Handlers ──────────────────────────────────────────────────────────
+  async function handleCreate(e: React.FormEvent) {
+    e.preventDefault(); setIsCreating(true)
     try {
-      const response = await fetch("/api/ships", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+      const r = await fetch("/api/ships", {
+        method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          name: formData.name,
-          description: formData.description,
-          subagentId: formData.subagentId || null,
-          nodeId: formData.nodeId,
-          nodeType: formData.nodeType,
-          deploymentType: "ship",
-          deploymentProfile: formData.deploymentProfile,
-          provisioningMode: formData.provisioningMode,
-          advancedNodeTypeOverride: formData.advancedNodeTypeOverride,
-          nodeUrl: formData.nodeUrl || null,
-          config: {
-            infrastructure: formData.infrastructure,
-          },
+          name: form.name, description: form.description,
+          subagentId: form.subagentId || null, nodeId: form.nodeId,
+          nodeType: form.nodeType, deploymentType: "ship",
+          deploymentProfile: form.deploymentProfile,
+          provisioningMode: form.provisioningMode,
+          advancedNodeTypeOverride: form.advancedNodeTypeOverride,
+          nodeUrl: form.nodeUrl || null,
+          config: { infrastructure: form.infrastructure },
         }),
       })
-
-      if (response.ok) {
-        setShowCreateForm(false)
-        setFormData({
-          name: "",
-          description: "",
-          subagentId: "",
-          nodeId: "",
-          nodeType: "local",
-          deploymentProfile: initialDeploymentProfile,
-          provisioningMode: "terraform_ansible",
-          advancedNodeTypeOverride: false,
-          nodeUrl: "",
-          infrastructure: defaultInfrastructure(initialDeploymentProfile),
-        })
+      if (r.ok) {
+        setShowModal(false)
+        setForm({ name: "", description: "", subagentId: "", nodeId: "", nodeType: "local", deploymentProfile: initialProfile, provisioningMode: "terraform_ansible", advancedNodeTypeOverride: false, nodeUrl: "", infrastructure: defaultInfrastructure(initialProfile) })
         fetchDeployments()
       }
-    } catch (error) {
-      console.error("Error creating deployment:", error)
-    } finally {
-      setIsCreating(false)
-    }
+    } catch (e) { console.error("Error creating deployment:", e) }
+    finally { setIsCreating(false) }
   }
 
-  const handleDelete = async (id: string) => {
+  async function handleDelete(id: string) {
     if (!confirm("Are you sure you want to delete this ship?")) return
-
     try {
-      const response = await fetch(`/api/ships/${id}`, {
-        method: "DELETE",
-      })
-
-      if (response.ok) {
-        fetchDeployments()
-      }
-    } catch (error) {
-      console.error("Error deleting deployment:", error)
-    }
+      const r = await fetch(`/api/ships/${id}`, { method: "DELETE" })
+      if (r.ok) { if (selectedId === id) setSelectedId(null); fetchDeployments() }
+    } catch (e) { console.error("Error deleting:", e) }
   }
 
-  const handleStatusUpdate = async (id: string, status: Deployment["status"]) => {
+  async function handleStatus(id: string, status: Deployment["status"]) {
     try {
-      const response = await fetch(`/api/ships/${id}`, {
-        method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ status }),
-      })
-
-      if (response.ok) {
-        fetchDeployments()
-      }
-    } catch (error) {
-      console.error("Error updating deployment:", error)
-    }
+      const r = await fetch(`/api/ships/${id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status }) })
+      if (r.ok) fetchDeployments()
+    } catch (e) { console.error("Error updating:", e) }
   }
 
-  const deploymentsWithInfrastructure = useMemo<DeploymentWithInfrastructure[]>(
-    () =>
-      deployments.map((deployment) => ({
-        ...deployment,
-        infrastructure: extractInfrastructureConfig(
-          deployment.config,
-          deployment.deploymentProfile,
-        ),
-      })),
+  function handleCopy(nodeId: string) {
+    navigator.clipboard.writeText(nodeId)
+    setCopied(true); setTimeout(() => setCopied(false), 1500)
+  }
+
+  // ── Derived ───────────────────────────────────────────────────────────
+  const withInfra = useMemo<DeploymentWithInfra[]>(
+    () => deployments.map(d => ({ ...d, infrastructure: extractInfrastructure(d.config, d.deploymentProfile) })),
     [deployments],
   )
 
-  const filteredDeployments = useMemo(() => {
-    const normalizedQuery = searchQuery.trim().toLowerCase()
-
-    return deploymentsWithInfrastructure.filter((deployment) => {
-      if (
-        statusFilter !== "all" &&
-        deployment.status !== statusFilter
-      ) {
-        return false
-      }
-
-      const infrastructureKind = deployment.infrastructure?.kind
-      if (
-        infrastructureFilter !== "all" &&
-        infrastructureKind !== infrastructureFilter
-      ) {
-        return false
-      }
-
-      if (!normalizedQuery) {
-        return true
-      }
-
-      return [
-        deployment.name,
-        deployment.nodeId,
-        deployment.subagent?.name || "",
-        deployment.infrastructure?.kubeContext || "",
-        deployment.infrastructure?.namespace || "",
-      ]
-        .join(" ")
-        .toLowerCase()
-        .includes(normalizedQuery)
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    return withInfra.filter(d => {
+      if (statusFilter !== "all" && d.status !== statusFilter) return false
+      if (infraFilter !== "all" && d.infrastructure?.kind !== infraFilter) return false
+      if (!q) return true
+      return [d.name, d.nodeId, d.subagent?.name || "", d.infrastructure?.kubeContext || "", d.infrastructure?.namespace || ""].join(" ").toLowerCase().includes(q)
     })
-  }, [deploymentsWithInfrastructure, infrastructureFilter, searchQuery, statusFilter])
+  }, [withInfra, infraFilter, search, statusFilter])
 
-  const kindClustersByContext = useMemo(() => {
-    const entries = runtime?.kind.clusters || []
-    return new Map(entries.map((cluster) => [cluster.kubeContext, cluster]))
-  }, [runtime])
+  const kindByCtx = useMemo(() => new Map((runtime?.kind.clusters || []).map(c => [c.kubeContext, c])), [runtime])
 
-  const fleetSummary = useMemo(() => {
-    const total = deploymentsWithInfrastructure.length
-    const active = deploymentsWithInfrastructure.filter(
-      (deployment) => deployment.status === "active",
-    ).length
-    const failed = deploymentsWithInfrastructure.filter(
-      (deployment) => deployment.status === "failed",
-    ).length
-    const localKinds = deploymentsWithInfrastructure.filter(
-      (deployment) => deployment.infrastructure?.kind === "kind",
-    ).length
-    const readyKindClusters = (runtime?.kind.clusters || []).filter(
-      (cluster) => cluster.kubeContextPresent && cluster.runningNodeCount > 0,
-    ).length
-
-    return {
-      total,
-      active,
-      failed,
-      localKinds,
-      readyKindClusters,
-      filtered: filteredDeployments.length,
-    }
-  }, [deploymentsWithInfrastructure, filteredDeployments.length, runtime])
+  const summary = useMemo(() => ({
+    total: withInfra.length,
+    active: withInfra.filter(d => d.status === "active").length,
+    failed: withInfra.filter(d => d.status === "failed").length,
+    filtered: filtered.length,
+  }), [withInfra, filtered.length])
 
   useEffect(() => {
-    if (!selectedDeploymentId) return
-    const isVisible = filteredDeployments.some((deployment) => deployment.id === selectedDeploymentId)
-    if (!isVisible) {
-      setSelectedDeploymentId(filteredDeployments[0]?.id || null)
-    }
-  }, [filteredDeployments, selectedDeploymentId])
+    if (!selectedId) return
+    if (!filtered.some(d => d.id === selectedId)) setSelectedId(filtered[0]?.id || null)
+  }, [filtered, selectedId])
 
-  const fleetNodes = useMemo(() => {
-    const deploymentInputs = filteredDeployments.map((deployment) => ({
-      id: deployment.id,
-      name: deployment.name,
-      status: deployment.status,
-      nodeType: deployment.nodeType,
-      deploymentProfile: deployment.deploymentProfile,
-      provisioningMode: deployment.provisioningMode,
-      infrastructureKind: deployment.infrastructure?.kind,
-      meta: deployment.subagent?.name || deployment.nodeId,
-    }))
+  const selected = useMemo<DeploymentWithInfra | null>(
+    () => selectedId ? filtered.find(d => d.id === selectedId) || null : null,
+    [filtered, selectedId],
+  )
 
-    const localInputs = deploymentInputs.filter((item) => item.nodeType === "local")
-    const cloudInputs = deploymentInputs.filter((item) => item.nodeType === "cloud")
-    const hybridInputs = deploymentInputs.filter((item) => item.nodeType === "hybrid")
+  const hasFilters = !!(search || statusFilter !== "all" || infraFilter !== "all")
 
-    const anchorInputs = [
-      {
-        id: "anchor-local",
-        label: "Local Nodes",
-        status: "nominal" as const,
-        detail: `${localInputs.length} ships`,
-      },
-      {
-        id: "anchor-cloud",
-        label: "Cloud Nodes",
-        status: "nominal" as const,
-        detail: `${cloudInputs.length} ships`,
-      },
-      {
-        id: "anchor-hybrid",
-        label: "Hybrid Nodes",
-        status: "nominal" as const,
-        detail: `${hybridInputs.length} ships`,
-      },
-    ]
+  // ── Shared input styles ───────────────────────────────────────────────
+  const inputCls = "w-full rounded-lg border border-slate-300/70 dark:border-white/15 bg-white/60 dark:bg-white/[0.04] px-3 py-2 text-sm text-slate-900 dark:text-white outline-none placeholder:text-slate-400 dark:placeholder:text-gray-500 focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/20 transition-colors backdrop-blur-sm"
+  const selectCls = "rounded-lg border border-slate-300/70 dark:border-white/15 bg-white/60 dark:bg-white/[0.04] px-3 py-2 text-sm text-slate-900 dark:text-white outline-none focus:border-cyan-500/50 transition-colors backdrop-blur-sm"
 
-    const [localAnchor, cloudAnchor, hybridAnchor] = mapAnchorsToNodes(anchorInputs)
-
-    const localNodes = mapDeploymentsToNodes(localInputs, selectedDeploymentId || undefined)
-    const cloudNodes = mapDeploymentsToNodes(cloudInputs, selectedDeploymentId || undefined)
-    const hybridNodes = mapDeploymentsToNodes(hybridInputs, selectedDeploymentId || undefined)
-
-    return layoutColumns(
-      [
-        { key: "local", nodes: [localAnchor, ...localNodes] },
-        { key: "cloud", nodes: [cloudAnchor, ...cloudNodes] },
-        { key: "hybrid", nodes: [hybridAnchor, ...hybridNodes] },
-      ],
-      260,
-      150
-    )
-  }, [filteredDeployments, selectedDeploymentId])
-
-  const fleetEdges = useMemo(() => {
-    const edgeItems = filteredDeployments.map((deployment) => ({
-      id: deployment.id,
-      status: deployment.status,
-      anchorId: `anchor-${deployment.nodeType}`,
-    }))
-    return buildEdgesToAnchors(edgeItems)
-  }, [filteredDeployments])
-
-  const quartermasterShip = useMemo(() => {
-    if (selectedDeploymentId) {
-      const selected = filteredDeployments.find((deployment) => deployment.id === selectedDeploymentId)
-      if (selected) {
-        return selected
-      }
-    }
-
-    return filteredDeployments[0] || null
-  }, [filteredDeployments, selectedDeploymentId])
-
-  const handleFleetNodeClick = (_: unknown, node: Node) => {
-    if (node.type === "deploymentNode") {
-      setSelectedDeploymentId(node.id)
-    }
-  }
-
+  // ── Render ────────────────────────────────────────────────────────────
   return (
-    <div className="min-h-screen gradient-orb perspective p-8">
-      <div className="max-w-7xl mx-auto">
-        <div className="flex items-center justify-between mb-8">
-          <div className="flex items-center gap-3">
-            <div className="p-3 rounded-xl bg-gradient-to-br from-purple-500/20 to-pink-500/20">
-              <Rocket className="w-8 h-8 text-purple-400" />
-            </div>
-            <h1 className="text-4xl font-bold bg-gradient-to-r from-purple-400 via-pink-400 to-blue-400 bg-clip-text text-transparent">
-              Ships
-            </h1>
-          </div>
-          <button
-            onClick={() => setShowCreateForm(true)}
-            className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-purple-600 to-pink-600 text-white rounded-xl hover:from-purple-700 hover:to-pink-700 transition-all duration-300 stack-2 transform hover:scale-105"
-          >
-            <Rocket className="w-5 h-5" />
-            Launch Ship
-          </button>
-        </div>
+    <div className="min-h-screen gradient-orb">
+      {/* Subtle grid texture overlay */}
+      <div className="pointer-events-none fixed inset-0 bridge-grid opacity-40 dark:opacity-100" />
 
-        <div className="mb-6 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-          <div className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2">
-            <p className="text-[10px] uppercase tracking-wider text-gray-500">Total ships</p>
-            <p className="mt-1 text-lg font-semibold text-white">{fleetSummary.total}</p>
-          </div>
-          <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/10 px-3 py-2">
-            <p className="text-[10px] uppercase tracking-wider text-emerald-300/80">Active ships</p>
-            <p className="mt-1 text-lg font-semibold text-emerald-300">{fleetSummary.active}</p>
-          </div>
-          <div className="rounded-xl border border-red-500/20 bg-red-500/10 px-3 py-2">
-            <p className="text-[10px] uppercase tracking-wider text-red-300/80">Failed ships</p>
-            <p className="mt-1 text-lg font-semibold text-red-300">{fleetSummary.failed}</p>
-          </div>
-          <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/10 px-3 py-2">
-            <p className="text-[10px] uppercase tracking-wider text-cyan-300/80">Kind targets</p>
-            <p className="mt-1 text-lg font-semibold text-cyan-200">{fleetSummary.localKinds}</p>
-          </div>
-          <div className="rounded-xl border border-blue-500/20 bg-blue-500/10 px-3 py-2">
-            <p className="text-[10px] uppercase tracking-wider text-blue-300/80">Ready kind clusters</p>
-            <p className="mt-1 text-lg font-semibold text-blue-200">{fleetSummary.readyKindClusters}</p>
-          </div>
-          <div className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2">
-            <p className="text-[10px] uppercase tracking-wider text-gray-500">Showing</p>
-            <p className="mt-1 text-lg font-semibold text-white">{fleetSummary.filtered}</p>
-          </div>
-        </div>
-
-        <div className="mb-6 grid grid-cols-1 gap-3 lg:grid-cols-5">
-          <label className="lg:col-span-2 flex items-center gap-2 rounded-lg border border-white/15 bg-white/[0.04] px-3 py-2 text-sm text-gray-300">
-            <Search className="h-4 w-4 text-gray-500" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search by ship, node, context, namespace"
-              className="w-full bg-transparent text-sm text-white outline-none placeholder:text-gray-500"
-            />
-          </label>
-          <select
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value as "all" | Deployment["status"])}
-            className="rounded-lg border border-white/15 bg-white/[0.04] px-3 py-2 text-sm text-white"
-          >
-            <option value="all">All statuses</option>
-            <option value="pending">Pending</option>
-            <option value="deploying">Deploying</option>
-            <option value="active">Active</option>
-            <option value="inactive">Inactive</option>
-            <option value="failed">Failed</option>
-            <option value="updating">Updating</option>
-          </select>
-          <select
-            value={infrastructureFilter}
-            onChange={(e) => setInfrastructureFilter(e.target.value as "all" | InfrastructureKind)}
-            className="rounded-lg border border-white/15 bg-white/[0.04] px-3 py-2 text-sm text-white"
-          >
-            <option value="all">All infrastructure</option>
-            <option value="kind">{infrastructureKindLabels.kind}</option>
-            <option value="minikube">{infrastructureKindLabels.minikube}</option>
-            <option value="existing_k8s">{infrastructureKindLabels.existing_k8s}</option>
-          </select>
-          <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={() => {
-                setSearchQuery("")
-                setStatusFilter("all")
-                setInfrastructureFilter("all")
-              }}
-              className="w-full rounded-lg border border-white/15 bg-white/[0.04] px-3 py-2 text-sm text-gray-300 hover:bg-white/[0.08] transition-all"
-            >
-              Clear
-            </button>
-            <button
-              type="button"
-              onClick={() => fetchRuntime()}
-              className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-cyan-500/25 bg-cyan-500/10 px-3 py-2 text-sm text-cyan-200 hover:bg-cyan-500/20 transition-all"
-            >
-              <RefreshCw className={`h-4 w-4 ${isRuntimeLoading ? "animate-spin" : ""}`} />
-              Runtime
-            </button>
-          </div>
-        </div>
-
-        <div className="mb-6 flex flex-wrap items-center gap-3">
-          <label className="inline-flex items-center gap-2 rounded-lg border border-white/15 bg-white/[0.04] px-3 py-2 text-sm text-gray-300">
-            <input
-              type="checkbox"
-              checked={includeForwarded}
-              onChange={(e) => setIncludeForwarded(e.target.checked)}
-            />
-            Include forwarded
-          </label>
-          <input
-            type="text"
-            value={sourceNodeId}
-            onChange={(e) => setSourceNodeId(e.target.value)}
-            placeholder="Source node filter"
-            className="rounded-lg border border-white/15 bg-white/[0.04] px-3 py-2 text-sm text-white"
-          />
-        </div>
-
-        <OrchestrationSurface level={4} className="mb-8 bg-white/5">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <h2 className="text-lg font-semibold">Local Runtime</h2>
-            <span className="text-xs text-gray-500">
-              Last check: {formatRelativeTime(runtime?.checkedAt)}
-            </span>
-          </div>
-          {isRuntimeLoading && !runtime ? (
-            <div className="mt-4 flex items-center gap-2 text-sm text-gray-400">
-              <RefreshCw className="h-4 w-4 animate-spin" />
-              Inspecting Docker and kind runtime...
-            </div>
-          ) : (
-            <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-3">
-              <div className="rounded-xl border border-white/10 bg-black/20 px-3 py-2">
-                <p className="text-[10px] uppercase tracking-wider text-gray-500">Docker context</p>
-                <div className="mt-1 flex items-center gap-2">
-                  <Server className="h-4 w-4 text-cyan-300" />
-                  <span className="text-sm font-medium text-white">
-                    {runtime?.docker.currentContext || "Unavailable"}
+      <div className="relative mx-auto max-w-[1600px] px-4 py-6 sm:px-6 lg:px-8">
+        {/* ── Header ──────────────────────────────────────────────────── */}
+        <header className="mb-6 animate-fade-up">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <div className="relative">
+                <div className="rounded-2xl bg-gradient-to-br from-violet-500/20 to-fuchsia-500/20 dark:from-purple-500/25 dark:to-pink-500/25 p-3">
+                  <Rocket className="h-7 w-7 text-violet-600 dark:text-purple-400" />
+                </div>
+                {summary.active > 0 && (
+                  <span className="absolute -right-0.5 -top-0.5 flex h-3 w-3">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                    <span className="relative inline-flex h-3 w-3 rounded-full bg-emerald-500" />
                   </span>
-                  {runtime?.docker.currentContext === "desktop-linux" ? (
-                    <span className="rounded-full border border-emerald-500/30 bg-emerald-500/15 px-2 py-0.5 text-[10px] text-emerald-300">
-                      Desktop ready
-                    </span>
+                )}
+              </div>
+              <div>
+                <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-white" style={{ fontFamily: "var(--font-display)" }}>
+                  Fleet Command
+                </h1>
+                <p className="readout mt-0.5 text-slate-500 dark:text-gray-500">SHIP DEPLOYMENT & MANAGEMENT</p>
+              </div>
+            </div>
+            <button
+              onClick={() => setShowModal(true)}
+              className="flex items-center gap-2 rounded-xl bg-gradient-to-r from-violet-600 to-fuchsia-600 dark:from-purple-600 dark:to-pink-600 px-5 py-2.5 text-sm font-medium text-white shadow-lg shadow-violet-500/20 dark:shadow-purple-500/20 transition-all duration-200 hover:shadow-xl hover:shadow-violet-500/30 dark:hover:shadow-purple-500/30 hover:brightness-110 active:scale-[0.98]"
+            >
+              <Rocket className="h-4 w-4" />
+              Launch Ship
+            </button>
+          </div>
+
+          {/* Stats */}
+          <div className="mt-5 flex flex-wrap gap-2 animate-fade-up stagger-1">
+            {[
+              { label: "FLEET", value: summary.total, cls: "border-slate-200/70 dark:border-white/10 text-slate-700 dark:text-slate-200" },
+              { label: "ACTIVE", value: summary.active, cls: "border-emerald-500/25 text-emerald-700 dark:text-emerald-300" },
+              { label: "FAILED", value: summary.failed, cls: "border-rose-500/25 text-rose-700 dark:text-red-300" },
+              ...(hasFilters ? [{ label: "SHOWING", value: summary.filtered, cls: "border-cyan-500/25 text-cyan-700 dark:text-cyan-200" }] : []),
+            ].map(s => (
+              <div key={s.label} className={`glass rounded-lg border px-3 py-1.5 flex items-baseline gap-2 ${s.cls}`}>
+                <span className="readout opacity-60">{s.label}</span>
+                <span className="text-base font-semibold font-tactical tabular-nums">{s.value}</span>
+              </div>
+            ))}
+          </div>
+        </header>
+
+        {/* Divider */}
+        <div className="bridge-divider mb-6" />
+
+        {/* ── Master / Detail ─────────────────────────────────────────── */}
+        <div className="flex flex-col gap-5 lg:flex-row lg:items-start animate-fade-up stagger-2">
+          {/* ─── LEFT: Ship List ────────────────────────────────────── */}
+          <aside className="w-full shrink-0 lg:w-[400px] xl:w-[440px]">
+            {/* Search + Filters */}
+            <div className="mb-3 space-y-2">
+              <label className="flex items-center gap-2 glass rounded-lg px-3 py-2">
+                <Search className="h-4 w-4 shrink-0 text-slate-400 dark:text-gray-500" />
+                <input
+                  type="text" value={search}
+                  onChange={e => setSearch(e.target.value)}
+                  placeholder="Search ships..."
+                  className="w-full bg-transparent text-sm text-slate-900 dark:text-white outline-none placeholder:text-slate-400 dark:placeholder:text-gray-500"
+                />
+                {search && (
+                  <button onClick={() => setSearch("")} className="text-slate-400 dark:text-gray-500 hover:text-slate-600 dark:hover:text-gray-300 transition-colors">
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                )}
+              </label>
+              <div className="flex gap-2">
+                <select value={statusFilter} onChange={e => setStatusFilter(e.target.value as any)} className={`${selectCls} flex-1`}>
+                  <option value="all">All statuses</option>
+                  {(["pending", "deploying", "active", "inactive", "failed", "updating"] as const).map(s => (
+                    <option key={s} value={s}>{statusCfg[s].label}</option>
+                  ))}
+                </select>
+                <select value={infraFilter} onChange={e => setInfraFilter(e.target.value as any)} className={`${selectCls} flex-1`}>
+                  <option value="all">All infra</option>
+                  {(["kind", "minikube", "existing_k8s"] as const).map(k => (
+                    <option key={k} value={k}>{infrastructureKindLabels[k]}</option>
+                  ))}
+                </select>
+                {hasFilters && (
+                  <button
+                    onClick={() => { setSearch(""); setStatusFilter("all"); setInfraFilter("all") }}
+                    className="glass rounded-lg px-2.5 text-xs text-slate-500 dark:text-gray-400 hover:text-slate-700 dark:hover:text-gray-200 transition-colors"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* List */}
+            <div className="card-scroll space-y-1.5 overflow-y-auto pr-1" style={{ maxHeight: "calc(100vh - 340px)" }}>
+              {isLoading ? (
+                Array.from({ length: 5 }).map((_, i) => (
+                  <div key={i} className={`skeleton-shimmer h-[68px] rounded-xl stagger-${Math.min(i + 1, 5)}`} style={{ animationDelay: `${i * 80}ms` }} />
+                ))
+              ) : filtered.length === 0 ? (
+                <div className="glass rounded-xl px-5 py-10 text-center">
+                  {summary.total === 0 ? (
+                    <>
+                      <div className="relative mx-auto mb-4 flex h-16 w-16 items-center justify-center">
+                        <span className="absolute inset-0 animate-ping rounded-full bg-violet-400/20 dark:bg-purple-400/20" />
+                        <div className="relative rounded-2xl bg-violet-500/10 dark:bg-purple-500/15 p-4">
+                          <Rocket className="h-8 w-8 text-violet-500 dark:text-purple-400 opacity-60" />
+                        </div>
+                      </div>
+                      <p className="text-sm font-medium text-slate-700 dark:text-gray-300">No ships yet</p>
+                      <p className="mt-1 text-xs text-slate-500 dark:text-gray-500">Launch your first ship to start your fleet</p>
+                      <button
+                        onClick={() => setShowModal(true)}
+                        className="mt-4 rounded-lg bg-violet-600/90 dark:bg-purple-600/80 px-4 py-1.5 text-xs font-medium text-white hover:bg-violet-600 dark:hover:bg-purple-600 transition-colors"
+                      >
+                        Launch Ship
+                      </button>
+                    </>
                   ) : (
-                    <span className="rounded-full border border-yellow-500/30 bg-yellow-500/15 px-2 py-0.5 text-[10px] text-yellow-200">
-                      Not desktop-linux
-                    </span>
+                    <>
+                      <AlertTriangle className="mx-auto mb-2 h-7 w-7 text-amber-500 dark:text-amber-300 opacity-60" />
+                      <p className="text-sm font-medium text-slate-700 dark:text-gray-300">No ships match filters</p>
+                      <button
+                        onClick={() => { setSearch(""); setStatusFilter("all"); setInfraFilter("all") }}
+                        className="mt-2 text-xs text-cyan-600 dark:text-cyan-400 hover:underline"
+                      >
+                        Reset filters
+                      </button>
+                    </>
                   )}
                 </div>
-                {runtime?.docker.error && (
-                  <p className="mt-1 text-xs text-red-300">{runtime.docker.error}</p>
-                )}
-              </div>
-              <div className="rounded-xl border border-white/10 bg-black/20 px-3 py-2">
-                <p className="text-[10px] uppercase tracking-wider text-gray-500">kind clusters</p>
-                <div className="mt-1 flex items-center gap-2">
-                  <CheckCircle2 className="h-4 w-4 text-blue-300" />
-                  <span className="text-sm font-medium text-white">
-                    {runtime?.kind.clusters.length || 0} detected
-                  </span>
-                </div>
-                {runtime?.kind.error && (
-                  <p className="mt-1 text-xs text-red-300">{runtime.kind.error}</p>
-                )}
-                {!runtime?.kind.error && (runtime?.kind.clusters.length || 0) === 0 && (
-                  <p className="mt-1 text-xs text-yellow-200">
-                    No kind cluster found. Create one with `kind create cluster --name orchwiz`.
-                  </p>
-                )}
-              </div>
-              <div className="rounded-xl border border-white/10 bg-black/20 px-3 py-2">
-                <p className="text-[10px] uppercase tracking-wider text-gray-500">Kube contexts</p>
-                <div className="mt-1 flex items-center gap-2">
-                  <Activity className="h-4 w-4 text-purple-300" />
-                  <span className="text-sm font-medium text-white">
-                    {runtime?.kubernetes.currentContext || "Unavailable"}
-                  </span>
-                </div>
-                {runtime?.kubernetes.error && (
-                  <p className="mt-1 text-xs text-red-300">{runtime.kubernetes.error}</p>
-                )}
-              </div>
+              ) : (
+                filtered.map((ship, i) => {
+                  const st = statusCfg[ship.status]
+                  const nt = nodeTypeCfg[ship.nodeType]
+                  const StatusIcon = st.icon
+                  const NodeIcon = nt.icon
+                  const isSel = ship.id === selectedId
+
+                  return (
+                    <button
+                      key={ship.id}
+                      onClick={() => { setSelectedId(ship.id); setTab("overview") }}
+                      className={`animate-fade-up group relative w-full rounded-xl border text-left transition-all duration-200 ${
+                        isSel
+                          ? "glass-elevated border-cyan-500/30 dark:border-cyan-400/30 surface-glow-cyan"
+                          : "glass border-transparent hover:border-slate-300/50 dark:hover:border-white/15"
+                      }`}
+                      style={{ animationDelay: `${Math.min(i, 12) * 40}ms` }}
+                    >
+                      {/* LCARS-style left accent bar */}
+                      <div className={`absolute left-0 top-3 bottom-3 w-[3px] rounded-r-full transition-all ${
+                        isSel ? "opacity-100" : "opacity-0 group-hover:opacity-60"
+                      } ${st.accent}`} />
+
+                      <div className="flex items-center gap-3 px-4 py-3 pl-5">
+                        <div className={`shrink-0 rounded-lg border p-1.5 ${nt.bg} ${nt.border}`}>
+                          <NodeIcon className={`h-4 w-4 ${nt.color}`} />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className="truncate text-sm font-semibold text-slate-800 dark:text-white">{ship.name}</span>
+                            {ship.subagent && <Bot className="h-3 w-3 shrink-0 text-violet-500/60 dark:text-purple-400/60" />}
+                          </div>
+                          <div className="mt-0.5 flex items-center gap-1.5">
+                            <span className="font-tactical text-[11px] text-slate-400 dark:text-gray-500 truncate">{ship.nodeId}</span>
+                            {ship.infrastructure && (
+                              <>
+                                <span className="text-slate-300 dark:text-white/15">&middot;</span>
+                                <span className="readout text-slate-400 dark:text-gray-600">{infrastructureKindLabels[ship.infrastructure.kind]}</span>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                        <div className={`shrink-0 flex items-center gap-1 rounded-md border px-2 py-0.5 ${st.bg} ${st.border}`}>
+                          <StatusIcon className={`h-3 w-3 ${st.color} ${st.pulse ? "animate-pulse" : ""}`} />
+                          <span className={`readout ${st.color}`}>{st.label}</span>
+                        </div>
+                      </div>
+                    </button>
+                  )
+                })
+              )}
             </div>
-          )}
-          {!!runtime?.kind.clusters.length && (
-            <div className="mt-3 flex flex-wrap gap-2">
-              {runtime.kind.clusters.map((cluster) => (
-                <div
-                  key={cluster.kubeContext}
-                  className="rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1.5 text-xs text-gray-300"
-                >
-                  <span className="font-medium text-cyan-300">{cluster.name}</span>
-                  {" · "}
-                  {cluster.kubeContext}
-                  {" · "}
-                  {cluster.runningNodeCount}/{cluster.totalNodeCount || 0} nodes running
+
+            {/* Runtime disclosure */}
+            <div className="mt-4 animate-fade-up stagger-3">
+              <button
+                onClick={() => setRuntimeOpen(!runtimeOpen)}
+                className="glass flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left transition-colors hover:brightness-105"
+              >
+                <Radio className="h-3.5 w-3.5 text-cyan-600 dark:text-cyan-400 opacity-70" />
+                <span className="readout flex-1 text-slate-600 dark:text-gray-400">LOCAL RUNTIME</span>
+                <span className="readout text-slate-400 dark:text-gray-600">{relativeTime(runtime?.checkedAt)}</span>
+                <ChevronDown className={`h-3.5 w-3.5 text-slate-400 dark:text-gray-500 transition-transform duration-200 ${runtimeOpen ? "rotate-180" : ""}`} />
+              </button>
+              {runtimeOpen && (
+                <div className="glass mt-2 animate-slide-in space-y-3 rounded-xl p-3">
+                  <div className="flex items-center justify-between">
+                    <span className="readout text-slate-500 dark:text-gray-500">DOCKER CONTEXT</span>
+                    <button onClick={fetchRuntime} className="readout flex items-center gap-1 text-cyan-600 dark:text-cyan-400 hover:underline">
+                      <RefreshCw className={`h-3 w-3 ${runtimeLoading ? "animate-spin" : ""}`} />
+                      REFRESH
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-2 text-sm">
+                    <Server className="h-3.5 w-3.5 text-cyan-600 dark:text-cyan-300" />
+                    <span className="font-medium text-slate-800 dark:text-white font-tactical">{runtime?.docker.currentContext || "Unavailable"}</span>
+                    {runtime?.docker.currentContext === "desktop-linux" && (
+                      <span className="rounded-full border border-emerald-500/25 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-300">Ready</span>
+                    )}
+                  </div>
+                  {runtime?.docker.error && <p className="text-xs text-rose-600 dark:text-red-300">{runtime.docker.error}</p>}
+
+                  <div className="bridge-divider" />
+
+                  <div>
+                    <span className="readout text-slate-500 dark:text-gray-500">KIND CLUSTERS</span>
+                    <div className="mt-1 flex items-center gap-2 text-sm">
+                      <CheckCircle2 className="h-3.5 w-3.5 text-sky-600 dark:text-blue-300" />
+                      <span className="font-medium text-slate-800 dark:text-white font-tactical">{runtime?.kind.clusters.length || 0} detected</span>
+                    </div>
+                    {runtime?.kind.error && <p className="mt-1 text-xs text-rose-600 dark:text-red-300">{runtime.kind.error}</p>}
+                    {!runtime?.kind.error && !runtime?.kind.clusters.length && (
+                      <p className="mt-1 text-[11px] text-amber-600 dark:text-yellow-200/70">
+                        No cluster. Run <code className="font-tactical text-cyan-700 dark:text-cyan-300/80">kind create cluster --name orchwiz</code>
+                      </p>
+                    )}
+                    {!!runtime?.kind.clusters.length && (
+                      <div className="mt-2 space-y-1">
+                        {runtime.kind.clusters.map(c => (
+                          <div key={c.kubeContext} className="flex items-center justify-between rounded-md border border-slate-200/50 dark:border-white/5 bg-slate-50/50 dark:bg-white/[0.02] px-2.5 py-1">
+                            <span className="font-tactical text-[11px] font-medium text-cyan-700 dark:text-cyan-300">{c.name}</span>
+                            <span className="font-tactical text-[11px] text-slate-500 dark:text-gray-400">
+                              {c.runningNodeCount}/{c.totalNodeCount || 0} nodes
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="bridge-divider" />
+
+                  <div>
+                    <span className="readout text-slate-500 dark:text-gray-500">KUBE CONTEXT</span>
+                    <div className="mt-1 flex items-center gap-2 text-sm">
+                      <Activity className="h-3.5 w-3.5 text-violet-600 dark:text-purple-300" />
+                      <span className="font-medium text-slate-800 dark:text-white font-tactical">{runtime?.kubernetes.currentContext || "Unavailable"}</span>
+                    </div>
+                    {runtime?.kubernetes.error && <p className="mt-1 text-xs text-rose-600 dark:text-red-300">{runtime.kubernetes.error}</p>}
+                  </div>
                 </div>
-              ))}
+              )}
             </div>
-          )}
-        </OrchestrationSurface>
+          </aside>
 
-        <OrchestrationSurface level={4} className="mb-8 bg-white/5">
-          <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold">Fleet Map</h2>
-            <span className="text-xs text-gray-500 dark:text-gray-400">Interactive ship topology</span>
-          </div>
-          <div className="mt-4">
-            <FlowCanvas
-              nodes={fleetNodes}
-              edges={fleetEdges}
-              nodeTypes={nodeTypes}
-              onNodeClick={handleFleetNodeClick}
-              showMiniMap
-              className="h-[360px]"
-            />
-          </div>
-        </OrchestrationSurface>
+          {/* ─── RIGHT: Detail Panel ───────────────────────────────── */}
+          <main className="min-w-0 flex-1 animate-fade-up stagger-3">
+            {selected ? (
+              <DetailPanel
+                ship={selected} tab={tab} onTab={setTab}
+                onStatus={handleStatus} onDelete={handleDelete}
+                onCopy={handleCopy} copied={copied}
+                kindCluster={selected.infrastructure?.kind === "kind" ? kindByCtx.get(selected.infrastructure.kubeContext) : undefined}
+                runtime={runtime}
+              />
+            ) : (
+              <div className="glass flex min-h-[420px] flex-col items-center justify-center rounded-2xl">
+                <div className="relative mb-4">
+                  <div className="absolute inset-0 -m-4 rounded-full bg-cyan-500/5 dark:bg-cyan-400/5 animate-ping" style={{ animationDuration: "3s" }} />
+                  <Anchor className="relative h-12 w-12 text-slate-300 dark:text-gray-600" />
+                </div>
+                <p className="text-sm font-medium text-slate-600 dark:text-gray-400">
+                  {summary.total === 0 ? "Launch a ship to begin" : "Select a ship to view details"}
+                </p>
+                <p className="mt-1 readout text-slate-400 dark:text-gray-600">
+                  {summary.total === 0 ? "YOUR FLEET IS EMPTY" : `${summary.total} SHIP${summary.total !== 1 ? "S" : ""} IN FLEET`}
+                </p>
+              </div>
+            )}
+          </main>
+        </div>
+      </div>
 
-        <OrchestrationSurface level={4} className="mb-8 bg-white/5">
-          <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold">Quartermaster</h2>
-            <span className="text-xs text-gray-500 dark:text-gray-400">
-              {quartermasterShip ? `Ship: ${quartermasterShip.name}` : "No ship selected"}
-            </span>
-          </div>
-          <ShipQuartermasterPanel
-            shipDeploymentId={quartermasterShip?.id || null}
-            shipName={quartermasterShip?.name}
-            className="mt-3"
-          />
-        </OrchestrationSurface>
+      {/* ── Modal ──────────────────────────────────────────────────── */}
+      {showModal && (
+        <div className="welcome-modal-backdrop fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 dark:bg-black/60 backdrop-blur-sm pt-[5vh] pb-12" onClick={() => setShowModal(false)}>
+          <div
+            className="welcome-modal-enter relative w-full max-w-2xl glass-elevated rounded-2xl border border-slate-200/80 dark:border-white/15 p-6 shadow-2xl bg-white/90 dark:bg-slate-950/95"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="mb-5 flex items-center justify-between">
+              <div>
+                <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Launch New Ship</h2>
+                <p className="readout mt-1 text-slate-500 dark:text-gray-500">CONFIGURE DEPLOYMENT PARAMETERS</p>
+              </div>
+              <button onClick={() => setShowModal(false)} className="rounded-lg p-1.5 text-slate-400 dark:text-gray-400 hover:bg-slate-100 dark:hover:bg-white/10 transition-colors">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
 
-        {showCreateForm && (
-          <OrchestrationSurface level={5} className="mb-8">
-            <h2 className="text-2xl font-semibold mb-6">Launch New Ship</h2>
+            <div className="bridge-divider mb-5" />
+
             <form onSubmit={handleCreate} className="space-y-4">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div>
-                  <label className="block text-sm font-medium mb-2">Name</label>
-                  <input
-                    type="text"
-                    value={formData.name}
-                    onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                    required
-                    className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
-                    placeholder="my-ship"
-                  />
+                  <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">NAME</label>
+                  <input type="text" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} required className={inputCls} placeholder="my-ship" />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium mb-2">Subagent</label>
-                  <select
-                    value={formData.subagentId}
-                    onChange={(e) => setFormData({ ...formData, subagentId: e.target.value })}
-                    className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
-                  >
+                  <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">SUBAGENT</label>
+                  <select value={form.subagentId} onChange={e => setForm({ ...form, subagentId: e.target.value })} className={`${selectCls} w-full`}>
                     <option value="">None (Custom Agent)</option>
-                    {subagents.map((subagent) => (
-                      <option key={subagent.id} value={subagent.id}>
-                        {subagent.name}
-                      </option>
-                    ))}
+                    {subagents.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                   </select>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium mb-2">Node ID</label>
-                  <input
-                    type="text"
-                    value={formData.nodeId}
-                    onChange={(e) => setFormData({ ...formData, nodeId: e.target.value })}
-                    required
-                    className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
-                    placeholder="node-001"
-                  />
+                  <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">NODE ID</label>
+                  <input type="text" value={form.nodeId} onChange={e => setForm({ ...form, nodeId: e.target.value })} required className={inputCls} placeholder="node-001" />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium mb-2">Deployment Profile</label>
+                  <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">DEPLOYMENT PROFILE</label>
                   <select
-                    value={formData.deploymentProfile}
-                    onChange={(e) => {
-                      const deploymentProfile = e.target.value as DeploymentProfile
-                      const nodeType =
-                        deploymentProfile === "local_starship_build"
-                          ? "local"
-                          : formData.nodeType === "hybrid"
-                            ? "hybrid"
-                            : "cloud"
-                      setFormData({
-                        ...formData,
-                        deploymentProfile,
-                        advancedNodeTypeOverride:
-                          deploymentProfile === "cloud_shipyard" ? formData.advancedNodeTypeOverride : false,
-                        nodeType,
-                        infrastructure: defaultInfrastructure(deploymentProfile),
-                      })
+                    value={form.deploymentProfile}
+                    onChange={e => {
+                      const dp = e.target.value as DeploymentProfile
+                      setForm({ ...form, deploymentProfile: dp, advancedNodeTypeOverride: dp === "cloud_shipyard" ? form.advancedNodeTypeOverride : false, nodeType: dp === "local_starship_build" ? "local" : form.nodeType === "hybrid" ? "hybrid" : "cloud", infrastructure: defaultInfrastructure(dp) })
                     }}
-                    className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
+                    className={`${selectCls} w-full`}
                   >
                     <option value="local_starship_build">Local Starship Build</option>
                     <option value="cloud_shipyard">Cloud Shipyard</option>
                   </select>
                 </div>
-                <div className="md:col-span-2">
-                  <label className="block text-sm font-medium mb-2">Provisioning Mode</label>
-                  <select
-                    value={formData.provisioningMode}
-                    onChange={(e) =>
-                      setFormData({ ...formData, provisioningMode: e.target.value as ProvisioningMode })
-                    }
-                    className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
-                  >
+                <div className="sm:col-span-2">
+                  <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">PROVISIONING MODE</label>
+                  <select value={form.provisioningMode} onChange={e => setForm({ ...form, provisioningMode: e.target.value as ProvisioningMode })} className={`${selectCls} w-full`}>
                     <option value="terraform_ansible">Terraform + Ansible</option>
-                    <option value="terraform_only" disabled>
-                      Terraform only (coming soon)
-                    </option>
-                    <option value="ansible_only" disabled>
-                      Ansible only (coming soon)
-                    </option>
+                    <option value="terraform_only" disabled>Terraform only (coming soon)</option>
+                    <option value="ansible_only" disabled>Ansible only (coming soon)</option>
                   </select>
-                  <p className="mt-1 text-xs text-gray-500">
-                    {provisioningModeLabels[formData.provisioningMode]}
+                  <p className="mt-1 font-tactical text-[11px] text-slate-400 dark:text-gray-600">
+                    {deploymentProfileLabels[form.deploymentProfile]} &rarr; {nodeTypeCfg[derivedNodeType].label}
                   </p>
                 </div>
-                <div className="md:col-span-2">
-                  <label className="block text-sm font-medium mb-2">Derived Node Type</label>
-                  <div className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20 text-sm">
-                    {deploymentProfileLabels[formData.deploymentProfile]}
-                    {" -> "}
-                    {nodeTypeConfig[derivedNodeType].label}
+                {form.deploymentProfile === "cloud_shipyard" && (
+                  <div className="sm:col-span-2">
+                    <label className="inline-flex items-center gap-2 text-xs text-slate-500 dark:text-gray-400">
+                      <input type="checkbox" checked={form.advancedNodeTypeOverride} onChange={e => setForm({ ...form, advancedNodeTypeOverride: e.target.checked, nodeType: e.target.checked ? form.nodeType : "cloud" })} />
+                      Advanced: allow hybrid node type
+                    </label>
+                    {form.advancedNodeTypeOverride && (
+                      <select value={form.nodeType} onChange={e => setForm({ ...form, nodeType: e.target.value as NodeType })} className={`${selectCls} mt-2 w-full`}>
+                        <option value="cloud">Cloud</option>
+                        <option value="hybrid">Hybrid</option>
+                      </select>
+                    )}
                   </div>
-                  {formData.deploymentProfile === "cloud_shipyard" && (
-                    <div className="mt-2 space-y-2">
-                      <label className="inline-flex items-center gap-2 text-sm text-gray-300">
-                        <input
-                          type="checkbox"
-                          checked={formData.advancedNodeTypeOverride}
-                          onChange={(e) =>
-                            setFormData({
-                              ...formData,
-                              advancedNodeTypeOverride: e.target.checked,
-                              nodeType: e.target.checked ? formData.nodeType : "cloud",
-                            })
-                          }
-                        />
-                        Advanced override (allow hybrid)
-                      </label>
-                      {formData.advancedNodeTypeOverride && (
-                        <select
-                          value={formData.nodeType}
-                          onChange={(e) => setFormData({ ...formData, nodeType: e.target.value as NodeType })}
-                          className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
-                        >
-                          <option value="cloud">Cloud</option>
-                          <option value="hybrid">Hybrid</option>
-                        </select>
-                      )}
-                    </div>
-                  )}
+                )}
+                <div className="sm:col-span-2">
+                  <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">NODE URL (OPTIONAL)</label>
+                  <input type="url" value={form.nodeUrl} onChange={e => setForm({ ...form, nodeUrl: e.target.value })} className={inputCls} placeholder="https://node.example.com" />
                 </div>
-                <div className="md:col-span-2">
-                  <label className="block text-sm font-medium mb-2">Node URL (optional)</label>
-                  <input
-                    type="url"
-                    value={formData.nodeUrl}
-                    onChange={(e) => setFormData({ ...formData, nodeUrl: e.target.value })}
-                    className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
-                    placeholder="https://node.example.com"
-                  />
-                </div>
-                <div className="md:col-span-2">
-                  <label className="block text-sm font-medium mb-2">Infrastructure (config.infrastructure)</label>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="sm:col-span-2">
+                  <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">INFRASTRUCTURE</label>
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                     <select
-                      value={formData.infrastructure.kind}
-                      onChange={(e) => {
-                        const selectedKind = e.target.value as InfrastructureKind
-                        const infrastructureKind =
-                          formData.deploymentProfile === "cloud_shipyard" ? "existing_k8s" : selectedKind
-                        setFormData({
-                          ...formData,
-                          infrastructure: {
-                            ...formData.infrastructure,
-                            kind: infrastructureKind,
-                            kubeContext: kubeContextForKind(infrastructureKind),
-                          },
-                        })
-                      }}
-                      disabled={formData.deploymentProfile === "cloud_shipyard"}
-                      className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
+                      value={form.infrastructure.kind}
+                      onChange={e => { const k = form.deploymentProfile === "cloud_shipyard" ? "existing_k8s" : e.target.value as InfrastructureKind; setForm({ ...form, infrastructure: { ...form.infrastructure, kind: k, kubeContext: kubeContextForKind(k) } }) }}
+                      disabled={form.deploymentProfile === "cloud_shipyard"}
+                      className={`${selectCls} w-full`}
                     >
-                      {formData.deploymentProfile === "cloud_shipyard" ? (
-                        <option value="existing_k8s">
-                          {infrastructureKindLabels.existing_k8s}
-                        </option>
-                      ) : (
-                        <>
-                          <option value="kind">{infrastructureKindLabels.kind}</option>
-                          <option value="minikube">{infrastructureKindLabels.minikube}</option>
-                        </>
-                      )}
+                      {form.deploymentProfile === "cloud_shipyard"
+                        ? <option value="existing_k8s">{infrastructureKindLabels.existing_k8s}</option>
+                        : <><option value="kind">{infrastructureKindLabels.kind}</option><option value="minikube">{infrastructureKindLabels.minikube}</option></>}
                     </select>
-                    <input
-                      type="text"
-                      value={formData.infrastructure.kubeContext}
-                      onChange={(e) =>
-                        setFormData({
-                          ...formData,
-                          infrastructure: { ...formData.infrastructure, kubeContext: e.target.value },
-                        })
-                      }
-                      className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
-                      placeholder="kube context"
-                    />
-                    <input
-                      type="text"
-                      value={formData.infrastructure.namespace}
-                      onChange={(e) =>
-                        setFormData({
-                          ...formData,
-                          infrastructure: { ...formData.infrastructure, namespace: e.target.value },
-                        })
-                      }
-                      className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
-                      placeholder="namespace"
-                    />
-                    <input
-                      type="text"
-                      value={formData.infrastructure.terraformWorkspace}
-                      onChange={(e) =>
-                        setFormData({
-                          ...formData,
-                          infrastructure: { ...formData.infrastructure, terraformWorkspace: e.target.value },
-                        })
-                      }
-                      className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
-                      placeholder="terraform workspace"
-                    />
-                    <input
-                      type="text"
-                      value={formData.infrastructure.terraformEnvDir}
-                      onChange={(e) =>
-                        setFormData({
-                          ...formData,
-                          infrastructure: { ...formData.infrastructure, terraformEnvDir: e.target.value },
-                        })
-                      }
-                      className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
-                      placeholder="terraform environment directory"
-                    />
-                    <input
-                      type="text"
-                      value={formData.infrastructure.ansibleInventory}
-                      onChange={(e) =>
-                        setFormData({
-                          ...formData,
-                          infrastructure: { ...formData.infrastructure, ansibleInventory: e.target.value },
-                        })
-                      }
-                      className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
-                      placeholder="ansible inventory path"
-                    />
-                    <input
-                      type="text"
-                      value={formData.infrastructure.ansiblePlaybook}
-                      onChange={(e) =>
-                        setFormData({
-                          ...formData,
-                          infrastructure: { ...formData.infrastructure, ansiblePlaybook: e.target.value },
-                        })
-                      }
-                      className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
-                      placeholder="ansible playbook path"
-                    />
+                    <input type="text" value={form.infrastructure.kubeContext} onChange={e => setForm({ ...form, infrastructure: { ...form.infrastructure, kubeContext: e.target.value } })} className={inputCls} placeholder="kube context" />
+                    <input type="text" value={form.infrastructure.namespace} onChange={e => setForm({ ...form, infrastructure: { ...form.infrastructure, namespace: e.target.value } })} className={inputCls} placeholder="namespace" />
+                    <input type="text" value={form.infrastructure.terraformWorkspace} onChange={e => setForm({ ...form, infrastructure: { ...form.infrastructure, terraformWorkspace: e.target.value } })} className={inputCls} placeholder="terraform workspace" />
+                    <input type="text" value={form.infrastructure.terraformEnvDir} onChange={e => setForm({ ...form, infrastructure: { ...form.infrastructure, terraformEnvDir: e.target.value } })} className={inputCls} placeholder="terraform env directory" />
+                    <input type="text" value={form.infrastructure.ansibleInventory} onChange={e => setForm({ ...form, infrastructure: { ...form.infrastructure, ansibleInventory: e.target.value } })} className={inputCls} placeholder="ansible inventory" />
+                    <input type="text" value={form.infrastructure.ansiblePlaybook} onChange={e => setForm({ ...form, infrastructure: { ...form.infrastructure, ansiblePlaybook: e.target.value } })} className={inputCls} placeholder="ansible playbook" />
                   </div>
                 </div>
-                <div className="md:col-span-2">
-                  <label className="block text-sm font-medium mb-2">Description</label>
-                  <textarea
-                    value={formData.description}
-                    onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                    rows={3}
-                    className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
-                    placeholder="Ship description..."
-                  />
+                <div className="sm:col-span-2">
+                  <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">DESCRIPTION</label>
+                  <textarea value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} rows={2} className={inputCls} placeholder="Ship description..." />
                 </div>
               </div>
-              <div className="flex gap-3">
+
+              <div className="bridge-divider" />
+
+              <div className="flex justify-end gap-3 pt-1">
+                <button type="button" onClick={() => setShowModal(false)} className="glass rounded-lg px-4 py-2 text-sm text-slate-600 dark:text-gray-300 hover:brightness-105 transition-all">
+                  Cancel
+                </button>
                 <button
-                  type="submit"
-                  disabled={isCreating}
-                  className="px-6 py-3 bg-gradient-to-r from-purple-600 to-pink-600 text-white rounded-xl hover:from-purple-700 hover:to-pink-700 transition-all duration-300 disabled:opacity-50 stack-2"
+                  type="submit" disabled={isCreating}
+                  className="rounded-lg bg-gradient-to-r from-violet-600 to-fuchsia-600 dark:from-purple-600 dark:to-pink-600 px-5 py-2 text-sm font-medium text-white transition-all hover:brightness-110 disabled:opacity-50 active:scale-[0.98]"
                 >
                   {isCreating ? "Launching..." : "Launch"}
                 </button>
-                <button
-                  type="button"
-                  onClick={() => setShowCreateForm(false)}
-                  className="px-6 py-3 glass dark:glass-dark rounded-xl border border-white/20 hover:bg-white/10 transition-all"
-                >
-                  Cancel
-                </button>
               </div>
             </form>
-          </OrchestrationSurface>
-        )}
-
-        {isLoading ? (
-          <div className="text-center py-12">
-            <RefreshCw className="w-8 h-8 text-purple-400 mx-auto mb-4 animate-spin" />
-            <p className="text-gray-500 dark:text-gray-400">Loading ships...</p>
           </div>
-        ) : fleetSummary.total === 0 ? (
-          <OrchestrationSurface level={3} className="text-center py-12">
-            <Rocket className="w-16 h-16 text-purple-400 mx-auto mb-4 opacity-50" />
-            <h3 className="text-xl font-semibold mb-2">No Ships Yet</h3>
-            <p className="text-gray-500 dark:text-gray-400 mb-4">
-              Launch your first ship to start deploying applications by ship.
-            </p>
-            <div className="flex flex-wrap justify-center gap-2 mb-6">
-              {Object.entries(nodeTypeInfo).map(([type, info]) => (
-                <UseCaseBadge
-                  key={type}
-                  label={info.label}
-                  variant={type === "local" ? "purple" : type === "cloud" ? "blue" : "pink"}
-                />
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Detail Panel
+// ---------------------------------------------------------------------------
+function DetailPanel({
+  ship, tab, onTab, onStatus, onDelete, onCopy, copied, kindCluster, runtime,
+}: {
+  ship: DeploymentWithInfra
+  tab: DetailTab
+  onTab: (t: DetailTab) => void
+  onStatus: (id: string, s: Deployment["status"]) => void
+  onDelete: (id: string) => void
+  onCopy: (id: string) => void
+  copied: boolean
+  kindCluster?: RuntimeSnapshot["kind"]["clusters"][number]
+  runtime: RuntimeSnapshot | null
+}) {
+  const st = statusCfg[ship.status]
+  const nt = nodeTypeCfg[ship.nodeType]
+  const StatusIcon = st.icon
+  const NodeIcon = nt.icon
+
+  const missingCtx = ship.infrastructure?.kind === "kind" && !!ship.infrastructure.kubeContext && !!runtime && !kindCluster
+  const stoppedCluster = !!kindCluster && kindCluster.totalNodeCount > 0 && kindCluster.runningNodeCount === 0
+
+  return (
+    <div className="glass-elevated animate-slide-in overflow-hidden rounded-2xl">
+      {/* ── Header ──────────────────────────────────────────────── */}
+      <div className="relative border-b border-slate-200/60 dark:border-white/10 px-6 py-5">
+        {/* Subtle gradient accent along the top */}
+        <div className="pointer-events-none absolute inset-x-0 top-0 h-[2px] bg-gradient-to-r from-transparent via-cyan-500/40 to-transparent" />
+
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-3">
+              <div className={`shrink-0 rounded-xl border p-2.5 ${nt.bg} ${nt.border}`}>
+                <NodeIcon className={`h-5 w-5 ${nt.color}`} />
+              </div>
+              <div className="min-w-0">
+                <h2 className="truncate text-xl font-bold tracking-tight text-slate-900 dark:text-white" style={{ fontFamily: "var(--font-display)" }}>
+                  {ship.name}
+                </h2>
+                <div className="flex items-center gap-2 mt-0.5">
+                  <span className="font-tactical text-xs text-slate-500 dark:text-gray-500">{ship.nodeId}</span>
+                  {ship.subagent && (
+                    <>
+                      <span className="text-slate-300 dark:text-white/15">&middot;</span>
+                      <span className="flex items-center gap-1 text-xs text-violet-600 dark:text-purple-400/80">
+                        <Bot className="h-3 w-3" />
+                        {ship.subagent.name}
+                      </span>
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+          <div className={`shrink-0 flex items-center gap-1.5 rounded-lg border px-3 py-1.5 ${st.bg} ${st.border}`}>
+            <StatusIcon className={`h-3.5 w-3.5 ${st.color} ${st.pulse ? "status-pulse" : ""}`} />
+            <span className={`readout ${st.color}`}>{st.label}</span>
+          </div>
+        </div>
+
+        {/* Pills */}
+        <div className="mt-4 flex flex-wrap items-center gap-1.5">
+          {[
+            { text: nt.label, cls: `${nt.bg} ${nt.border} ${nt.color}` },
+            { text: deploymentProfileLabels[ship.deploymentProfile], cls: "bg-slate-100/60 dark:bg-white/[0.04] border-slate-200/50 dark:border-white/10 text-slate-600 dark:text-gray-400" },
+            { text: provisioningModeLabels[ship.provisioningMode], cls: "bg-slate-100/60 dark:bg-white/[0.04] border-slate-200/50 dark:border-white/10 text-slate-600 dark:text-gray-400" },
+            ...(ship.infrastructure ? [{ text: infrastructureKindLabels[ship.infrastructure.kind], cls: "bg-emerald-500/10 border-emerald-500/20 text-emerald-700 dark:text-emerald-300" }] : []),
+            ...(ship.healthStatus ? [{ text: ship.healthStatus, cls: ship.healthStatus === "healthy" ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-700 dark:text-green-300" : "bg-rose-500/10 border-rose-500/20 text-rose-700 dark:text-red-300" }] : []),
+            ...(ship.infrastructure?.kind === "kind" && kindCluster && kindCluster.runningNodeCount > 0 ? [{ text: `kind ready (${kindCluster.runningNodeCount}/${kindCluster.totalNodeCount})`, cls: "bg-emerald-500/10 border-emerald-500/20 text-emerald-700 dark:text-green-300" }] : []),
+            ...(stoppedCluster ? [{ text: "kind stopped", cls: "bg-amber-500/10 border-amber-500/20 text-amber-700 dark:text-yellow-200" }] : []),
+            ...(missingCtx ? [{ text: "kind context missing", cls: "bg-rose-500/10 border-rose-500/20 text-rose-700 dark:text-red-200" }] : []),
+          ].map((pill, i) => (
+            <span key={i} className={`rounded-full border px-2.5 py-0.5 readout ${pill.cls}`}>{pill.text}</span>
+          ))}
+        </div>
+
+        {/* Actions */}
+        <div className="mt-4 flex flex-wrap gap-2">
+          {ship.status === "active" ? (
+            <button onClick={() => onStatus(ship.id, "inactive")} className="glass flex items-center gap-1.5 rounded-lg border-orange-500/20 px-3 py-1.5 text-xs font-medium text-orange-600 dark:text-orange-300 hover:brightness-105 transition-all">
+              <Square className="h-3.5 w-3.5" /> Stop
+            </button>
+          ) : (
+            <button onClick={() => onStatus(ship.id, "active")} className="flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-emerald-600 to-green-600 px-3 py-1.5 text-xs font-medium text-white hover:brightness-110 transition-all active:scale-[0.97]">
+              <Play className="h-3.5 w-3.5" /> Start
+            </button>
+          )}
+          <button onClick={() => onCopy(ship.nodeId)} className="glass flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-slate-600 dark:text-gray-300 hover:brightness-105 transition-all">
+            {copied ? <Check className="h-3.5 w-3.5 text-emerald-500" /> : <Copy className="h-3.5 w-3.5" />}
+            {copied ? "Copied!" : "Copy ID"}
+          </button>
+          {ship.nodeUrl && (
+            <a href={ship.nodeUrl} target="_blank" rel="noopener noreferrer" className="glass flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-sky-600 dark:text-blue-300 hover:brightness-105 transition-all">
+              <ExternalLink className="h-3.5 w-3.5" /> Open
+            </a>
+          )}
+          <button onClick={() => onDelete(ship.id)} className="glass flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-rose-600 dark:text-red-300 hover:brightness-105 transition-all">
+            <Trash2 className="h-3.5 w-3.5" /> Delete
+          </button>
+        </div>
+      </div>
+
+      {/* ── Tabs ────────────────────────────────────────────────── */}
+      <div className="flex border-b border-slate-200/60 dark:border-white/10 bg-slate-50/50 dark:bg-transparent">
+        {([
+          { key: "overview" as const, icon: Info, label: "Overview" },
+          { key: "quartermaster" as const, icon: MessageSquare, label: "Quartermaster" },
+        ]).map(t => (
+          <button
+            key={t.key}
+            onClick={() => onTab(t.key)}
+            className={`relative flex items-center gap-1.5 px-5 py-3 text-sm font-medium transition-colors ${
+              tab === t.key
+                ? "text-cyan-700 dark:text-cyan-300"
+                : "text-slate-500 dark:text-gray-500 hover:text-slate-700 dark:hover:text-gray-300"
+            }`}
+          >
+            <t.icon className="h-3.5 w-3.5" />
+            {t.label}
+            {tab === t.key && (
+              <span className="absolute inset-x-0 -bottom-px h-[2px] bg-gradient-to-r from-cyan-500/0 via-cyan-500 to-cyan-500/0" />
+            )}
+          </button>
+        ))}
+      </div>
+
+      {/* ── Tab Content ─────────────────────────────────────────── */}
+      <div className="p-6">
+        {tab === "overview" ? (
+          <div className="animate-slide-in space-y-5">
+            {ship.description && (
+              <p className="text-sm text-slate-600 dark:text-gray-400 leading-relaxed">{ship.description}</p>
+            )}
+
+            {/* Metrics */}
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+              {[
+                { label: "PROFILE", value: ship.deploymentProfile === "local_starship_build" ? "Local" : "Cloud" },
+                { label: "UPTIME", value: ship.deployedAt ? formatUptime(new Date(ship.deployedAt)) : "N/A" },
+                { label: "CONTEXT", value: ship.infrastructure?.kubeContext || "N/A" },
+                { label: "NAMESPACE", value: ship.infrastructure?.namespace || "N/A" },
+              ].map(m => (
+                <div key={m.label} className="glass rounded-lg px-3 py-2.5">
+                  <p className="readout text-slate-400 dark:text-gray-600">{m.label}</p>
+                  <p className="mt-1 truncate text-sm font-semibold font-tactical tabular-nums text-slate-800 dark:text-white">{m.value}</p>
+                </div>
               ))}
             </div>
-            <button
-              onClick={() => setShowCreateForm(true)}
-              className="px-6 py-3 bg-gradient-to-r from-purple-600 to-pink-600 text-white rounded-xl hover:from-purple-700 hover:to-pink-700 transition-all"
-            >
-              Launch First Ship
-            </button>
-          </OrchestrationSurface>
-        ) : filteredDeployments.length === 0 ? (
-          <OrchestrationSurface level={3} className="text-center py-12">
-            <AlertTriangle className="w-14 h-14 text-amber-300 mx-auto mb-4 opacity-80" />
-            <h3 className="text-xl font-semibold mb-2">No Ships Match Filters</h3>
-            <p className="text-gray-500 dark:text-gray-400 mb-4">
-              Adjust search, status, or infrastructure filters to see your fleet.
-            </p>
-            <button
-              type="button"
-              onClick={() => {
-                setSearchQuery("")
-                setStatusFilter("all")
-                setInfrastructureFilter("all")
+
+            <div className="bridge-divider" />
+
+            {/* Full NodeInfoCard */}
+            <NodeInfoCard
+              nodeType={ship.nodeType} nodeId={ship.nodeId}
+              nodeUrl={ship.nodeUrl} healthStatus={ship.healthStatus}
+              deployedAt={ship.deployedAt}
+              deploymentProfile={ship.deploymentProfile}
+              provisioningMode={ship.provisioningMode}
+              infrastructure={ship.infrastructure}
+              showCapabilities showConfig showSecurity showUseCases
+              dataForwarding={{
+                enabled: ship.nodeType !== "local" || !!ship.metadata?.forwardingEnabled,
+                targetNode: ship.metadata?.forwardTarget,
+                sourceNodes: ship.metadata?.sourceNodeCount,
               }}
-              className="px-5 py-2.5 rounded-lg border border-white/20 bg-white/[0.04] hover:bg-white/[0.1] transition-all"
-            >
-              Reset Filters
-            </button>
-          </OrchestrationSurface>
+              metrics={ship.status === "active" ? {
+                uptime: ship.deployedAt ? formatUptime(new Date(ship.deployedAt)) : undefined,
+                activeSessions: typeof ship.metadata?.activeSessions === "number" ? ship.metadata.activeSessions : undefined,
+              } : undefined}
+            />
+
+            {ship.subagent && (
+              <>
+                <div className="bridge-divider" />
+                <div className="glass rounded-lg px-4 py-3 lcars-accent-left" style={{ "--lcars-accent": "rgba(139, 92, 246, 0.6)" } as React.CSSProperties}>
+                  <div className="flex items-center gap-2">
+                    <Bot className="h-4 w-4 text-violet-600 dark:text-purple-400" />
+                    <span className="text-sm font-semibold text-violet-700 dark:text-purple-300">{ship.subagent.name}</span>
+                  </div>
+                  {ship.subagent.description && (
+                    <p className="mt-1 text-xs text-slate-500 dark:text-gray-500">{ship.subagent.description}</p>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {filteredDeployments.map((deployment, index) => {
-              const StatusIcon = statusConfig[deployment.status].icon
-              const stackLevel = ((index % 5) + 1) as 1 | 2 | 3 | 4 | 5
-              const statusInfo = statusConfig[deployment.status]
-              const isSelected = deployment.id === selectedDeploymentId
-              const kindCluster =
-                deployment.infrastructure?.kind === "kind"
-                  ? kindClustersByContext.get(deployment.infrastructure.kubeContext)
-                  : undefined
-              const hasMissingKindContext =
-                deployment.infrastructure?.kind === "kind" &&
-                !!deployment.infrastructure.kubeContext &&
-                !!runtime &&
-                !kindCluster
-              const hasStoppedKindCluster =
-                !!kindCluster && kindCluster.totalNodeCount > 0 && kindCluster.runningNodeCount === 0
-
-              const frontContent = (
-                <div className="h-full flex flex-col">
-                  {/* Header with Status */}
-                  <div className="flex items-start justify-between mb-4">
-                    <div className="flex items-center gap-3">
-                      <div className="p-2 rounded-xl bg-gradient-to-br from-purple-500/20 to-pink-500/20">
-                        {deployment.subagent ? (
-                          <Bot className="w-5 h-5 text-purple-400" />
-                        ) : (
-                          <Rocket className="w-5 h-5 text-purple-400" />
-                        )}
-                      </div>
-                      <div>
-                        <h3 className="text-lg font-semibold leading-tight">{deployment.name}</h3>
-                        {deployment.subagent && (
-                          <span className="text-xs text-purple-400">{deployment.subagent.name}</span>
-                        )}
-                      </div>
-                    </div>
-                    <div
-                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border ${statusInfo.bg} ${statusInfo.border}`}
-                    >
-                      <StatusIcon
-                        className={`w-3.5 h-3.5 ${statusInfo.color} ${statusInfo.pulse ? "animate-pulse" : ""}`}
-                      />
-                      <span className={`text-xs font-medium ${statusInfo.color}`}>
-                        {statusInfo.label}
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Description */}
-                  {deployment.description && (
-                    <p className="text-sm text-gray-400 mb-4 line-clamp-2">
-                      {deployment.description}
-                    </p>
-                  )}
-
-                  {deployment.infrastructure && (
-                    <div className="mb-3 flex flex-wrap items-center gap-1.5">
-                      <span className="rounded-full border border-emerald-500/30 bg-emerald-500/15 px-2 py-0.5 text-[10px] text-emerald-300">
-                        {infrastructureKindLabels[deployment.infrastructure.kind]}
-                      </span>
-                      <span className="rounded-full border border-white/20 bg-white/[0.05] px-2 py-0.5 text-[10px] text-gray-300">
-                        {deployment.infrastructure.kubeContext}
-                      </span>
-                      {deployment.infrastructure.kind === "kind" && kindCluster && kindCluster.runningNodeCount > 0 && (
-                        <span className="rounded-full border border-green-500/30 bg-green-500/15 px-2 py-0.5 text-[10px] text-green-300">
-                          kind ready ({kindCluster.runningNodeCount}/{kindCluster.totalNodeCount})
-                        </span>
-                      )}
-                      {hasStoppedKindCluster && (
-                        <span className="rounded-full border border-yellow-500/30 bg-yellow-500/15 px-2 py-0.5 text-[10px] text-yellow-200">
-                          kind cluster stopped
-                        </span>
-                      )}
-                      {hasMissingKindContext && (
-                        <span className="rounded-full border border-red-500/30 bg-red-500/15 px-2 py-0.5 text-[10px] text-red-200">
-                          kind context missing
-                        </span>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Node Info Summary */}
-                  <div className="flex-1 space-y-3">
-                    <NodeInfoCard
-                      nodeType={deployment.nodeType}
-                      nodeId={deployment.nodeId}
-                      nodeUrl={deployment.nodeUrl}
-                      healthStatus={deployment.healthStatus}
-                      deploymentProfile={deployment.deploymentProfile}
-                      provisioningMode={deployment.provisioningMode}
-                      infrastructure={deployment.infrastructure}
-                      showCapabilities={false}
-                      showConfig={false}
-                      showSecurity={true}
-                      showUseCases={true}
-                      compact={true}
-                    />
-                  </div>
-
-                  {/* Quick Actions */}
-                  <div className="flex items-center justify-between mt-4 pt-3 border-t border-white/10">
-                    <div className="flex items-center gap-1">
-                      {deployment.healthStatus && (
-                        <div
-                          className={`flex items-center gap-1 px-2 py-1 rounded-md text-xs ${
-                            deployment.healthStatus === "healthy"
-                              ? "bg-green-500/10 text-green-400"
-                              : "bg-red-500/10 text-red-400"
-                          }`}
-                        >
-                          <Activity className="w-3 h-3" />
-                          <span className="capitalize">{deployment.healthStatus}</span>
-                        </div>
-                      )}
-                    </div>
-                    <span className="text-[10px] text-gray-500">Hover for deep details</span>
-                  </div>
-                </div>
-              )
-
-              const backContent = (
-                <div className="h-full flex flex-col">
-                  {/* Header */}
-                  <div className="flex items-center justify-between mb-4">
-                    <div className="flex items-center gap-2">
-                      <Settings className="w-4 h-4 text-gray-400" />
-                      <h3 className="text-sm font-medium text-gray-300">Ship Details</h3>
-                    </div>
-                    <div
-                      className={`flex items-center gap-1.5 px-2 py-0.5 rounded-md ${statusInfo.bg}`}
-                    >
-                      <StatusIcon className={`w-3 h-3 ${statusInfo.color}`} />
-                      <span className={`text-[10px] font-medium ${statusInfo.color}`}>
-                        {statusInfo.label}
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Full Node Info */}
-                  <div className="flex-1 overflow-hidden">
-                    <NodeInfoCard
-                      nodeType={deployment.nodeType}
-                      nodeId={deployment.nodeId}
-                      nodeUrl={deployment.nodeUrl}
-                      healthStatus={deployment.healthStatus}
-                      deployedAt={deployment.deployedAt}
-                      deploymentProfile={deployment.deploymentProfile}
-                      provisioningMode={deployment.provisioningMode}
-                      infrastructure={deployment.infrastructure}
-                      showCapabilities={true}
-                      showConfig={true}
-                      showSecurity={true}
-                      showUseCases={false}
-                      dataForwarding={{
-                        enabled: deployment.nodeType !== "local" || !!deployment.metadata?.forwardingEnabled,
-                        targetNode: deployment.metadata?.forwardTarget,
-                        sourceNodes: deployment.metadata?.sourceNodeCount,
-                      }}
-                      metrics={
-                        deployment.status === "active"
-                          ? {
-                              uptime: deployment.deployedAt
-                                ? formatUptime(new Date(deployment.deployedAt))
-                                : undefined,
-                              activeSessions:
-                                typeof deployment.metadata?.activeSessions === "number"
-                                  ? deployment.metadata.activeSessions
-                                  : undefined,
-                            }
-                          : undefined
-                      }
-                    />
-
-                    {/* Subagent Details */}
-                    {deployment.subagent && (
-                      <div className="mt-3 pt-3 border-t border-white/10">
-                        <div className="flex items-center gap-2 mb-1">
-                          <Bot className="w-3.5 h-3.5 text-purple-400" />
-                          <span className="text-xs font-medium text-purple-400">
-                            {deployment.subagent.name}
-                          </span>
-                        </div>
-                        {deployment.subagent.description && (
-                          <p className="text-[10px] text-gray-500 line-clamp-2">
-                            {deployment.subagent.description}
-                          </p>
-                        )}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Actions */}
-                  <div className="mt-auto pt-3 space-y-2">
-                    <div className="grid grid-cols-2 gap-2">
-                      {deployment.status === "active" ? (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            handleStatusUpdate(deployment.id, "inactive")
-                          }}
-                          className="flex items-center justify-center gap-1.5 px-3 py-2 glass dark:glass-dark rounded-lg border border-orange-500/20 text-orange-400 hover:bg-orange-500/10 transition-all text-xs"
-                        >
-                          <Square className="w-3.5 h-3.5" />
-                          Stop
-                        </button>
-                      ) : (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            handleStatusUpdate(deployment.id, "active")
-                          }}
-                          className="flex items-center justify-center gap-1.5 px-3 py-2 bg-gradient-to-r from-green-600 to-emerald-600 text-white rounded-lg hover:from-green-700 hover:to-emerald-700 transition-all text-xs"
-                        >
-                          <Play className="w-3.5 h-3.5" />
-                          Start
-                        </button>
-                      )}
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          navigator.clipboard.writeText(deployment.nodeId)
-                        }}
-                        className="flex items-center justify-center gap-1.5 px-3 py-2 glass dark:glass-dark rounded-lg border border-white/20 hover:bg-white/10 transition-all text-xs"
-                        title="Copy Node ID"
-                      >
-                        <Copy className="w-3.5 h-3.5" />
-                        Copy ID
-                      </button>
-                    </div>
-                    <div className="grid grid-cols-2 gap-2">
-                      {deployment.nodeUrl && (
-                        <a
-                          href={deployment.nodeUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          onClick={(e) => e.stopPropagation()}
-                          className="flex items-center justify-center gap-1.5 px-3 py-2 glass dark:glass-dark rounded-lg border border-blue-500/20 text-blue-400 hover:bg-blue-500/10 transition-all text-xs"
-                        >
-                          <ExternalLink className="w-3.5 h-3.5" />
-                          Open
-                        </a>
-                      )}
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          handleDelete(deployment.id)
-                        }}
-                        className="flex items-center justify-center gap-1.5 px-3 py-2 glass dark:glass-dark rounded-lg border border-red-500/20 text-red-400 hover:bg-red-500/10 transition-all text-xs"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                        Delete
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              )
-
-              return (
-                <FlipCard
-                  key={deployment.id}
-                  front={frontContent}
-                  back={backContent}
-                  level={stackLevel}
-                  className={`h-full min-h-[340px] ${
-                    isSelected ? "ring-2 ring-cyan-400/60 shadow-[0_0_20px_rgba(34,211,238,0.25)]" : ""
-                  }`}
-                />
-              )
-            })}
+          <div className="animate-slide-in">
+            <ShipQuartermasterPanel shipDeploymentId={ship.id} shipName={ship.name} />
           </div>
         )}
       </div>

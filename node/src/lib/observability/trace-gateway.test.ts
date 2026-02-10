@@ -143,6 +143,41 @@ test("emitTrace fail-open sends trace when encryption fails and not required", a
   )
 })
 
+test("emitTrace bypasses encryption when skipEncryption is true", async () => {
+  await withEnv(
+    {
+      TRACE_ENCRYPT_ENABLED: "true",
+      TRACE_ENCRYPT_REQUIRED: "true",
+      TRACE_ENCRYPT_FIELDS: "input.prompt",
+    },
+    async () => {
+      let encryptCalled = false
+      let sentPayload: Record<string, unknown> | null = null
+
+      const gateway = createTraceGateway({
+        encrypt: async () => {
+          encryptCalled = true
+          throw new Error("should not run")
+        },
+        transport: async ({ payload }) => {
+          sentPayload = payload
+        },
+      })
+
+      await gateway.emitTrace({
+        traceId: "trace-4",
+        skipEncryption: true,
+        payload: {
+          input: { prompt: "no-encrypt-needed" },
+        },
+      })
+
+      assert.equal(encryptCalled, false)
+      assert.equal((sentPayload as any).input.prompt, "no-encrypt-needed")
+    },
+  )
+})
+
 test("decryptTraceFields resolves encrypted envelope values", async () => {
   const gateway = createTraceGateway({
     decrypt: async ({ ciphertextB64 }) => {

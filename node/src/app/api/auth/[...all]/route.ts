@@ -33,8 +33,19 @@ export async function GET(...args: Parameters<typeof defaultHandlers.GET>) {
       { status: 403 }
     )
   }
-  const handlers = getHandlersForRequest(request)
-  return handlers.GET(...args)
+  try {
+    const handlers = getHandlersForRequest(request)
+    return handlers.GET(...args)
+  } catch (error) {
+    console.error("Auth GET route error:", error)
+    const message =
+      process.env.NODE_ENV === "production"
+        ? "Internal server error"
+        : error instanceof Error
+          ? error.message
+          : "Internal server error"
+    return NextResponse.json({ error: message }, { status: 500 })
+  }
 }
 
 export async function POST(...args: Parameters<typeof defaultHandlers.POST>) {
@@ -45,6 +56,17 @@ export async function POST(...args: Parameters<typeof defaultHandlers.POST>) {
       { status: 403 }
     )
   }
-  const handlers = getHandlersForRequest(request)
-  return handlers.POST(...args)
+  try {
+    const handlers = getHandlersForRequest(request)
+    return handlers.POST(...args)
+  } catch (error) {
+    console.error("Auth POST route error:", error)
+    const message =
+      process.env.NODE_ENV === "production"
+        ? "Internal server error"
+        : error instanceof Error
+          ? error.message
+          : "Internal server error"
+    return NextResponse.json({ error: message }, { status: 500 })
+  }
 }

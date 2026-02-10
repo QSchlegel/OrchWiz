@@ -84,12 +84,16 @@ export async function recordAgentSyncSignal(input: AgentSyncSignalRecordInput) {
   })
 }
 
-export async function resolveBridgeCrewSubagentByStationKey(stationKey: BridgeCrewRole) {
-  const callsign = stationKeyToBridgeCrewCallsign(stationKey)
+export async function resolveBridgeCrewSubagentByStationKey(args: {
+  userId: string
+  stationKey: BridgeCrewRole
+}) {
+  const callsign = stationKeyToBridgeCrewCallsign(args.stationKey)
 
   return prisma.subagent.findFirst({
     where: {
       isShared: false,
+      ownerUserId: args.userId,
       name: callsign,
     },
     orderBy: {
@@ -185,7 +189,10 @@ export async function recordBridgeCallSignal(args: {
   latencyMs?: number | null
   metadata?: Record<string, unknown>
 }) {
-  const matchedSubagent = await resolveBridgeCrewSubagentByStationKey(args.stationKey)
+  const matchedSubagent = await resolveBridgeCrewSubagentByStationKey({
+    userId: args.userId,
+    stationKey: args.stationKey,
+  })
   if (!matchedSubagent || !isEligibleAgentSyncSubagent(matchedSubagent)) {
     return null
   }

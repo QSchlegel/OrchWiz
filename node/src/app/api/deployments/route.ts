@@ -69,9 +69,13 @@ export async function GET(request: NextRequest) {
     const forwardedEvents = await prisma.forwardingEvent.findMany({
       where: {
         eventType: "deployment",
+        sourceNode: {
+          ownerUserId: session.user.id,
+        },
         ...(sourceNodeId
           ? {
               sourceNode: {
+                ownerUserId: session.user.id,
                 nodeId: sourceNodeId,
               },
             }
@@ -216,10 +220,12 @@ export async function POST(request: NextRequest) {
         shipId: updatedDeployment.id,
         status: updatedDeployment.status,
         nodeId: updatedDeployment.nodeId,
+        userId: updatedDeployment.userId,
       })
     } else {
       publishRealtimeEvent({
         type: "deployment.updated",
+        userId: updatedDeployment.userId,
         payload: {
           deploymentId: updatedDeployment.id,
           status: updatedDeployment.status,

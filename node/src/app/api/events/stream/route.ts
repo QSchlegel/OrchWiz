@@ -1,13 +1,17 @@
 import { NextRequest, NextResponse } from "next/server"
-import { headers } from "next/headers"
-import { auth } from "@/lib/auth"
 import { subscribeRealtimeEvents, toSseChunk } from "@/lib/realtime/events"
+import { AccessControlError, requireAccessActor, type AccessActor } from "@/lib/security/access-control"
 
 export const dynamic = "force-dynamic"
 
 export async function GET(request: NextRequest) {
-  const session = await auth.api.getSession({ headers: await headers() })
-  if (!session) {
+  let actor: AccessActor
+  try {
+    actor = await requireAccessActor()
+  } catch (error) {
+    if (error instanceof AccessControlError) {
+      return NextResponse.json({ error: error.message }, { status: error.status })
+    }
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
@@ -44,6 +48,10 @@ export async function GET(request: NextRequest) {
 
       unsubscribe = subscribeRealtimeEvents((event) => {
         if (typeFilter.size > 0 && !typeFilter.has(event.type)) {
+          return
+        }
+
+        if (!actor.isAdmin && event.userId !== actor.userId) {
           return
         }
 

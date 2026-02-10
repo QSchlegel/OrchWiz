@@ -2,8 +2,23 @@ import { NextRequest, NextResponse } from "next/server"
 import { auth } from "@/lib/auth"
 import { prisma } from "@/lib/prisma"
 import { headers } from "next/headers"
+import { publishNotificationUpdatedMany } from "@/lib/realtime/notifications"
 
 export const dynamic = 'force-dynamic'
+
+async function notifyHooksChanged(entityId: string) {
+  const users = await prisma.user.findMany({
+    select: {
+      id: true,
+    },
+  })
+
+  publishNotificationUpdatedMany({
+    userIds: users.map((user) => user.id),
+    channel: "hooks",
+    entityId,
+  })
+}
 
 export async function GET(
   request: NextRequest,
@@ -68,6 +83,8 @@ export async function PUT(
       data: updateData,
     })
 
+    await notifyHooksChanged(hook.id)
+
     return NextResponse.json(hook)
   } catch (error) {
     console.error("Error updating hook:", error)
@@ -92,6 +109,8 @@ export async function DELETE(
     await prisma.hook.delete({
       where: { id },
     })
+
+    await notifyHooksChanged(id)
 
     return NextResponse.json({ success: true })
   } catch (error) {

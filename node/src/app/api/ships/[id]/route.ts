@@ -7,8 +7,29 @@ import {
   normalizeDeploymentProfileInput,
   normalizeInfrastructureInConfig,
 } from "@/lib/deployment/profile"
+import { publishNotificationUpdated } from "@/lib/realtime/notifications"
 
 export const dynamic = "force-dynamic"
+
+function asRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {}
+  }
+  return value as Record<string, unknown>
+}
+
+export function sanitizeShipUpdateData(body: Record<string, unknown>): Record<string, unknown> {
+  const updateData: Record<string, unknown> = {
+    ...body,
+    deploymentType: "ship",
+    updatedAt: new Date(),
+  }
+
+  delete updateData.userId
+  delete updateData.advancedNodeTypeOverride
+
+  return updateData
+}
 
 export async function GET(
   request: NextRequest,
@@ -62,12 +83,8 @@ export async function PUT(
     }
 
     const { id } = await params
-    const body = await request.json()
-    const updateData: Record<string, any> = {
-      ...body,
-      deploymentType: "ship",
-      updatedAt: new Date(),
-    }
+    const body = asRecord(await request.json().catch(() => ({})))
+    const updateData = sanitizeShipUpdateData(body) as Record<string, any>
 
     const shouldNormalizeProfileInput =
       "deploymentProfile" in body ||
@@ -109,8 +126,6 @@ export async function PUT(
       updateData.config = normalizedProfile.config
     }
 
-    delete updateData.advancedNodeTypeOverride
-
     const ship = await prisma.agentDeployment.update({
       where: {
         id,
@@ -132,6 +147,12 @@ export async function PUT(
       shipId: ship.id,
       status: ship.status,
       nodeId: ship.nodeId,
+    })
+
+    publishNotificationUpdated({
+      userId: session.user.id,
+      channel: "ships",
+      entityId: ship.id,
     })
 
     return NextResponse.json(ship)
@@ -180,6 +201,12 @@ export async function DELETE(
       shipId: ship.id,
       status: "deleted",
       nodeId: ship.nodeId,
+    })
+
+    publishNotificationUpdated({
+      userId: session.user.id,
+      channel: "ships",
+      entityId: ship.id,
     })
 
     return NextResponse.json({ success: true })

@@ -116,6 +116,7 @@ export async function POST(request: NextRequest) {
 
     publishRealtimeEvent({
       type: "docs.updated",
+      userId: session.user.id,
       payload: {
         documentId: document.id,
         version: document.version,
@@ -239,6 +240,7 @@ export async function PUT(request: NextRequest) {
 
     publishRealtimeEvent({
       type: "docs.updated",
+      userId: session.user.id,
       payload: {
         documentId: document.id,
         version: document.version,

@@ -85,9 +85,13 @@ export async function GET(request: NextRequest) {
     const forwardedEvents = await prisma.forwardingEvent.findMany({
       where: {
         eventType: "verification",
+        sourceNode: {
+          ownerUserId: session.user.id,
+        },
         ...(sourceNodeId
           ? {
               sourceNode: {
+                ownerUserId: session.user.id,
                 nodeId: sourceNodeId,
               },
             }
@@ -181,6 +185,7 @@ export async function POST(request: NextRequest) {
 
     publishRealtimeEvent({
       type: "verification.updated",
+      userId: session.user.id,
       payload: {
         runId: run.id,
         sessionId: run.sessionId,
@@ -190,7 +195,10 @@ export async function POST(request: NextRequest) {
 
     const stationKey = stationKeyFromSessionMetadata(linkedSession.metadata)
     if (stationKey) {
-      void resolveBridgeCrewSubagentByStationKey(stationKey)
+      void resolveBridgeCrewSubagentByStationKey({
+        userId: session.user.id,
+        stationKey,
+      })
         .then((matchedSubagent) =>
           recordVerificationSignal({
             userId: session.user.id,

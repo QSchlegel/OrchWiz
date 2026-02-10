@@ -75,14 +75,20 @@ export async function POST(request: NextRequest) {
     )
   }
 
-  const source = await prisma.nodeSource.findFirst({
+  const sourceCandidates = await prisma.nodeSource.findMany({
     where: {
       nodeId: sourceNodeId,
       isActive: true,
     },
+    select: {
+      id: true,
+      nodeId: true,
+      apiKeyHash: true,
+      ownerUserId: true,
+    },
   })
 
-  if (!source) {
+  if (sourceCandidates.length === 0) {
     return NextResponse.json(
       {
         error: "Unknown or inactive forwarding source node",
@@ -91,7 +97,8 @@ export async function POST(request: NextRequest) {
     )
   }
 
-  if (!verifyApiKeyHash(apiKey, source.apiKeyHash)) {
+  const source = sourceCandidates.find((candidate) => verifyApiKeyHash(apiKey, candidate.apiKeyHash))
+  if (!source) {
     return NextResponse.json(
       {
         error: "Invalid forwarding API key",
@@ -182,6 +189,11 @@ export async function POST(request: NextRequest) {
 
     publishRealtimeEvent({
       type: "forwarding.received",
+      ...(source.ownerUserId
+        ? {
+            userId: source.ownerUserId,
+          }
+        : {}),
       payload: {
         eventId: forwardingEvent.id,
         sourceNodeId: source.nodeId,
@@ -195,6 +207,11 @@ export async function POST(request: NextRequest) {
     ) {
       publishRealtimeEvent({
         type: "bridge.updated",
+        ...(source.ownerUserId
+          ? {
+              userId: source.ownerUserId,
+            }
+          : {}),
         payload: {
           eventId: forwardingEvent.id,
           sourceNodeId: source.nodeId,

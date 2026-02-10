@@ -1,5 +1,5 @@
 import { createAuthClient } from "better-auth/react"
-import { magicLinkClient } from "better-auth/client/plugins"
+import { anonymousClient, magicLinkClient } from "better-auth/client/plugins"
 import { passkeyClient } from "@better-auth/passkey/client"
 
 const baseURL =
@@ -9,7 +9,7 @@ const baseURL =
 
 export const authClient = createAuthClient({
   baseURL,
-  plugins: [magicLinkClient(), passkeyClient()],
+  plugins: [magicLinkClient(), passkeyClient(), anonymousClient()],
 })
 
 export const { signIn, signOut, signUp, useSession } = authClient

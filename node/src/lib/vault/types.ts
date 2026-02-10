@@ -1,6 +1,10 @@
 export type VaultId = "orchwiz" | "ship" | "agent-public" | "agent-private" | "joined"
+export type VaultRagMode = "hybrid" | "lexical"
+export type VaultRagScopeType = "ship" | "fleet" | "global"
 
 export type PhysicalVaultId = Exclude<VaultId, "joined">
+export type VaultFileReadMode = "preview" | "full"
+export type VaultDeleteMode = "soft" | "hard"
 
 export interface VaultSummary {
   id: VaultId
@@ -61,16 +65,92 @@ export interface VaultSaveResponse {
   originVaultId?: PhysicalVaultId
 }
 
+export interface VaultMoveResponse {
+  vaultId: VaultId
+  fromPath: string
+  toPath: string
+  size: number
+  mtime: string
+  encrypted: boolean
+  originVaultId?: PhysicalVaultId
+}
+
+export interface VaultDeleteResponse {
+  vaultId: VaultId
+  path: string
+  mode: VaultDeleteMode
+  deletedPath: string | null
+  originVaultId?: PhysicalVaultId
+}
+
 export interface VaultSearchResult {
   vaultId: VaultId
   path: string
   title: string
   excerpt: string
   originVaultId?: PhysicalVaultId
+  score?: number
+  scopeType?: VaultRagScopeType
+  shipDeploymentId?: string | null
+  citations?: Array<{
+    id: string
+    path: string
+    title: string
+    excerpt: string
+    scopeType: VaultRagScopeType
+    shipDeploymentId: string | null
+    score: number
+    lexicalScore: number
+    semanticScore: number
+  }>
 }
 
 export interface VaultSearchResponse {
   vaultId: VaultId
   exists: boolean
+  mode?: VaultRagMode
+  fallbackUsed?: boolean
   results: VaultSearchResult[]
+}
+
+export interface VaultGraphNode {
+  id: string
+  nodeType: "note" | "ghost"
+  vaultId: VaultId
+  path: string
+  label: string
+  originVaultId?: PhysicalVaultId
+  unresolvedTarget?: string
+}
+
+export interface VaultGraphEdge {
+  id: string
+  edgeType: "resolved" | "unresolved"
+  kind: "wiki" | "markdown"
+  source: string
+  target: string
+  sourcePath: string
+  targetPath: string
+}
+
+export interface VaultGraphStats {
+  noteCount: number
+  ghostCount: number
+  edgeCount: number
+  unresolvedEdgeCount: number
+  truncated: boolean
+}
+
+export interface VaultGraphResponse {
+  vaultId: VaultId
+  focusPath: string | null
+  filters: {
+    depth: number
+    includeUnresolved: boolean
+    includeTrash: boolean
+    query: string
+  }
+  nodes: VaultGraphNode[]
+  edges: VaultGraphEdge[]
+  stats: VaultGraphStats
 }

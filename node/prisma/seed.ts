@@ -137,26 +137,37 @@ async function main() {
     .update(defaultForwardingApiKey)
     .digest("hex")
 
-  const sourceNode = await prisma.nodeSource.upsert({
-    where: { nodeId: defaultSourceNodeId },
-    update: {
-      name: defaultSourceNodeName,
-      nodeType: "local",
-      nodeUrl: process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000",
-      apiKeyHash,
-      isActive: true,
-      lastSeenAt: new Date(),
-    },
-    create: {
+  const existingSourceNode = await prisma.nodeSource.findFirst({
+    where: {
+      ownerUserId: null,
       nodeId: defaultSourceNodeId,
-      name: defaultSourceNodeName,
-      nodeType: "local",
-      nodeUrl: process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000",
-      apiKeyHash,
-      isActive: true,
-      lastSeenAt: new Date(),
     },
   })
+
+  const sourceNode = existingSourceNode
+    ? await prisma.nodeSource.update({
+        where: { id: existingSourceNode.id },
+        data: {
+          name: defaultSourceNodeName,
+          nodeType: "local",
+          nodeUrl: process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000",
+          apiKeyHash,
+          isActive: true,
+          lastSeenAt: new Date(),
+        },
+      })
+    : await prisma.nodeSource.create({
+        data: {
+          ownerUserId: null,
+          nodeId: defaultSourceNodeId,
+          name: defaultSourceNodeName,
+          nodeType: "local",
+          nodeUrl: process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000",
+          apiKeyHash,
+          isActive: true,
+          lastSeenAt: new Date(),
+        },
+      })
 
   console.log(`Seeded node source ${sourceNode.nodeId} (${sourceNode.id})`)
   let createdCommands = 0

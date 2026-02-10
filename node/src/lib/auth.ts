@@ -1,6 +1,6 @@
 import { betterAuth } from "better-auth"
 import { prismaAdapter } from "better-auth/adapters/prisma"
-import { magicLink } from "better-auth/plugins"
+import { anonymous, magicLink } from "better-auth/plugins"
 import { github } from "better-auth/social-providers"
 import { passkey } from "@better-auth/passkey"
 import { prisma } from "./prisma"
@@ -54,6 +54,7 @@ export function createAuth(resolvedAppUrl?: string) {
     },
     ...(socialProviders ? { socialProviders } : {}),
     plugins: [
+      anonymous(),
       passkey({
         ...passkeyConfig,
         rpName: "OrchWiz",
