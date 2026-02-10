@@ -3,6 +3,8 @@ import { prisma } from "@/lib/prisma"
 import { executeCommandWithPolicy } from "@/lib/execution/command-executor"
 import { publishRealtimeEvent } from "@/lib/realtime/events"
 import { recordCommandExecutionSignal } from "@/lib/agentsync/signals"
+import { runPostToolUseHooks } from "@/lib/hooks/runner"
+import type { PostToolUseStatus } from "@/lib/hooks/types"
 import {
   AccessControlError,
   assertCanReadOwnedResource,
@@ -10,6 +12,68 @@ import {
 } from "@/lib/security/access-control"
 
 export const dynamic = 'force-dynamic'
+
+interface CommandPostToolUseHookInput {
+  ownerUserId: string
+  toolName: string
+  status: PostToolUseStatus
+  sessionId: string | null
+  toolUseId: string
+  durationMs: number
+  output: string | null
+  error: string | null
+  commandPath: string | null
+  blocked: boolean
+  commandId: string
+  subagentId: string | null
+}
+
+interface CommandPostToolUseHookDeps {
+  runHooks: typeof runPostToolUseHooks
+}
+
+const defaultCommandPostToolUseHookDeps: CommandPostToolUseHookDeps = {
+  runHooks: (input) => runPostToolUseHooks(input),
+}
+
+export async function runCommandPostToolUseHooks(
+  input: CommandPostToolUseHookInput,
+  deps: CommandPostToolUseHookDeps = defaultCommandPostToolUseHookDeps,
+) {
+  try {
+    const hookResult = await deps.runHooks({
+      ownerUserId: input.ownerUserId,
+      toolName: input.toolName,
+      status: input.status,
+      sessionId: input.sessionId,
+      toolUseId: input.toolUseId,
+      durationMs: input.durationMs,
+      input: {
+        commandId: input.commandId,
+        subagentId: input.subagentId,
+      },
+      output: input.output,
+      error: input.error,
+      metadata: {
+        commandPath: input.commandPath,
+        blocked: input.blocked,
+      },
+    })
+
+    return {
+      matchedHooks: hookResult.matchedHooks,
+      delivered: hookResult.delivered,
+      failed: hookResult.failed,
+    }
+  } catch (hookError) {
+    console.error("PostToolUse hook execution failed (fail-open):", hookError)
+    return {
+      matchedHooks: 0,
+      delivered: 0,
+      failed: 0,
+    }
+  }
+}
 
 export async function POST(
   request: NextRequest,
@@ -96,6 +160,21 @@ export async function POST(
       },
     })
 
+    const hookSummary = await runCommandPostToolUseHooks({
+      ownerUserId: actor.userId,
+      toolName: command.name,
+      status: result.status,
+      sessionId,
+      toolUseId: updatedExecution.id,
+      durationMs: result.durationMs,
+      output: result.output || null,
+      error: result.error || null,
+      commandPath: command.path || null,
+      blocked: result.status === "blocked",
+      commandId: id,
+      subagentId: effectiveSubagentId,
+    })
+
     publishRealtimeEvent({
       type: "command.executed",
       userId: actor.userId,
@@ -130,6 +209,7 @@ export async function POST(
       effectiveSubagentId,
       blocked: result.status === "blocked",
       metadata: result.metadata,
+      hooks: hookSummary,
     })
   } catch (error) {
     if (error instanceof AccessControlError) {

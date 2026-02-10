@@ -40,6 +40,7 @@ Copy `node/.env.example`. Key groups:
 - Core auth/db: `DATABASE_URL`, `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`, `NEXT_PUBLIC_APP_URL`
 - User role bootstrap: `ORCHWIZ_ADMIN_EMAILS` (comma-separated emails promoted to `admin`; default role is `captain`)
 - GitHub auth/webhooks: `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_WEBHOOK_SECRET`, `ENABLE_GITHUB_WEBHOOK_COMMENTS`, `GITHUB_TOKEN`
+- PostToolUse hooks/webhooks: `HOOK_TRIGGER_BEARER_TOKEN`, `HOOK_WEBHOOK_TARGET_ALLOWLIST`, `HOOK_WEBHOOK_TIMEOUT_MS`
 - Command execution policy: `ENABLE_LOCAL_COMMAND_EXECUTION`, `LOCAL_COMMAND_TIMEOUT_MS`, `COMMAND_EXECUTION_SHELL`, `ENABLE_LOCAL_INFRA_AUTO_INSTALL`, `LOCAL_INFRA_COMMAND_TIMEOUT_MS`, `CLOUD_DEPLOY_ONLY` (set `true` to block local starship launches and force cloud-only Ship Yard posture)
 - Runtime provider: `OPENCLAW_*`, `OPENCLAW_DISPATCH_PATH`, `OPENCLAW_DISPATCH_TIMEOUT_MS`, `ENABLE_OPENAI_RUNTIME_FALLBACK`, `OPENAI_API_KEY`, `OPENAI_RUNTIME_FALLBACK_MODEL`, `CODEX_CLI_PATH`, `CODEX_RUNTIME_TIMEOUT_MS`, `CODEX_RUNTIME_MODEL`, `RUNTIME_PROFILE_DEFAULT`, `RUNTIME_PROFILE_QUARTERMASTER`
 - Skills catalog/import: `ORCHWIZ_CODEX_HOME_ROOT`, `ORCHWIZ_SKILL_IMPORT_TIMEOUT_MS`, `ORCHWIZ_SKILL_CATALOG_STALE_MS`
@@ -224,6 +225,7 @@ Quartermaster prompts set `metadata.runtime.profile=quartermaster` and include s
 ## Key APIs
 
 - Core: `/api/sessions`, `/api/commands`, `/api/subagents`, `/api/tasks`, `/api/verification`, `/api/actions`
+- Hooks: `/api/hooks`, `/api/hooks/:id`, `/api/hooks/trigger`
 - Bridge connections: `/api/bridge/connections`, `/api/bridge/connections/:id`, `/api/bridge/connections/:id/test`, `/api/bridge/connections/dispatch`
 - Bridge chat compatibility: `/api/threads`, `/api/threads/:threadId/messages`
 - Ship-scoped cross-agent chat: `/api/ships/:id/agent-chat/rooms`, `/api/ships/:id/agent-chat/rooms/:roomId/messages`
@@ -251,6 +253,39 @@ Quartermaster prompts set `metadata.runtime.profile=quartermaster` and include s
 - Observability decrypt: `/api/observability/traces/:traceId/decrypt` (session owner, session `admin`, or bearer admin token)
 - Vault: `/api/vaults`, `/api/vaults/tree`, `/api/vaults/file` (`GET/POST/PATCH/DELETE`), `/api/vaults/search`, `/api/vaults/graph`
   - `/api/vaults/search` accepts `mode=hybrid|lexical` and `k=<topK>` and may return `score`, `scopeType`, and `citations` per result.
+
+PostToolUse webhook examples:
+
+```bash
+# Create a webhook hook (session-authenticated)
+curl -X POST http://localhost:3000/api/hooks \\
+  -H "Content-Type: application/json" \\
+  -H "Cookie: <session-cookie>" \\
+  -d '{
+    "name": "Deploy Status Notifier",
+    "matcher": "deploy|ship-yard|release",
+    "type": "webhook",
+    "webhookUrl": "http://localhost:4000/hooks/deploy-status",
+    "isActive": true
+  }'
+
+# Trigger hooks externally (bearer-token authenticated)
+curl -X POST http://localhost:3000/api/hooks/trigger \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer ${HOOK_TRIGGER_BEARER_TOKEN}" \\
+  -d '{
+    "toolName": "deploy",
+    "status": "failed",
+    "sessionId": "<optional-session-id>",
+    "userId": "<required when sessionId is omitted>",
+    "toolUseId": "exec_123",
+    "durationMs": 2410,
+    "input": {"commandId": "cmd_abc"},
+    "output": {"stdout": "..."},
+    "error": "exit 1",
+    "metadata": {"source": "external-runtime"}
+  }'
+```
 
 ## Data-core bootstrap
 

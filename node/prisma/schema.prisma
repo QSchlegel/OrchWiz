@@ -40,6 +40,7 @@ model User {
   agentSyncRuns         AgentSyncRun[]
   agentSyncSuggestions  AgentSyncSuggestion[]
   ownedCommands         Command[]             @relation("CommandOwner")
+  ownedHooks            Hook[]                @relation("HookOwner")
   ownedSubagents        Subagent[]            @relation("SubagentOwner")
   ownedPermissions      Permission[]          @relation("PermissionOwner")
   ownedPermissionPolicies PermissionPolicy[]  @relation("PermissionPolicyOwner")
@@ -934,24 +935,28 @@ model Hook {
   matcher   String
   type      HookType
   command   String
+  ownerUserId String?
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   executions HookExecution[]
+  owner      User?           @relation("HookOwner", fields: [ownerUserId], references: [id], onDelete: SetNull)
 
   @@index([isActive])
+  @@index([ownerUserId])
 }
 
 enum HookType {
   command
   script
+  webhook
 }
 
 model HookExecution {
   id        String   @id @default(cuid())
   hookId    String
-  sessionId String
+  sessionId String?
   toolUseId String?
   status    String?
   output    String?
@@ -960,7 +965,7 @@ model HookExecution {
   timestamp DateTime @default(now())
 
   hook    Hook    @relation(fields: [hookId], references: [id], onDelete: Cascade)
-  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  session Session? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
 
   @@index([hookId])
   @@index([sessionId])

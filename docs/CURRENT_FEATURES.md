@@ -48,7 +48,7 @@ This feature map reflects what is implemented in this repository as of February 
 - Slash command management (`/commands`) with execution route.
 - Permissions CRUD (`/permissions`).
 - Permission policy CRUD and subagent mappings (`/permission-policies`).
-- Hooks management (`/hooks`).
+- Hooks management (`/hooks`) with PostToolUse webhook execution support.
 
 ### Intel
 
@@ -99,6 +99,7 @@ Implemented route groups under `node/src/app/api` include:
 
 - `actions`, `commands`, `tasks`, `sessions`, `verification`
 - `subagents`, `permissions`, `permission-policies`, `skills`
+- `hooks` (CRUD + trigger endpoint)
 - `ship-yard`, `ships`, `ships/:id/agent-chat`, `applications`, `deployments`
 - `bridge`, `bridge-call`, `bridge-crew`, `threads`
 - `forwarding`, `events/stream`

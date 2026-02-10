@@ -1,20 +1,14 @@
 import { NextRequest, NextResponse } from "next/server"
-import { auth } from "@/lib/auth"
 import { prisma } from "@/lib/prisma"
-import { headers } from "next/headers"
-import { publishNotificationUpdatedMany } from "@/lib/realtime/notifications"
+import { publishNotificationUpdated } from "@/lib/realtime/notifications"
+import { AccessControlError, requireAccessActor } from "@/lib/security/access-control"
+import { HookValidationError, parseHookCreateInput } from "@/lib/hooks/validation"
 
 export const dynamic = 'force-dynamic'
 
-async function notifyHooksChanged(entityId: string) {
-  const users = await prisma.user.findMany({
-    select: {
-      id: true,
-    },
-  })
-
-  publishNotificationUpdatedMany({
-    userIds: users.map((user) => user.id),
+function notifyHooksChanged(userId: string, entityId: string) {
+  publishNotificationUpdated({
+    userId,
     channel: "hooks",
     entityId,
   })
@@ -22,15 +16,14 @@ async function notifyHooksChanged(entityId: string) {
 
 export async function GET(request: NextRequest) {
   try {
-    const session = await auth.api.getSession({ headers: await headers() })
-    if (!session) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-    }
+    const actor = await requireAccessActor()
 
     const searchParams = request.nextUrl.searchParams
     const isActive = searchParams.get("isActive")
 
-    const where: any = {}
+    const where: Record<string, unknown> = {
+      ownerUserId: actor.userId,
+    }
     if (isActive === "true") {
       where.isActive = true
     }
@@ -51,6 +44,10 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json(hooks)
   } catch (error) {
+    if (error instanceof AccessControlError) {
+      return NextResponse.json({ error: error.message }, { status: error.status })
+    }
+
     console.error("Error fetching hooks:", error)
     return NextResponse.json(
       { error: "Internal server error" },
@@ -61,35 +58,32 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
-    const session = await auth.api.getSession({ headers: await headers() })
-    if (!session) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-    }
-
-    const body = await request.json()
-    const { name, matcher, type, command, isActive } = body
-
-    if (!name || !matcher || !type || !command) {
-      return NextResponse.json(
-        { error: "Name, matcher, type, and command are required" },
-        { status: 400 }
-      )
-    }
+    const actor = await requireAccessActor()
+    const parsed = parseHookCreateInput(await request.json())
 
     const hook = await prisma.hook.create({
       data: {
-        name,
-        matcher,
-        type,
-        command,
-        isActive: isActive !== undefined ? isActive : true,
-      },
+        name: parsed.name,
+        matcher: parsed.matcher,
+        type: parsed.type,
+        command: parsed.command,
+        isActive: parsed.isActive,
+        ownerUserId: actor.userId,
+      } as any,
     })
 
-    await notifyHooksChanged(hook.id)
+    notifyHooksChanged(actor.userId, hook.id)
 
     return NextResponse.json(hook, { status: 201 })
   } catch (error) {
+    if (error instanceof AccessControlError) {
+      return NextResponse.json({ error: error.message }, { status: error.status })
+    }
+
+    if (error instanceof HookValidationError) {
+      return NextResponse.json({ error: error.message }, { status: error.status })
+    }
+
     console.error("Error creating hook:", error)
     return NextResponse.json(
       { error: "Internal server error" },

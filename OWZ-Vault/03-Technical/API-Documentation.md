@@ -197,11 +197,80 @@ Forwarded records include metadata fields (for example `isForwarded`, `sourceNod
 
 ### Hooks
 
-- `GET /api/hooks` list hooks.
+- `GET /api/hooks` list hooks for the authenticated owner.
 - `POST /api/hooks` create hook.
+  - Supported types: `command`, `script`, `webhook`.
+  - For `type=webhook`, `webhookUrl` is preferred and `command` is accepted as backward-compatible alias.
+  - Webhook targets are validated against `HOOK_WEBHOOK_TARGET_ALLOWLIST`.
 - `GET /api/hooks/[id]` fetch hook.
 - `PUT /api/hooks/[id]` update hook.
 - `DELETE /api/hooks/[id]` delete hook.
+- `POST /api/hooks/trigger` externally trigger PostToolUse hooks.
+  - Auth modes:
+    - session-authenticated request
+    - bearer token (`Authorization: Bearer <HOOK_TRIGGER_BEARER_TOKEN>`)
+  - Body:
+    - `toolName` (required)
+    - `status` (`completed|failed|blocked`, required)
+    - `sessionId` (optional)
+    - `userId` (optional; required in machine mode when `sessionId` is omitted)
+    - `toolUseId`, `durationMs`, `input`, `output`, `error`, `metadata` (optional)
+  - Response:
+    - `received`, `matchedHooks`, `delivered`, `failed`, `executions[]`
+
+Hook creation example:
+
+```json
+{
+  "name": "Deploy Status Notifier",
+  "matcher": "deploy|ship-yard|release",
+  "type": "webhook",
+  "webhookUrl": "http://localhost:4000/hooks/deploy-status",
+  "isActive": true
+}
+```
+
+Hook trigger example:
+
+```json
+{
+  "toolName": "deploy",
+  "status": "failed",
+  "sessionId": "session_123",
+  "toolUseId": "exec_456",
+  "durationMs": 2410,
+  "input": { "commandId": "cmd_abc" },
+  "output": { "stdout": "..." },
+  "error": "exit 1",
+  "metadata": { "source": "external-runtime" }
+}
+```
+
+Webhook payload example sent to targets:
+
+```json
+{
+  "event": "post_tool_use.v1",
+  "occurredAt": "2026-02-10T18:00:00.000Z",
+  "hook": {
+    "id": "hook_123",
+    "name": "Deploy Status Notifier",
+    "matcher": "deploy|ship-yard|release",
+    "type": "webhook"
+  },
+  "toolUse": {
+    "toolName": "deploy",
+    "status": "failed",
+    "sessionId": "session_123",
+    "toolUseId": "exec_456",
+    "durationMs": 2410,
+    "input": { "commandId": "cmd_abc" },
+    "output": { "stdout": "..." },
+    "error": "exit 1",
+    "metadata": { "source": "external-runtime" }
+  }
+}
+```
 
 ### Permissions
 

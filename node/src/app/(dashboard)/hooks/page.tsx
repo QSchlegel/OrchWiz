@@ -15,33 +15,107 @@ interface Hook {
   }
 }
 
+interface HookExample {
+  name: string
+  matcher: string
+  type: "webhook"
+  webhookUrl: string
+  description: string
+}
+
+interface HookFormData {
+  name: string
+  matcher: string
+  type: "webhook" | "command" | "script"
+  command: string
+  webhookUrl: string
+  isActive: boolean
+}
+
+const HOOK_EXAMPLES: HookExample[] = [
+  {
+    name: "Deploy Status Notifier",
+    matcher: "deploy|ship-yard|release",
+    type: "webhook",
+    webhookUrl: "http://localhost:4000/hooks/deploy-status",
+    description: "Send deployment-related tool events to your release notification service.",
+  },
+  {
+    name: "Command Failure Alert",
+    matcher: "build|test|lint",
+    type: "webhook",
+    webhookUrl: "http://localhost:4000/hooks/command-failures",
+    description: "Capture failed build/test/lint tool events for on-call alerting.",
+  },
+  {
+    name: "Audit Stream Collector",
+    matcher: ".*",
+    type: "webhook",
+    webhookUrl: "http://localhost:4000/hooks/audit-stream",
+    description: "Forward every PostToolUse event to your internal audit pipeline.",
+  },
+]
+
+function defaultFormData(): HookFormData {
+  return {
+    name: "",
+    matcher: "",
+    type: "webhook",
+    command: "",
+    webhookUrl: "",
+    isActive: true,
+  }
+}
+
+function requestPayloadFromFormData(formData: HookFormData): Record<string, unknown> {
+  const payload: Record<string, unknown> = {
+    name: formData.name.trim(),
+    matcher: formData.matcher.trim(),
+    type: formData.type,
+    isActive: formData.isActive,
+  }
+
+  if (formData.type === "webhook") {
+    const webhookUrl = formData.webhookUrl.trim()
+    payload.webhookUrl = webhookUrl
+    // Backward-compatible alias expected by legacy storage fields.
+    payload.command = webhookUrl
+  } else {
+    payload.command = formData.command.trim()
+  }
+
+  return payload
+}
+
 export default function HooksPage() {
   const [hooks, setHooks] = useState<Hook[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [isCreating, setIsCreating] = useState(false)
   const [showCreateForm, setShowCreateForm] = useState(false)
-  const [formData, setFormData] = useState({
-    name: "",
-    matcher: "",
-    type: "command",
-    command: "",
-    isActive: true,
-  })
+  const [formData, setFormData] = useState<HookFormData>(defaultFormData)
+  const [errorMessage, setErrorMessage] = useState<string | null>(null)
+  const [createError, setCreateError] = useState<string | null>(null)
 
   useEffect(() => {
-    fetchHooks()
+    void fetchHooks()
   }, [])
 
   const fetchHooks = async () => {
     setIsLoading(true)
+    setErrorMessage(null)
     try {
       const response = await fetch("/api/hooks")
-      if (response.ok) {
-        const data = await response.json()
-        setHooks(data)
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => ({}))) as { error?: string }
+        setErrorMessage(payload.error || "Failed to fetch hooks.")
+        return
       }
+
+      const data = (await response.json()) as Hook[]
+      setHooks(data)
     } catch (error) {
       console.error("Error fetching hooks:", error)
+      setErrorMessage("Failed to fetch hooks.")
     } finally {
       setIsLoading(false)
     }
@@ -50,6 +124,7 @@ export default function HooksPage() {
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault()
     setIsCreating(true)
+    setCreateError(null)
 
     try {
       const response = await fetch("/api/hooks", {
@@ -57,22 +132,21 @@ export default function HooksPage() {
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(formData),
+        body: JSON.stringify(requestPayloadFromFormData(formData)),
       })
 
-      if (response.ok) {
-        setShowCreateForm(false)
-        setFormData({
-          name: "",
-          matcher: "",
-          type: "command",
-          command: "",
-          isActive: true,
-        })
-        fetchHooks()
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => ({}))) as { error?: string }
+        setCreateError(payload.error || "Failed to create hook.")
+        return
       }
+
+      setShowCreateForm(false)
+      setFormData(defaultFormData())
+      await fetchHooks()
     } catch (error) {
       console.error("Error creating hook:", error)
+      setCreateError("Failed to create hook.")
     } finally {
       setIsCreating(false)
     }
@@ -89,7 +163,7 @@ export default function HooksPage() {
       })
 
       if (response.ok) {
-        fetchHooks()
+        await fetchHooks()
       }
     } catch (error) {
       console.error("Error toggling hook:", error)
@@ -105,12 +179,30 @@ export default function HooksPage() {
       })
 
       if (response.ok) {
-        fetchHooks()
+        await fetchHooks()
       }
     } catch (error) {
       console.error("Error deleting hook:", error)
     }
   }
+
+  const applyExample = (example: HookExample) => {
+    setShowCreateForm(true)
+    setCreateError(null)
+    setFormData({
+      name: example.name,
+      matcher: example.matcher,
+      type: example.type,
+      command: "",
+      webhookUrl: example.webhookUrl,
+      isActive: true,
+    })
+  }
+
+  const commandFieldLabel = formData.type === "webhook" ? "Webhook URL" : "Command/Script"
+  const commandFieldPlaceholder =
+    formData.type === "webhook" ? "https://hooks.example.com/post-tool-use" : "prettier --write"
+  const commandFieldValue = formData.type === "webhook" ? formData.webhookUrl : formData.command
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900 p-8">
@@ -120,11 +212,38 @@ export default function HooksPage() {
             PostToolUse Hooks
           </h1>
           <button
-            onClick={() => setShowCreateForm(true)}
+            onClick={() => {
+              setShowCreateForm(true)
+              setCreateError(null)
+            }}
             className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
           >
             New Hook
           </button>
+        </div>
+
+        <div className="mb-8 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6">
+          <h2 className="text-xl font-semibold mb-4 text-gray-900 dark:text-white">Examples</h2>
+          <div className="grid gap-3 md:grid-cols-3">
+            {HOOK_EXAMPLES.map((example) => (
+              <div
+                key={example.name}
+                className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/30 p-4"
+              >
+                <h3 className="text-sm font-semibold text-gray-900 dark:text-white">{example.name}</h3>
+                <p className="mt-1 text-xs text-gray-600 dark:text-gray-300">{example.description}</p>
+                <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+                  Matcher: <code className="font-mono">{example.matcher}</code>
+                </p>
+                <button
+                  onClick={() => applyExample(example)}
+                  className="mt-3 px-3 py-1.5 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
+                >
+                  Use example
+                </button>
+              </div>
+            ))}
+          </div>
         </div>
 
         {showCreateForm && (
@@ -171,27 +290,32 @@ export default function HooksPage() {
                   <select
                     value={formData.type}
                     onChange={(e) =>
-                      setFormData({ ...formData, type: e.target.value })
+                      setFormData({ ...formData, type: e.target.value as HookFormData["type"] })
                     }
                     className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
                   >
+                    <option value="webhook">Webhook</option>
                     <option value="command">Command</option>
                     <option value="script">Script</option>
                   </select>
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                    Command/Script
+                    {commandFieldLabel}
                   </label>
                   <textarea
-                    value={formData.command}
+                    value={commandFieldValue}
                     onChange={(e) =>
-                      setFormData({ ...formData, command: e.target.value })
+                      setFormData(
+                        formData.type === "webhook"
+                          ? { ...formData, webhookUrl: e.target.value }
+                          : { ...formData, command: e.target.value },
+                      )
                     }
                     required
                     rows={4}
                     className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white font-mono text-sm"
-                    placeholder="prettier --write"
+                    placeholder={commandFieldPlaceholder}
                   />
                 </div>
                 <div className="flex items-center">
@@ -211,6 +335,11 @@ export default function HooksPage() {
                     Active
                   </label>
                 </div>
+                {createError && (
+                  <div className="rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-800 dark:bg-red-950/50 dark:text-red-300">
+                    {createError}
+                  </div>
+                )}
                 <div className="flex gap-2">
                   <button
                     type="submit"
@@ -221,7 +350,10 @@ export default function HooksPage() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => setShowCreateForm(false)}
+                    onClick={() => {
+                      setShowCreateForm(false)
+                      setCreateError(null)
+                    }}
                     className="px-4 py-2 bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors"
                   >
                     Cancel
@@ -232,13 +364,20 @@ export default function HooksPage() {
           </div>
         )}
 
+        {errorMessage && (
+          <div className="mb-4 rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-800 dark:bg-red-950/50 dark:text-red-300">
+            {errorMessage}
+          </div>
+        )}
+
         {isLoading ? (
           <div className="text-center py-12 text-gray-500 dark:text-gray-400">
             Loading hooks...
           </div>
         ) : hooks.length === 0 ? (
-          <div className="text-center py-12 text-gray-500 dark:text-gray-400">
-            No hooks found. Create your first hook to get started!
+          <div className="text-center py-12 text-gray-500 dark:text-gray-400 space-y-2">
+            <p>No hooks found. Create your first hook to get started!</p>
+            <p className="text-sm">Use one of the examples above to prefill a webhook hook.</p>
           </div>
         ) : (
           <div className="space-y-4">
@@ -274,7 +413,7 @@ export default function HooksPage() {
                         <span className="font-medium">Type:</span> {hook.type}
                       </p>
                       <p>
-                        <span className="font-medium">Command:</span>{" "}
+                        <span className="font-medium">{hook.type === "webhook" ? "Webhook URL" : "Command"}:</span>{" "}
                         <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded">
                           {hook.command}
                         </code>
