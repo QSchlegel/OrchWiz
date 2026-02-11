@@ -18,6 +18,13 @@ import {
 import { queryVaultRag } from "@/lib/vault/rag"
 import { dataCoreEnabled } from "@/lib/data-core/config"
 import { getMergedMemoryRetriever } from "@/lib/data-core/merged-memory-retriever"
+import {
+  parseRagBackend,
+  type RagBackend,
+  RagBackendUnavailableError,
+  resolveRagBackend,
+} from "@/lib/memory/rag-backend"
+import { recordRagPerformanceSample } from "@/lib/performance/tracker"
 
 export const dynamic = "force-dynamic"
 
@@ -100,6 +107,7 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  const startedAt = Date.now()
   try {
     const session = await auth.api.getSession({ headers: await headers() })
     if (!session) {
@@ -109,6 +117,8 @@ export async function POST(
     const { id } = await params
     const body = asRecord(await request.json().catch(() => ({})))
     const prompt = asString(body.prompt)
+    const requestedBackend = parseRagBackend(asString(body.backend))
+    let effectiveBackend: RagBackend = requestedBackend
 
     if (!prompt) {
       return NextResponse.json({ error: "prompt required" }, { status: 400 })
@@ -140,6 +150,14 @@ export async function POST(
       query: string
       mode: "hybrid" | "lexical"
       fallbackUsed: boolean
+      requestedBackend: RagBackend
+      effectiveBackend: RagBackend
+      performance: {
+        durationMs: number
+        resultCount: number
+        fallbackUsed: boolean
+        status: "success" | "error" | "backend_unavailable"
+      }
       sources: Array<{
         id: string
         path: string
@@ -152,11 +170,26 @@ export async function POST(
       query: prompt,
       mode: "hybrid",
       fallbackUsed: false,
+      requestedBackend,
+      effectiveBackend,
+      performance: {
+        durationMs: 0,
+        resultCount: 0,
+        fallbackUsed: false,
+        status: "success",
+      },
       sources: [],
     }
 
+    const retrievalStartedAt = Date.now()
     try {
-      const knowledge = dataCoreEnabled()
+      const backendResolution = resolveRagBackend({
+        requestedBackend,
+        dataCoreEnabled: dataCoreEnabled(),
+      })
+      effectiveBackend = backendResolution.effectiveBackend
+
+      const knowledge = backendResolution.effectiveBackend === "data-core-merged"
         ? await getMergedMemoryRetriever().query({
             query: prompt,
             mode: "hybrid",
@@ -173,10 +206,19 @@ export async function POST(
             shipDeploymentId: id,
           })
 
+      const retrievalDurationMs = Date.now() - retrievalStartedAt
       knowledgeBlock = {
         query: prompt,
         mode: knowledge.mode,
         fallbackUsed: knowledge.fallbackUsed,
+        requestedBackend: backendResolution.requestedBackend,
+        effectiveBackend: backendResolution.effectiveBackend,
+        performance: {
+          durationMs: retrievalDurationMs,
+          resultCount: knowledge.results.length,
+          fallbackUsed: knowledge.fallbackUsed,
+          status: "success",
+        },
         sources: knowledge.results.map((result) => ({
           id: result.id,
           path: result.path,
@@ -186,12 +228,92 @@ export async function POST(
           shipDeploymentId: result.shipDeploymentId,
         })),
       }
+
+      await recordRagPerformanceSample({
+        userId: session.user.id,
+        sessionId: state.session.id,
+        shipDeploymentId: id,
+        route: "/api/ships/[id]/quartermaster",
+        operation: "chat_context_retrieval",
+        requestedBackend: backendResolution.requestedBackend,
+        effectiveBackend: backendResolution.effectiveBackend,
+        mode: "hybrid",
+        scope: "all",
+        status: "success",
+        fallbackUsed: knowledge.fallbackUsed,
+        durationMs: retrievalDurationMs,
+        resultCount: knowledge.results.length,
+        query: prompt,
+      })
     } catch (knowledgeError) {
+      const retrievalDurationMs = Date.now() - retrievalStartedAt
+      if (knowledgeError instanceof RagBackendUnavailableError) {
+        await recordRagPerformanceSample({
+          userId: session.user.id,
+          sessionId: state.session.id,
+          shipDeploymentId: id,
+          route: "/api/ships/[id]/quartermaster",
+          operation: "chat_context_retrieval",
+          requestedBackend,
+          effectiveBackend: requestedBackend,
+          mode: "hybrid",
+          scope: "all",
+          status: "backend_unavailable",
+          fallbackUsed: false,
+          durationMs: retrievalDurationMs,
+          resultCount: 0,
+          query: prompt,
+          errorCode: knowledgeError.code,
+        })
+
+        return NextResponse.json(
+          {
+            error: knowledgeError.message,
+            code: knowledgeError.code,
+            requestedBackend,
+            effectiveBackend: requestedBackend,
+            performance: {
+              durationMs: retrievalDurationMs,
+              resultCount: 0,
+              fallbackUsed: false,
+              status: "backend_unavailable",
+            },
+          },
+          { status: knowledgeError.status },
+        )
+      }
+
+      await recordRagPerformanceSample({
+        userId: session.user.id,
+        sessionId: state.session.id,
+        shipDeploymentId: id,
+        route: "/api/ships/[id]/quartermaster",
+        operation: "chat_context_retrieval",
+        requestedBackend,
+        effectiveBackend,
+        mode: "hybrid",
+        scope: "all",
+        status: "error",
+        fallbackUsed: true,
+        durationMs: retrievalDurationMs,
+        resultCount: 0,
+        query: prompt,
+        errorCode: "RAG_RETRIEVAL_ERROR",
+      })
+
       console.error("Quartermaster knowledge retrieval failed (fail-open):", knowledgeError)
       knowledgeBlock = {
         query: prompt,
         mode: "lexical",
         fallbackUsed: true,
+        requestedBackend,
+        effectiveBackend,
+        performance: {
+          durationMs: retrievalDurationMs,
+          resultCount: 0,
+          fallbackUsed: true,
+          status: "error",
+        },
         sources: [],
       }
     }
@@ -231,8 +353,28 @@ export async function POST(
       sessionId: state.session.id,
       interactions,
       knowledge: knowledgeBlock,
+      requestedBackend: knowledgeBlock.requestedBackend,
+      effectiveBackend: knowledgeBlock.effectiveBackend,
+      performance: knowledgeBlock.performance,
     })
   } catch (error) {
+    if (error instanceof RagBackendUnavailableError) {
+      const durationMs = Date.now() - startedAt
+      return NextResponse.json(
+        {
+          error: error.message,
+          code: error.code,
+          performance: {
+            durationMs,
+            resultCount: 0,
+            fallbackUsed: false,
+            status: "backend_unavailable",
+          },
+        },
+        { status: error.status },
+      )
+    }
+
     if (error instanceof SessionPromptError) {
       return NextResponse.json(
         {

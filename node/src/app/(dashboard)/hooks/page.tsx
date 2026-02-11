@@ -317,6 +317,12 @@ export default function HooksPage() {
                     className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white font-mono text-sm"
                     placeholder={commandFieldPlaceholder}
                   />
+                  {formData.type === "webhook" ? (
+                    <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                      For ngrok targets, set <code>HOOK_WEBHOOK_ALLOW_NGROK=true</code> or explicitly add your ngrok host
+                      to <code>HOOK_WEBHOOK_TARGET_ALLOWLIST</code>.
+                    </p>
+                  ) : null}
                 </div>
                 <div className="flex items-center">
                   <input

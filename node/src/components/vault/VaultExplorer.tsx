@@ -9,7 +9,10 @@ import type {
   VaultFileReadMode,
   VaultFileResponse,
   VaultId,
+  VaultRagBackend,
   VaultRagMode,
+  VaultSeedPackInstallResponse,
+  VaultSeedPackSummary,
   VaultSearchResponse,
   VaultSearchResult,
   VaultSummary,
@@ -128,6 +131,7 @@ export function VaultExplorer() {
   const [file, setFile] = useState<VaultFileResponse | null>(null)
   const [searchQuery, setSearchQuery] = useState("")
   const [searchMode, setSearchMode] = useState<VaultRagMode>("hybrid")
+  const [searchBackend, setSearchBackend] = useState<VaultRagBackend>("auto")
   const [searchResults, setSearchResults] = useState<VaultSearchResult[]>([])
   const [mobileSection, setMobileSection] = useState<MobileSection>("tree")
 
@@ -142,6 +146,10 @@ export function VaultExplorer() {
   const [isSearching, setIsSearching] = useState(false)
   const [isLoadingFullForEdit, setIsLoadingFullForEdit] = useState(false)
   const [message, setMessage] = useState<{ type: "error" | "success" | "info"; text: string } | null>(null)
+  const [seedPacks, setSeedPacks] = useState<VaultSeedPackSummary[]>([])
+  const [selectedSeedPackId, setSelectedSeedPackId] = useState("")
+  const [isLoadingSeedPacks, setIsLoadingSeedPacks] = useState(false)
+  const [isInstallingSeedPack, setIsInstallingSeedPack] = useState(false)
 
   const [showCreateForm, setShowCreateForm] = useState(false)
   const [createPathInput, setCreatePathInput] = useState("")
@@ -155,6 +163,11 @@ export function VaultExplorer() {
   const selectedVaultSummary = useMemo(
     () => vaults.find((vault) => vault.id === selectedVault) || null,
     [vaults, selectedVault],
+  )
+  const seedPackControlsVisible = selectedVault === "orchwiz" || selectedVault === "joined"
+  const orchwizSeedPacks = useMemo(
+    () => seedPacks.filter((pack) => pack.vaultId === "orchwiz"),
+    [seedPacks],
   )
 
   useEffect(() => {
@@ -194,6 +207,27 @@ export function VaultExplorer() {
       setMessage({ type: "error", text: "Failed to load vault list." })
     } finally {
       setIsLoadingVaults(false)
+    }
+  }, [])
+
+  const loadSeedPacks = useCallback(async () => {
+    setIsLoadingSeedPacks(true)
+    try {
+      const response = await fetch("/api/vaults/packs")
+      const payload = (await response.json().catch(() => ({}))) as { packs?: VaultSeedPackSummary[]; error?: string }
+      if (!response.ok) {
+        setMessage({ type: "error", text: payload?.error || "Failed to load seed packs." })
+        setSeedPacks([])
+        return
+      }
+
+      setSeedPacks(Array.isArray(payload.packs) ? payload.packs : [])
+    } catch (error) {
+      console.error("Error loading vault seed packs:", error)
+      setMessage({ type: "error", text: "Failed to load seed packs." })
+      setSeedPacks([])
+    } finally {
+      setIsLoadingSeedPacks(false)
     }
   }, [])
 
@@ -263,6 +297,17 @@ export function VaultExplorer() {
   }, [loadVaultSummaries])
 
   useEffect(() => {
+    loadSeedPacks()
+  }, [loadSeedPacks])
+
+  useEffect(() => {
+    const defaultPackId = orchwizSeedPacks[0]?.id || ""
+    setSelectedSeedPackId((current) =>
+      current && orchwizSeedPacks.some((pack) => pack.id === current) ? current : defaultPackId,
+    )
+  }, [orchwizSeedPacks])
+
+  useEffect(() => {
     loadTree(selectedVault, selectedNotePath)
     setSearchResults([])
   }, [loadTree, selectedVault])
@@ -329,6 +374,7 @@ export function VaultExplorer() {
         vault: selectedVault,
         q: searchQuery,
         mode: searchMode,
+        backend: searchBackend,
       })
 
       const response = await fetch(`/api/vaults/search?${params.toString()}`)
@@ -349,6 +395,68 @@ export function VaultExplorer() {
       setSearchResults([])
     } finally {
       setIsSearching(false)
+    }
+  }
+
+  const handleInstallSeedPack = async () => {
+    if (!selectedSeedPackId) {
+      setMessage({ type: "error", text: "Select a seed pack first." })
+      return
+    }
+
+    if (isEditing && draftDirty) {
+      const shouldDiscard = window.confirm("Installing a seed pack will replace managed notes. Discard unsaved changes?")
+      if (!shouldDiscard) {
+        return
+      }
+    }
+
+    setIsInstallingSeedPack(true)
+    try {
+      const response = await fetch("/api/vaults/packs", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          packId: selectedSeedPackId,
+        }),
+      })
+
+      const payload = (await response.json().catch(() => ({}))) as
+        | VaultSeedPackInstallResponse
+        | { error?: string }
+      if (!response.ok) {
+        setMessage({ type: "error", text: (payload as { error?: string })?.error || "Failed to install seed pack." })
+        return
+      }
+
+      const install = payload as VaultSeedPackInstallResponse
+      const nextPath = install.files[0]?.path || null
+
+      setSelectedVault("orchwiz")
+      setSelectedNotePath(nextPath)
+      setSearchResults([])
+      setIsEditing(false)
+      setDraftDirty(false)
+      setSaveState("idle")
+      setShowCreateForm(false)
+      setShowRenameForm(false)
+      setRenameSourcePath(null)
+      setRenameTargetPath("")
+
+      await loadVaultSummaries()
+      await loadTree("orchwiz", nextPath)
+      setMobileSection("note")
+      setMessage({
+        type: "success",
+        text: `Installed ${install.noteCount} notes from ${install.packId}.`,
+      })
+    } catch (error) {
+      console.error("Error installing vault seed pack:", error)
+      setMessage({ type: "error", text: "Failed to install seed pack." })
+    } finally {
+      setIsInstallingSeedPack(false)
     }
   }
 
@@ -666,6 +774,7 @@ export function VaultExplorer() {
             type="button"
             onClick={() => {
               loadVaultSummaries()
+              loadSeedPacks()
               loadTree(selectedVault, selectedNotePath)
             }}
             className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 hover:bg-slate-50 dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-300"
@@ -705,6 +814,54 @@ export function VaultExplorer() {
             New Note
           </button>
         </div>
+
+        {seedPackControlsVisible ? (
+          <div className="space-y-2 rounded-lg border border-slate-200/80 bg-white/70 p-2.5 text-xs dark:border-white/10 dark:bg-white/[0.03]">
+            <div className="flex items-center justify-between gap-2">
+              <p className="font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Seed Pack</p>
+              <button
+                type="button"
+                onClick={() => {
+                  loadSeedPacks()
+                }}
+                className="rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] text-slate-700 hover:bg-slate-50 dark:border-white/15 dark:bg-white/[0.03] dark:text-slate-300"
+              >
+                Refresh
+              </button>
+            </div>
+            <select
+              value={selectedSeedPackId}
+              onChange={(event) => setSelectedSeedPackId(event.target.value)}
+              className="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs dark:border-white/15 dark:bg-white/[0.05]"
+              disabled={isLoadingSeedPacks || orchwizSeedPacks.length === 0}
+            >
+              {isLoadingSeedPacks ? (
+                <option value="">Loading packs...</option>
+              ) : null}
+              {!isLoadingSeedPacks && orchwizSeedPacks.length === 0 ? (
+                <option value="">No seed packs available</option>
+              ) : null}
+              {!isLoadingSeedPacks
+                ? orchwizSeedPacks.map((pack) => (
+                    <option key={pack.id} value={pack.id}>
+                      {pack.label} ({pack.noteCount})
+                    </option>
+                  ))
+                : null}
+            </select>
+            <button
+              type="button"
+              onClick={() => void handleInstallSeedPack()}
+              disabled={isInstallingSeedPack || !selectedSeedPackId}
+              className="w-full rounded-md bg-slate-900 px-2 py-1.5 text-xs font-medium text-white hover:bg-black disabled:opacity-50 dark:bg-white dark:text-slate-900"
+            >
+              {isInstallingSeedPack ? "Installing..." : "Install Pack"}
+            </button>
+            <p className="text-[11px] text-slate-500 dark:text-slate-400">
+              Installs or refreshes managed notes under <code>00-Inbox/PopeBot</code>.
+            </p>
+          </div>
+        ) : null}
 
         {selectedVaultSummary?.isPrivate ? (
           <p className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1.5 text-xs text-emerald-800 dark:text-emerald-200">
@@ -762,6 +919,22 @@ export function VaultExplorer() {
         >
           <option value="hybrid">Hybrid</option>
           <option value="lexical">Lexical</option>
+        </select>
+        <select
+          value={searchBackend}
+          onChange={(event) => {
+            const next = event.target.value
+            if (next === "vault-local" || next === "data-core-merged") {
+              setSearchBackend(next)
+              return
+            }
+            setSearchBackend("auto")
+          }}
+          className="rounded-lg border border-slate-300 bg-white px-2 py-2 text-xs text-slate-800 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
+        >
+          <option value="auto">Backend: Auto</option>
+          <option value="vault-local">Backend: Vault Local</option>
+          <option value="data-core-merged">Backend: Data Core Merged</option>
         </select>
         <div className="relative flex-1">
           <Search className="pointer-events-none absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />

@@ -12,7 +12,8 @@
     "build": "tsc -p tsconfig.json",
     "dev": "tsx watch src/server.ts",
     "start": "node dist/server.js",
-    "test": "tsx --test test/*.test.ts"
+    "test": "tsx --test test/*.test.ts",
+    "edgequake:backfill": "tsx src/scripts/edgequake-backfill.ts"
   },
   "license": "MIT",
   "dependencies": {

@@ -145,11 +145,55 @@ export async function ensureSchema(db: DataCoreDb): Promise<void> {
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
 
+    CREATE TABLE IF NOT EXISTS memory_plugin_edgequake_workspace (
+      id TEXT PRIMARY KEY,
+      cluster_id TEXT NOT NULL,
+      domain TEXT NOT NULL,
+      workspace_id TEXT NOT NULL,
+      workspace_slug TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE(cluster_id, domain)
+    );
+
+    CREATE TABLE IF NOT EXISTS memory_plugin_edgequake_document (
+      id TEXT PRIMARY KEY,
+      domain TEXT NOT NULL,
+      canonical_path TEXT NOT NULL,
+      workspace_id TEXT NOT NULL,
+      document_id TEXT NOT NULL,
+      last_event_id TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE(domain, canonical_path),
+      UNIQUE(workspace_id, document_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS memory_plugin_edgequake_sync_job (
+      id TEXT PRIMARY KEY,
+      event_id TEXT NOT NULL UNIQUE,
+      operation TEXT NOT NULL,
+      domain TEXT NOT NULL,
+      canonical_path TEXT NOT NULL,
+      from_canonical_path TEXT,
+      content_markdown TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      attempt_count INT NOT NULL DEFAULT 0,
+      next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      last_error TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
     CREATE INDEX IF NOT EXISTS memory_event_log_domain_path_idx ON memory_event_log(domain, canonical_path, occurred_at DESC);
     CREATE INDEX IF NOT EXISTS memory_event_log_cursor_idx ON memory_event_log(cursor);
     CREATE INDEX IF NOT EXISTS memory_document_current_domain_deleted_idx ON memory_document_current(domain, deleted_at);
     CREATE INDEX IF NOT EXISTS memory_chunk_index_domain_path_idx ON memory_chunk_index(domain, canonical_path);
     CREATE INDEX IF NOT EXISTS memory_chunk_index_updated_idx ON memory_chunk_index(updated_at DESC);
     CREATE INDEX IF NOT EXISTS memory_merge_job_status_idx ON memory_merge_job(status, created_at);
+    CREATE INDEX IF NOT EXISTS memory_plugin_edgequake_sync_job_status_next_idx
+      ON memory_plugin_edgequake_sync_job(status, next_attempt_at);
+    CREATE INDEX IF NOT EXISTS memory_plugin_edgequake_sync_job_domain_path_idx
+      ON memory_plugin_edgequake_sync_job(domain, canonical_path);
   `)
 }

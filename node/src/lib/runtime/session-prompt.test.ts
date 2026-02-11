@@ -2,6 +2,7 @@ import test from "node:test"
 import assert from "node:assert/strict"
 import {
   appendExocompCapabilityInstructions,
+  appendShipToolInstructions,
   buildQuartermasterCitationFooter,
   enforceQuartermasterCitationFooter,
 } from "./session-prompt"
@@ -148,4 +149,113 @@ test("appendExocompCapabilityInstructions fails open for unknown subagent", asyn
   } finally {
     globalAny.prisma = previousPrisma
   }
+})
+
+test("appendShipToolInstructions injects tool block for quartermaster channel", async () => {
+  const result = await appendShipToolInstructions(
+    {
+      userId: "user-1",
+      metadata: {
+        quartermaster: {
+          channel: "ship-quartermaster",
+          shipDeploymentId: "ship-1",
+        },
+      },
+      runtimePrompt: "Base prompt",
+    },
+    {
+      getRuntimeContext: async () => ({
+        shipName: "USS Example",
+        grantedTools: [
+          {
+            slug: "camoufox",
+            name: "Camoufox",
+            description: "Stealth browser automation",
+            scope: "ship",
+          },
+        ],
+        requestableTools: [
+          {
+            slug: "another-tool",
+            name: "Another Tool",
+            description: "Some description",
+          },
+        ],
+      }),
+    },
+  )
+
+  assert.match(result, /^Base prompt\n\nAvailable Tools:/u)
+  assert.match(result, /Ship: USS Example/u)
+  assert.match(result, /Granted:\n- camoufox \(ship-wide\): Stealth browser automation/u)
+  assert.match(result, /Requestable:\n- another-tool: Some description/u)
+  assert.match(result, /File Tool Request/u)
+})
+
+test("appendShipToolInstructions injects bridge request protocol for bridge-agent channel", async () => {
+  const result = await appendShipToolInstructions(
+    {
+      userId: "user-1",
+      metadata: {
+        bridge: {
+          channel: "bridge-agent",
+          shipDeploymentId: "ship-1",
+          bridgeCrewId: "crew-1",
+        },
+      },
+      runtimePrompt: "Bridge base prompt",
+    },
+    {
+      getRuntimeContext: async () => ({
+        shipName: "USS Example",
+        grantedTools: [
+          {
+            slug: "camoufox",
+            name: "Camoufox",
+            description: null,
+            scope: "bridge_crew",
+            bridgeCrewCallsign: "OPS-ARX",
+          },
+        ],
+        requestableTools: [],
+      }),
+    },
+  )
+
+  assert.match(result, /- camoufox \(bridge-crew:OPS-ARX\)/u)
+  assert.match(result, /Ask quartermaster to file a tool request/u)
+})
+
+test("appendShipToolInstructions trims oversized tool blocks", async () => {
+  const largeDescription = "x".repeat(700)
+  const result = await appendShipToolInstructions(
+    {
+      userId: "user-1",
+      metadata: {
+        quartermaster: {
+          channel: "ship-quartermaster",
+          shipDeploymentId: "ship-1",
+        },
+      },
+      runtimePrompt: "Base prompt",
+    },
+    {
+      getRuntimeContext: async () => ({
+        shipName: "USS Example",
+        grantedTools: Array.from({ length: 10 }).map((_, index) => ({
+          slug: `granted-${index}`,
+          name: `Granted ${index}`,
+          description: largeDescription,
+          scope: "ship" as const,
+        })),
+        requestableTools: Array.from({ length: 12 }).map((_, index) => ({
+          slug: `requestable-${index}`,
+          name: `Requestable ${index}`,
+          description: largeDescription,
+        })),
+      }),
+    },
+  )
+
+  assert.match(result, /\.\.\.\[tools block trimmed\]$/u)
 })

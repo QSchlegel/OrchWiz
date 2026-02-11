@@ -2,6 +2,9 @@
 
 This guide gets OrchWiz running locally with the current app stack (`node/` + local Postgres).
 
+For ISO 27001 + SOC 2 cert-ready baseline documentation, see
+[Compliance overview](compliance/README.md).
+
 ## Prerequisites
 
 - Node.js 18+ (Node.js 20 recommended)
@@ -59,6 +62,63 @@ npm run dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000).
+
+## Optional: expose local webhook flows with ngrok
+
+Use this when you need external services to reach local webhook endpoints (`/api/github/webhook`, `/api/hooks/trigger`) and when your PostToolUse hooks target ngrok-hosted receivers.
+
+1. Start app and receiver tunnels in separate terminals:
+
+```bash
+cd node
+npm run dev:ngrok:app
+```
+
+```bash
+cd node
+npm run dev:ngrok:webhooks
+```
+
+2. Print discovered URLs and copy-ready snippets:
+
+```bash
+cd node
+npm run dev:ngrok:urls
+```
+
+3. In `node/.env`, opt in to ngrok webhook domains:
+
+```dotenv
+HOOK_WEBHOOK_ALLOW_NGROK=true
+```
+
+Keep this disabled in environments where ngrok targets should not be accepted.
+
+## Optional: run modular knowledge ingest (llm-graph-builder provider)
+
+This is an opt-in external ingest path and is isolated from default local startup.
+
+1. Clone `llm-graph-builder` next to this repo (or set `LGB_REPO_PATH`):
+
+```bash
+cd ..
+git clone https://github.com/neo4j-labs/llm-graph-builder.git
+```
+
+2. Start overlay services:
+
+```bash
+cd /path/to/OrchWiz/dev-local
+docker compose -f docker-compose.yml -f docker-compose.ingest.llm-graph-builder.yml up -d
+```
+
+3. Configure `node/.env` ingest vars (`KNOWLEDGE_INGEST_*`, `LGB_*`), then run:
+
+```bash
+cd /path/to/OrchWiz/node
+npm run knowledge:ingest:dry-run
+npm run knowledge:ingest
+```
 
 ## 4) Sign in
 

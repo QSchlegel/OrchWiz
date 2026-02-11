@@ -126,6 +126,18 @@ export async function fetchHetznerCatalog(args: {
     })),
     machineTypes: serverTypes.map((type) => {
       const knownLocations = type.prices.map((price) => price.location).filter(Boolean)
+      const priceHourlyByLocationEur = Object.fromEntries(
+        type.prices
+          .map((price) => {
+            const location = (price.location || "").trim()
+            const amount = parseFloatSafe(price.price_hourly?.net)
+            if (!location || amount === null) {
+              return null
+            }
+            return [location, amount] as const
+          })
+          .filter((entry): entry is readonly [string, number] => Boolean(entry)),
+      )
       const averagePrice =
         type.prices.length > 0
           ? type.prices
@@ -141,6 +153,7 @@ export async function fetchHetznerCatalog(args: {
         diskGb: type.disk,
         architecture: type.architecture,
         locations: knownLocations,
+        priceHourlyByLocationEur,
         priceHourlyEur: averagePrice,
       }
     }),

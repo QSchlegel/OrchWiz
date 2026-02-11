@@ -1,0 +1,49 @@
+services:
+  neo4j-ingest:
+    image: neo4j:5.26-community
+    container_name: orchwiz-neo4j-ingest
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: ${LGB_NEO4J_USERNAME:-neo4j}/${LGB_NEO4J_PASSWORD:-llm_graph_builder_dev}
+      NEO4J_PLUGINS: '["apoc"]'
+    ports:
+      - "7475:7474"
+      - "7688:7687"
+    volumes:
+      - neo4j_ingest_data:/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "cypher-shell -u ${LGB_NEO4J_USERNAME:-neo4j} -p ${LGB_NEO4J_PASSWORD:-llm_graph_builder_dev} 'RETURN 1'"
+        ]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+
+  llm-graph-builder-backend:
+    build:
+      context: ${LGB_REPO_PATH:-../llm-graph-builder}/backend
+      dockerfile: Dockerfile
+    container_name: orchwiz-llm-graph-builder-backend
+    restart: unless-stopped
+    depends_on:
+      neo4j-ingest:
+        condition: service_healthy
+    environment:
+      NEO4J_URI: bolt://neo4j-ingest:7687
+      NEO4J_USERNAME: ${LGB_NEO4J_USERNAME:-neo4j}
+      NEO4J_PASSWORD: ${LGB_NEO4J_PASSWORD:-llm_graph_builder_dev}
+      NEO4J_DATABASE: ${LGB_NEO4J_DATABASE:-neo4j}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      LLM_MODEL_CONFIG_OPENAI_GPT_5_MINI: ${LGB_MODEL_CONFIG_OPENAI_GPT_5_MINI:-gpt-5-mini,replace_with_openai_api_key}
+      IS_EMBEDDING: ${LGB_IS_EMBEDDING:-true}
+      EMBEDDING_PROVIDER: ${LGB_EMBEDDING_PROVIDER:-sentence-transformer}
+      EMBEDDING_MODEL: ${LGB_EMBEDDING_MODEL:-all-MiniLM-L6-v2}
+      AUTHENTICATION_REQUIRED: "false"
+    ports:
+      - "8000:8000"
+
+volumes:
+  neo4j_ingest_data:
+    driver: local

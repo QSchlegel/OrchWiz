@@ -4,6 +4,9 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "dev:ngrok:app": "ngrok http 3000",
+    "dev:ngrok:webhooks": "ngrok http 4000",
+    "dev:ngrok:urls": "npx tsx scripts/ngrok-urls.ts",
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
@@ -13,7 +16,9 @@
     "db:migrate": "prisma migrate dev",
     "db:studio": "prisma studio",
     "db:seed": "npx tsx prisma/seed.ts",
-    "data-core:bootstrap-import": "npx tsx scripts/data-core-bootstrap-import.ts"
+    "data-core:bootstrap-import": "npx tsx scripts/data-core-bootstrap-import.ts",
+    "knowledge:ingest": "npx tsx scripts/knowledge-ingest.ts",
+    "knowledge:ingest:dry-run": "npx tsx scripts/knowledge-ingest.ts --dry-run"
   },
   "prisma": {
     "seed": "npx tsx prisma/seed.ts"
@@ -37,6 +42,7 @@
     "react-markdown": "^10.1.0",
     "reactflow": "^11.11.4",
     "remark-gfm": "^4.0.1",
+    "stripe": "^20.3.1",
     "three": "^0.182.0",
     "zod": "^4.3.6"
   },

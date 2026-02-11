@@ -4,6 +4,7 @@ import type { DataCoreConfig } from "./config.js"
 import type { DataCoreDb } from "./db.js"
 import { chunkMarkdownForRag, cosineSimilarity, embedTextsWithOpenAi, normalizeRagText, parseEmbedding, tokenizeRagText } from "./chunking.js"
 import { extractLinks, resolveLinkPath } from "./links.js"
+import type { DataCorePlugin } from "./plugins/types.js"
 import type { MemoryWriteEnvelope } from "./schema.js"
 import { canonicalPayloadHash, verifyWriteSignature } from "./signature.js"
 import { canonicalTitleFromPath } from "./util.js"
@@ -156,6 +157,7 @@ export class MemoryStore {
   constructor(
     private readonly db: DataCoreDb,
     private readonly config: DataCoreConfig,
+    private readonly plugin: DataCorePlugin | null = null,
   ) {}
 
   async upsertSigner(input: {
@@ -387,7 +389,7 @@ export class MemoryStore {
     const { envelope } = args
     ensureCanonicalPath(envelope.domain, envelope.canonicalPath)
 
-    return this.db.transaction(async (client) => {
+    const applied = await this.db.transaction(async (client) => {
       if (!args.skipSignatureCheck) {
         const verified = await verifyWriteSignature({
           db: this.db,
@@ -446,6 +448,9 @@ export class MemoryStore {
         supersedesEventId: latest?.latest_event_id || null,
       })
 
+      let syncFromCanonicalPath: string | null = null
+      let syncContentMarkdown: string | null = null
+
       if (inserted.duplicate) {
         return {
           eventId: inserted.eventId,
@@ -453,10 +458,14 @@ export class MemoryStore {
           domain: envelope.domain,
           canonicalPath: envelope.canonicalPath,
           mergeQueued,
+          operation: envelope.operation,
+          syncFromCanonicalPath,
+          syncContentMarkdown,
         }
       }
 
       if (envelope.operation === "delete") {
+        syncContentMarkdown = latest?.content_markdown || null
         await client.query(
           `
             INSERT INTO memory_document_current (
@@ -497,6 +506,7 @@ export class MemoryStore {
           throw new Error("Move operation requires metadata.fromCanonicalPath")
         }
         ensureCanonicalPath(envelope.domain, fromCanonicalPath)
+        syncFromCanonicalPath = fromCanonicalPath
 
         const sourceDocResult = await client.query<DocumentRow>(
           `
@@ -513,6 +523,7 @@ export class MemoryStore {
         }
 
         const movedContent = envelope.contentMarkdown || sourceDoc.content_markdown
+        syncContentMarkdown = movedContent
         await client.query(
           `
             INSERT INTO memory_document_current (
@@ -567,6 +578,7 @@ export class MemoryStore {
         })
       } else {
         const content = envelope.contentMarkdown || ""
+        syncContentMarkdown = content
         await client.query(
           `
             INSERT INTO memory_document_current (
@@ -623,8 +635,32 @@ export class MemoryStore {
         domain: envelope.domain,
         canonicalPath: envelope.canonicalPath,
         mergeQueued,
+        operation: envelope.operation,
+        syncFromCanonicalPath,
+        syncContentMarkdown,
       }
     })
+
+    if (!applied.duplicate && this.plugin) {
+      void this.plugin.enqueueWriteSync({
+        eventId: applied.eventId,
+        operation: applied.operation,
+        domain: applied.domain,
+        canonicalPath: applied.canonicalPath,
+        fromCanonicalPath: applied.syncFromCanonicalPath,
+        contentMarkdown: applied.syncContentMarkdown,
+      }).catch((error) => {
+        console.error("data-core edgequake enqueue failed:", error)
+      })
+    }
+
+    return {
+      eventId: applied.eventId,
+      duplicate: applied.duplicate,
+      domain: applied.domain,
+      canonicalPath: applied.canonicalPath,
+      mergeQueued: applied.mergeQueued,
+    }
   }
 
   async getFile(args: { domain: string; canonicalPath: string }): Promise<{
@@ -872,7 +908,6 @@ export class MemoryStore {
     }>
   }> {
     const mode = args.mode || "hybrid"
-    const k = Math.max(1, Math.min(100, args.k || this.config.queryTopKDefault))
     const query = args.query.trim()
     if (!query) {
       return {
@@ -881,6 +916,74 @@ export class MemoryStore {
         results: [],
       }
     }
+
+    const k = Math.max(1, Math.min(100, args.k || this.config.queryTopKDefault))
+    if (mode === "hybrid" && this.plugin) {
+      try {
+        const pluginResult = await this.plugin.queryHybrid({
+          query,
+          domain: args.domain,
+          prefix: args.prefix,
+          k,
+        })
+        const hasMappedCitations = pluginResult.results.some((entry) => entry.citations.length > 0)
+        if (hasMappedCitations) {
+          return pluginResult
+        }
+      } catch (error) {
+        console.error("data-core edgequake query failed, falling back local:", error)
+      }
+
+      const fallback = await this.queryLocal({
+        query,
+        mode,
+        domain: args.domain,
+        prefix: args.prefix,
+        k,
+      })
+      return {
+        ...fallback,
+        fallbackUsed: true,
+      }
+    }
+
+    return this.queryLocal({
+      query,
+      mode,
+      domain: args.domain,
+      prefix: args.prefix,
+      k,
+    })
+  }
+
+  private async queryLocal(args: {
+    query: string
+    mode: "hybrid" | "lexical"
+    domain?: string
+    prefix?: string
+    k: number
+  }): Promise<{
+    mode: "hybrid" | "lexical"
+    fallbackUsed: boolean
+    results: Array<{
+      domain: string
+      canonicalPath: string
+      title: string
+      excerpt: string
+      score: number
+      citations: Array<{
+        id: string
+        canonicalPath: string
+        excerpt: string
+        score: number
+        lexicalScore: number
+        semanticScore: number
+      }>
+    }>
+  }> {
+    const mode = args.mode
+    const k = args.k
+    const query = args.query.trim()
 
     const whereClauses: string[] = ["d.deleted_at IS NULL"]
     const params: unknown[] = []

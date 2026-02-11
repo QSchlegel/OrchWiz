@@ -4,6 +4,7 @@ import { z } from "zod"
 import { loadConfig } from "./config.js"
 import { DataCoreDb, ensureSchema } from "./db.js"
 import { MemoryStore } from "./memory-store.js"
+import { createDataCorePlugin } from "./plugins/index.js"
 import { memoryWriteEnvelopeSchema, moveRequestSchema, queryRequestSchema, signerUpsertSchema, syncEventsRequestSchema } from "./schema.js"
 import { requireApiKey, signSyncPayload, verifySyncRequest } from "./security.js"
 
@@ -41,7 +42,34 @@ async function main(): Promise<void> {
     await ensureSchema(db)
   }
 
-  const store = new MemoryStore(db, config)
+  const plugin = createDataCorePlugin({ db, config })
+  const store = new MemoryStore(db, config, plugin)
+  let edgeQuakeDrainTimer: NodeJS.Timeout | null = null
+  let edgeQuakeDrainInFlight = false
+
+  async function runEdgeQuakeDrain(limit = config.edgequake.drainBatch): Promise<void> {
+    if (!plugin || edgeQuakeDrainInFlight) {
+      return
+    }
+
+    edgeQuakeDrainInFlight = true
+    try {
+      const summary = await plugin.drainPending({ limit })
+      if (summary.processed > 0) {
+        console.log("[data-core edgequake drain]", summary)
+      }
+    } catch (error) {
+      console.error("data-core edgequake drain failed:", error)
+    } finally {
+      edgeQuakeDrainInFlight = false
+    }
+  }
+
+  if (plugin) {
+    edgeQuakeDrainTimer = setInterval(() => {
+      void runEdgeQuakeDrain()
+    }, config.edgequake.drainIntervalMs)
+  }
 
   const app = express()
   app.use(express.json({
@@ -481,6 +509,7 @@ async function main(): Promise<void> {
       const merge = config.enableMergeWorker
         ? await store.processPendingMergeJobs(20)
         : { processed: 0, completed: 0, failed: 0 }
+      await runEdgeQuakeDrain(config.edgequake.drainBatch)
 
       return res.json({
         role: config.role,
@@ -498,6 +527,10 @@ async function main(): Promise<void> {
   })
 
   const shutdown = async () => {
+    if (edgeQuakeDrainTimer) {
+      clearInterval(edgeQuakeDrainTimer)
+      edgeQuakeDrainTimer = null
+    }
     server.close(() => {})
     await db.close().catch(() => {})
     process.exit(0)

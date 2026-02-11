@@ -88,6 +88,42 @@ test("parseHookCreateInput rejects non-allowlisted webhook targets", () => {
   )
 })
 
+test("parseHookCreateInput enforces ngrok opt-in flag", () => {
+  assert.throws(
+    () =>
+      withEnv(
+        {
+          HOOK_WEBHOOK_TARGET_ALLOWLIST: "localhost",
+          HOOK_WEBHOOK_ALLOW_NGROK: "false",
+        },
+        () =>
+          parseHookCreateInput({
+            name: "Ngrok disabled",
+            matcher: "deploy",
+            type: "webhook",
+            webhookUrl: "https://demo.ngrok-free.app/events",
+          }),
+      ),
+    HookValidationError,
+  )
+
+  const parsed = withEnv(
+    {
+      HOOK_WEBHOOK_TARGET_ALLOWLIST: "localhost",
+      HOOK_WEBHOOK_ALLOW_NGROK: "true",
+    },
+    () =>
+      parseHookCreateInput({
+        name: "Ngrok enabled",
+        matcher: "deploy",
+        type: "webhook",
+        webhookUrl: "https://demo.ngrok-free.app/events",
+      }),
+  )
+
+  assert.equal(parsed.command, "https://demo.ngrok-free.app/events")
+})
+
 test("parseHookUpdateInput requires webhook target when switching type to webhook", () => {
   assert.throws(
     () =>

@@ -62,6 +62,7 @@ export interface CloudCatalogMachineType {
   diskGb: number
   architecture: string | null
   locations: string[]
+  priceHourlyByLocationEur: Record<string, number>
   priceHourlyEur: number | null
 }
 

@@ -67,6 +67,32 @@ docker compose down -v
 docker compose up -d
 ```
 
+## Optional: llm-graph-builder ingest stack
+
+Use this only when running `knowledge:ingest` with provider `llm_graph_builder`.
+
+1. Clone `llm-graph-builder` beside this repo (or set `LGB_REPO_PATH` to your clone):
+
+```bash
+cd ..
+git clone https://github.com/neo4j-labs/llm-graph-builder.git
+```
+
+2. Start Neo4j + llm-graph-builder backend using the overlay:
+
+```bash
+cd /path/to/OrchWiz/dev-local
+docker compose -f docker-compose.yml -f docker-compose.ingest.llm-graph-builder.yml up -d
+```
+
+3. Run ingest from the node app workspace:
+
+```bash
+cd /path/to/OrchWiz/node
+npm run knowledge:ingest:dry-run
+npm run knowledge:ingest
+```
+
 ## Environment Variables
 
 Copy `.env.example` to `../node/.env` and configure:

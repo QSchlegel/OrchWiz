@@ -1,6 +1,7 @@
 import test from "node:test"
 import assert from "node:assert/strict"
 import {
+  parseKnowledgeBackend,
   parseKnowledgeResyncScope,
   parseKnowledgeScope,
   parseTopK,
@@ -15,6 +16,14 @@ test("parseKnowledgeScope and parseKnowledgeResyncScope normalize values", () =>
   assert.equal(parseKnowledgeResyncScope("ship"), "ship")
   assert.equal(parseKnowledgeResyncScope("fleet"), "fleet")
   assert.equal(parseKnowledgeResyncScope("anything"), "all")
+})
+
+test("parseKnowledgeBackend normalizes values and defaults to auto", () => {
+  assert.equal(parseKnowledgeBackend("auto"), "auto")
+  assert.equal(parseKnowledgeBackend("vault-local"), "vault-local")
+  assert.equal(parseKnowledgeBackend("data-core-merged"), "data-core-merged")
+  assert.equal(parseKnowledgeBackend("unknown"), "auto")
+  assert.equal(parseKnowledgeBackend(null), "auto")
 })
 
 test("parseTopK clamps bounds and handles invalid input", () => {

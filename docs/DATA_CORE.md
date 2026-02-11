@@ -21,6 +21,7 @@ Private memory stays local to the node/agent host:
 - Ship cores push accepted local events to fleet hub
 - Ship cores pull deltas from fleet hub via cursor
 - Reconcile endpoint runs pull + merge-worker pass
+- When EdgeQuake plugin is enabled, reconcile also runs a bounded plugin drain pass
 
 ## API
 
@@ -87,6 +88,23 @@ Created by `ensureSchema` in `services/data-core/src/db.ts`:
 - `memory_merge_job`
 - `signer_registry`
 - `ingest_idempotency`
+- `memory_plugin_edgequake_workspace`
+- `memory_plugin_edgequake_document`
+- `memory_plugin_edgequake_sync_job`
+
+## EdgeQuake plugin architecture
+
+Implemented in `services/data-core/src/plugins` as an internal adapter.
+
+- Integration depth: sync + query
+- Workspace partitioning: one workspace per `cluster + domain`
+- Write path: local event commit first, then async plugin sync queue
+- Supported sync operations: `upsert`, `move`, `delete`, `merge`
+- Retry model: exponential backoff with terminal `failed` state at configured max retries
+- Stale guard: skip queued job if its `event_id` is no longer latest for the canonical path
+- Query behavior: plugin-first for `mode=hybrid`, fail-open to local retrieval on plugin error/empty
+- `mode=lexical` stays local-only and unchanged
+- Domainless hybrid query fans out across `orchwiz`, `ship`, and `agent-public` workspaces and merges top-ranked mapped citations
 
 ### Node DB
 
@@ -125,6 +143,15 @@ Data-core `.env`:
 - `DATA_CORE_WALLET_ENCLAVE_VERIFY`
 - `WALLET_ENCLAVE_URL`
 - `WALLET_ENCLAVE_SHARED_SECRET`
+- `DATA_CORE_PLUGIN_EDGEQUAKE_ENABLED`
+- `DATA_CORE_PLUGIN_EDGEQUAKE_BASE_URL`
+- `DATA_CORE_PLUGIN_EDGEQUAKE_API_KEY`
+- `DATA_CORE_PLUGIN_EDGEQUAKE_BEARER_TOKEN`
+- `DATA_CORE_PLUGIN_EDGEQUAKE_TIMEOUT_MS`
+- `DATA_CORE_PLUGIN_EDGEQUAKE_TENANT_ID`
+- `DATA_CORE_PLUGIN_EDGEQUAKE_MAX_RETRIES`
+- `DATA_CORE_PLUGIN_EDGEQUAKE_DRAIN_BATCH`
+- `DATA_CORE_PLUGIN_EDGEQUAKE_DRAIN_INTERVAL_MS`
 
 ## Bootstrap import
 
@@ -136,3 +163,15 @@ npm run data-core:bootstrap-import
 ```
 
 The script scans non-private markdown vaults, canonicalizes paths, signs writes, upserts into data-core, and can run reconcile afterward.
+
+## EdgeQuake backfill workflow
+
+For existing documents after enabling plugin sync:
+
+```bash
+cd services/data-core
+npm run edgequake:backfill -- --dry-run
+npm run edgequake:backfill -- --domain ship --limit 500
+```
+
+Backfill scans non-deleted `memory_document_current` rows, enqueues upsert sync jobs, and drains queue batches to populate EdgeQuake mappings.

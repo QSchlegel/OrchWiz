@@ -47,12 +47,24 @@ model User {
   ownedNodeSources      NodeSource[]          @relation("NodeSourceOwner")
   skillCatalogEntries   SkillCatalogEntry[]
   skillImportRuns       SkillImportRun[]
+  toolCatalogEntries    ToolCatalogEntry[]
+  toolImportRuns        ToolImportRun[]
+  shipToolGrants        ShipToolGrant[]       @relation("ToolGrantOwner")
+  grantedShipToolGrants ShipToolGrant[]       @relation("ToolGrantGrantedBy")
+  shipToolAccessRequestsOwned ShipToolAccessRequest[] @relation("ToolAccessRequestOwner")
+  shipToolAccessRequestsRequested ShipToolAccessRequest[] @relation("ToolAccessRequestRequestedBy")
+  shipToolAccessRequestsReviewed ShipToolAccessRequest[] @relation("ToolAccessRequestReviewedBy")
   shipyardSecretTemplates ShipyardSecretTemplate[]
   shipyardCloudCredentials ShipyardCloudCredential[]
   shipyardCloudSshKeys   ShipyardCloudSshKey[]
   shipyardSshTunnels     ShipyardSshTunnel[]
+  shipyardBillingWallet  ShipyardBillingWallet?
+  shipyardBillingTopups  ShipyardBillingTopup[]
+  shipyardBillingLedgerEntries ShipyardBillingLedgerEntry[]
   newsletterSubscriptions NewsletterSubscription[]
   userMemorySigner      UserMemorySigner?
+  ragPerformanceSamples RagPerformanceSample[]
+  runtimePerformanceSamples RuntimePerformanceSample[]
 }
 
 enum UserRole {
@@ -157,6 +169,8 @@ model Session {
   observabilityTraces ObservabilityTrace[]
   bridgeAgentChatMembers BridgeAgentChatMember[] @relation("BridgeAgentChatMemberSession")
   bridgeAgentChatReplyJobs BridgeAgentChatReplyJob[] @relation("BridgeAgentChatReplyRecipientSession")
+  ragPerformanceSamples RagPerformanceSample[]
+  runtimePerformanceSamples RuntimePerformanceSample[]
 }
 
 enum SessionStatus {
@@ -846,6 +860,35 @@ enum SkillImportStatus {
   failed
 }
 
+enum ToolCatalogSource {
+  curated
+  custom_github
+  local
+  system
+}
+
+enum ToolImportStatus {
+  running
+  succeeded
+  failed
+}
+
+enum ShipToolGrantScope {
+  ship
+  bridge_crew
+}
+
+enum ShipToolAccessRequestStatus {
+  pending
+  approved
+  denied
+}
+
+enum ShipToolRequestScopePreference {
+  requester_only
+  ship
+}
+
 model SkillCatalogEntry {
   id           String           @id @default(cuid())
   ownerUserId  String
@@ -903,6 +946,123 @@ model SkillImportRun {
   @@index([ownerUserId, createdAt(sort: Desc)])
   @@index([ownerUserId, status, createdAt(sort: Desc)])
   @@index([catalogEntryId])
+}
+
+model ToolCatalogEntry {
+  id            String            @id @default(cuid())
+  ownerUserId   String
+  slug          String
+  name          String
+  description   String?
+  source        ToolCatalogSource
+  sourceKey     String
+  repo          String?
+  sourcePath    String?
+  sourceRef     String?
+  sourceUrl     String?
+  isInstalled   Boolean           @default(false)
+  isSystem      Boolean           @default(false)
+  installedPath String?
+  metadata      Json?
+  lastSyncedAt  DateTime          @default(now())
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  owner         User              @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+  importRuns    ToolImportRun[]
+  shipGrants    ShipToolGrant[]
+  accessRequests ShipToolAccessRequest[]
+
+  @@unique([ownerUserId, sourceKey])
+  @@index([ownerUserId, source])
+  @@index([ownerUserId, isInstalled])
+  @@index([ownerUserId, slug])
+  @@index([ownerUserId, updatedAt])
+}
+
+model ToolImportRun {
+  id            String           @id @default(cuid())
+  ownerUserId   String
+  catalogEntryId String?
+  mode          String
+  source        ToolCatalogSource?
+  toolSlug      String?
+  repo          String?
+  sourcePath    String?
+  sourceRef     String?
+  sourceUrl     String?
+  status        ToolImportStatus @default(running)
+  exitCode      Int?
+  stdout        String?
+  stderr        String?
+  errorMessage  String?
+  startedAt     DateTime         @default(now())
+  completedAt   DateTime?
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+
+  owner         User             @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+  catalogEntry  ToolCatalogEntry? @relation(fields: [catalogEntryId], references: [id], onDelete: SetNull)
+
+  @@index([ownerUserId, createdAt(sort: Desc)])
+  @@index([ownerUserId, status, createdAt(sort: Desc)])
+  @@index([catalogEntryId])
+}
+
+model ShipToolGrant {
+  id             String           @id @default(cuid())
+  ownerUserId    String
+  shipDeploymentId String
+  catalogEntryId String
+  scope          ShipToolGrantScope
+  scopeKey       String
+  bridgeCrewId   String?
+  grantedByUserId String?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  owner          User             @relation("ToolGrantOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
+  shipDeployment AgentDeployment  @relation(fields: [shipDeploymentId], references: [id], onDelete: Cascade)
+  catalogEntry   ToolCatalogEntry @relation(fields: [catalogEntryId], references: [id], onDelete: Cascade)
+  bridgeCrew     BridgeCrew?      @relation("ShipToolGrantBridgeCrew", fields: [bridgeCrewId], references: [id], onDelete: SetNull)
+  grantedBy      User?            @relation("ToolGrantGrantedBy", fields: [grantedByUserId], references: [id], onDelete: SetNull)
+  approvedRequests ShipToolAccessRequest[] @relation("ShipToolAccessRequestApprovedGrant")
+
+  @@unique([shipDeploymentId, catalogEntryId, scopeKey])
+  @@index([ownerUserId, shipDeploymentId, scope])
+  @@index([bridgeCrewId])
+  @@index([catalogEntryId])
+}
+
+model ShipToolAccessRequest {
+  id                String                        @id @default(cuid())
+  ownerUserId       String
+  shipDeploymentId  String
+  catalogEntryId    String
+  requesterBridgeCrewId String?
+  requestedByUserId String
+  scopePreference   ShipToolRequestScopePreference @default(requester_only)
+  status            ShipToolAccessRequestStatus   @default(pending)
+  rationale         String?
+  metadata          Json?
+  approvedGrantId   String?
+  reviewedByUserId  String?
+  reviewedAt        DateTime?
+  createdAt         DateTime                      @default(now())
+  updatedAt         DateTime                      @updatedAt
+
+  owner             User                          @relation("ToolAccessRequestOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
+  shipDeployment    AgentDeployment               @relation(fields: [shipDeploymentId], references: [id], onDelete: Cascade)
+  catalogEntry      ToolCatalogEntry              @relation(fields: [catalogEntryId], references: [id], onDelete: Cascade)
+  requesterBridgeCrew BridgeCrew?                 @relation("ShipToolAccessRequestRequesterBridgeCrew", fields: [requesterBridgeCrewId], references: [id], onDelete: SetNull)
+  requestedBy       User                          @relation("ToolAccessRequestRequestedBy", fields: [requestedByUserId], references: [id], onDelete: Cascade)
+  reviewedBy        User?                         @relation("ToolAccessRequestReviewedBy", fields: [reviewedByUserId], references: [id], onDelete: SetNull)
+  approvedGrant     ShipToolGrant?                @relation("ShipToolAccessRequestApprovedGrant", fields: [approvedGrantId], references: [id], onDelete: SetNull)
+
+  @@index([ownerUserId, shipDeploymentId, status, createdAt(sort: Desc)])
+  @@index([requesterBridgeCrewId])
+  @@index([catalogEntryId])
+  @@index([approvedGrantId])
 }
 
 model AgentAction {
@@ -1059,6 +1219,9 @@ model AgentDeployment {
   shipyardSshTunnels ShipyardSshTunnel[]
   bridgeAgentChatRooms BridgeAgentChatRoom[]
   bridgeAgentChatReplyJobs BridgeAgentChatReplyJob[]
+  shipToolGrants ShipToolGrant[]
+  shipToolAccessRequests ShipToolAccessRequest[]
+  ragPerformanceSamples RagPerformanceSample[] @relation("RagPerformanceSampleShipDeployment")
 
   @@index([nodeId])
   @@index([status])
@@ -1177,6 +1340,66 @@ model ShipyardSshTunnel {
   @@index([deploymentId])
   @@index([status])
   @@index([sshKeyId])
+}
+
+model ShipyardBillingWallet {
+  id          String                  @id @default(cuid())
+  userId      String                  @unique
+  currency    ShipyardBillingCurrency @default(eur)
+  balanceCents Int                    @default(0)
+  createdAt   DateTime                @default(now())
+  updatedAt   DateTime                @updatedAt
+
+  user        User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  topups      ShipyardBillingTopup[]
+  ledgerEntries ShipyardBillingLedgerEntry[]
+
+  @@index([userId])
+}
+
+model ShipyardBillingTopup {
+  id                     String                   @id @default(cuid())
+  walletId               String
+  userId                 String
+  stripeCheckoutSessionId String                 @unique
+  stripePaymentIntentId  String?
+  amountCents            Int
+  currency               ShipyardBillingCurrency @default(eur)
+  status                 ShipyardBillingTopupStatus @default(pending)
+  metadata               Json?
+  createdAt              DateTime                 @default(now())
+  updatedAt              DateTime                 @updatedAt
+  completedAt            DateTime?
+
+  wallet                 ShipyardBillingWallet    @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  user                   User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([walletId, createdAt])
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+}
+
+model ShipyardBillingLedgerEntry {
+  id             String                   @id @default(cuid())
+  walletId       String
+  userId         String
+  type           ShipyardBillingLedgerType
+  deltaCents     Int
+  balanceAfterCents Int
+  currency       ShipyardBillingCurrency @default(eur)
+  referenceType  String?
+  referenceId    String?
+  metadata       Json?
+  createdAt      DateTime                 @default(now())
+
+  wallet         ShipyardBillingWallet    @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  user           User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([walletId, createdAt])
+  @@index([userId, createdAt])
+  @@index([type, createdAt])
+  @@index([referenceType, referenceId])
+  @@unique([type, referenceType, referenceId])
 }
 
 enum VaultRagScopeType {
@@ -1359,6 +1582,24 @@ enum CloudProvider {
   hetzner
 }
 
+enum ShipyardBillingCurrency {
+  eur
+}
+
+enum ShipyardBillingTopupStatus {
+  pending
+  completed
+  expired
+  failed
+}
+
+enum ShipyardBillingLedgerType {
+  topup_credit
+  launch_debit
+  launch_refund
+  manual_adjustment
+}
+
 enum ShipyardTunnelStatus {
   stopped
   starting
@@ -1409,6 +1650,8 @@ model BridgeCrew {
   bridgeAgentChatMembers BridgeAgentChatMember[]
   bridgeAgentChatMessages BridgeAgentChatMessage[] @relation("BridgeAgentChatMessageSender")
   bridgeAgentChatReplyJobs BridgeAgentChatReplyJob[] @relation("BridgeAgentChatReplyRecipient")
+  shipToolGrants ShipToolGrant[] @relation("ShipToolGrantBridgeCrew")
+  shipToolAccessRequests ShipToolAccessRequest[] @relation("ShipToolAccessRequestRequesterBridgeCrew")
 
   @@unique([deploymentId, role])
   @@index([deploymentId])
@@ -1645,6 +1888,62 @@ model ObservabilityTraceDecryptAudit {
   trace     ObservabilityTrace @relation(fields: [traceId], references: [id], onDelete: Cascade)
   @@index([traceId, createdAt])
   @@index([actorType, createdAt])
+}
+
+model RagPerformanceSample {
+  id               String   @id @default(cuid())
+  userId           String?
+  sessionId        String?
+  shipDeploymentId String?
+  route            String
+  operation        String
+  requestedBackend String
+  effectiveBackend String
+  mode             String?
+  scope            String?
+  status           String
+  fallbackUsed     Boolean  @default(false)
+  durationMs       Int
+  resultCount      Int?
+  queryHash        String?
+  queryLength      Int?
+  errorCode        String?
+  createdAt        DateTime @default(now())
+
+  user           User?            @relation(fields: [userId], references: [id], onDelete: SetNull)
+  session        Session?         @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  shipDeployment AgentDeployment? @relation("RagPerformanceSampleShipDeployment", fields: [shipDeploymentId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+  @@index([status, createdAt])
+  @@index([effectiveBackend, createdAt])
+  @@index([route, operation, createdAt])
+  @@index([shipDeploymentId, createdAt])
+  @@index([userId, createdAt])
+}
+
+model RuntimePerformanceSample {
+  id             String   @id @default(cuid())
+  userId         String?
+  sessionId      String?
+  source         String
+  runtimeProfile String?
+  provider       String?
+  status         String
+  fallbackUsed   Boolean  @default(false)
+  durationMs     Int
+  errorCode      String?
+  createdAt      DateTime @default(now())
+
+  user    User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  session Session? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+  @@index([status, createdAt])
+  @@index([provider, createdAt])
+  @@index([runtimeProfile, createdAt])
+  @@index([source, createdAt])
+  @@index([userId, createdAt])
 }
 
 enum NewsletterSubscriptionStatus {

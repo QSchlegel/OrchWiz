@@ -74,6 +74,7 @@ export const SIDEBAR_NOTIFICATION_CHANNELS_BY_HREF: Record<string, NotificationC
   "/commands": ["commands"],
   "/permissions": Object.values(PERMISSIONS_TAB_NOTIFICATION_CHANNEL),
   "/hooks": ["hooks"],
+  "/performance": [],
   "/verification": ["verification"],
   "/security": ["security"],
   "/github/prs": ["github-prs"],

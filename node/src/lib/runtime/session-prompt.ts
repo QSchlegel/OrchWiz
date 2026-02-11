@@ -26,6 +26,8 @@ import {
 } from "@/lib/wallet-enclave/client"
 import { RuntimeProviderError } from "@/lib/runtime/errors"
 import { buildExocompCapabilityInstructionBlock } from "@/lib/subagents/capabilities"
+import { getShipToolRuntimeContext } from "@/lib/tools/requests"
+import { recordRuntimePerformanceSample } from "@/lib/performance/tracker"
 
 function asRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object") {
@@ -52,6 +54,129 @@ function resolvePromptSubagentId(metadata: Record<string, unknown>): string | nu
 
   const quartermaster = asRecord(metadata.quartermaster)
   return nonEmptyString(quartermaster.subagentId)
+}
+
+function resolveShipToolPromptContext(metadata: Record<string, unknown>): {
+  channel: "quartermaster" | "bridge" | null
+  shipDeploymentId: string | null
+  bridgeCrewId: string | null
+} {
+  const quartermaster = asRecord(metadata.quartermaster)
+  if (nonEmptyString(quartermaster.channel) === "ship-quartermaster") {
+    const shipContext = asRecord(metadata.shipContext)
+    return {
+      channel: "quartermaster",
+      shipDeploymentId: nonEmptyString(quartermaster.shipDeploymentId) || nonEmptyString(shipContext.shipDeploymentId),
+      bridgeCrewId: null,
+    }
+  }
+
+  const bridge = asRecord(metadata.bridge)
+  if (nonEmptyString(bridge.channel) === "bridge-agent") {
+    return {
+      channel: "bridge",
+      shipDeploymentId: nonEmptyString(bridge.shipDeploymentId),
+      bridgeCrewId: nonEmptyString(bridge.bridgeCrewId),
+    }
+  }
+
+  return {
+    channel: null,
+    shipDeploymentId: null,
+    bridgeCrewId: null,
+  }
+}
+
+function trimShipToolBlock(text: string, maxChars: number): string {
+  if (text.length <= maxChars) {
+    return text
+  }
+  return `${text.slice(0, maxChars - 23)}\n...[tools block trimmed]`
+}
+
+function buildShipToolInstructionBlock(args: {
+  channel: "quartermaster" | "bridge"
+  context: {
+    shipName: string
+    grantedTools: Array<{
+      slug: string
+      name: string
+      description: string | null
+      scope: "ship" | "bridge_crew"
+      bridgeCrewCallsign?: string
+    }>
+    requestableTools: Array<{
+      slug: string
+      name: string
+      description: string | null
+    }>
+  }
+}): string {
+  const grantedLines: string[] = []
+  const requestableLines: string[] = []
+
+  for (const item of args.context.grantedTools.slice(0, 10)) {
+    const scopeLabel = item.scope === "ship"
+      ? "ship-wide"
+      : `bridge-crew${item.bridgeCrewCallsign ? `:${item.bridgeCrewCallsign}` : ""}`
+    grantedLines.push(`- ${item.slug} (${scopeLabel})${item.description ? `: ${item.description}` : ""}`)
+  }
+
+  for (const item of args.context.requestableTools.slice(0, 12)) {
+    requestableLines.push(`- ${item.slug}${item.description ? `: ${item.description}` : ""}`)
+  }
+
+  const lines = [
+    "Available Tools:",
+    `Ship: ${args.context.shipName}`,
+    "Granted:",
+    ...(grantedLines.length > 0 ? grantedLines : ["- none"]),
+    "Requestable:",
+    ...(requestableLines.length > 0 ? requestableLines : ["- none"]),
+    "Request protocol:",
+    args.channel === "quartermaster"
+      ? "- Use the Ship Quartermaster panel action `File Tool Request` with catalogEntryId, requesterBridgeCrewId (optional), and rationale."
+      : "- Ask quartermaster to file a tool request; include tool slug and rationale. Do not assume immediate access.",
+  ]
+
+  return trimShipToolBlock(lines.join("\n"), 3_500)
+}
+
+export async function appendShipToolInstructions(args: {
+  userId: string
+  metadata: Record<string, unknown>
+  runtimePrompt: string
+}, deps?: {
+  getRuntimeContext: typeof getShipToolRuntimeContext
+}): Promise<string> {
+  const contextInfo = resolveShipToolPromptContext(args.metadata)
+  if (!contextInfo.channel || !contextInfo.shipDeploymentId) {
+    return args.runtimePrompt
+  }
+
+  const getRuntimeContext = deps?.getRuntimeContext || getShipToolRuntimeContext
+
+  try {
+    const context = await getRuntimeContext({
+      ownerUserId: args.userId,
+      shipDeploymentId: contextInfo.shipDeploymentId,
+      bridgeCrewId: contextInfo.channel === "bridge" ? contextInfo.bridgeCrewId : null,
+    })
+
+    if (!context) {
+      return args.runtimePrompt
+    }
+
+    const block = buildShipToolInstructionBlock({
+      channel: contextInfo.channel,
+      context,
+    })
+
+    return `${args.runtimePrompt}\n\n${block}`
+  } catch (error) {
+    console.error("Failed to append ship tool instructions to runtime prompt (fail-open):", error)
+    return args.runtimePrompt
+  }
 }
 
 export async function appendExocompCapabilityInstructions(args: {
@@ -258,10 +383,15 @@ export async function executeSessionPrompt(args: ExecuteSessionPromptArgs): Prom
     userPrompt: args.prompt,
     metadata: metadataAsRecord,
   })
-  const runtimePrompt = await appendExocompCapabilityInstructions({
+  const runtimePromptWithCapabilities = await appendExocompCapabilityInstructions({
     userId: args.userId,
     metadata: metadataAsRecord,
     runtimePrompt: promptResolution.runtimePrompt,
+  })
+  const runtimePrompt = await appendShipToolInstructions({
+    userId: args.userId,
+    metadata: metadataAsRecord,
+    runtimePrompt: runtimePromptWithCapabilities,
   })
 
   const dbSession = await prisma.session.findFirst({
@@ -300,6 +430,9 @@ export async function executeSessionPrompt(args: ExecuteSessionPromptArgs): Prom
     })
   }
 
+  const runtimeMetadata = asRecord(metadataAsRecord.runtime)
+  const runtimeProfile = nonEmptyString(runtimeMetadata.profile)
+  const runtimeStartedAt = Date.now()
   let runtimeResult: RuntimeResult
   try {
     runtimeResult = await runSessionRuntime({
@@ -307,8 +440,32 @@ export async function executeSessionPrompt(args: ExecuteSessionPromptArgs): Prom
       prompt: runtimePrompt,
       metadata: metadataRecord,
     })
+
+    await recordRuntimePerformanceSample({
+      userId: args.userId,
+      sessionId: args.sessionId,
+      source: "runtime.session-prompt",
+      runtimeProfile,
+      provider: runtimeResult.provider,
+      status: "success",
+      fallbackUsed: runtimeResult.fallbackUsed,
+      durationMs: Date.now() - runtimeStartedAt,
+    })
   } catch (error) {
+    const runtimeDurationMs = Date.now() - runtimeStartedAt
     if (error instanceof RuntimeProviderError) {
+      await recordRuntimePerformanceSample({
+        userId: args.userId,
+        sessionId: args.sessionId,
+        source: "runtime.session-prompt",
+        runtimeProfile,
+        provider: error.provider,
+        status: "error",
+        fallbackUsed: false,
+        durationMs: runtimeDurationMs,
+        errorCode: error.code,
+      })
+
       throw new SessionPromptError(error.message, error.status, {
         code: error.code,
         provider: error.provider,
@@ -316,6 +473,18 @@ export async function executeSessionPrompt(args: ExecuteSessionPromptArgs): Prom
         ...(error.details ? { details: error.details } : {}),
       })
     }
+
+    await recordRuntimePerformanceSample({
+      userId: args.userId,
+      sessionId: args.sessionId,
+      source: "runtime.session-prompt",
+      runtimeProfile,
+      provider: null,
+      status: "error",
+      fallbackUsed: false,
+      durationMs: runtimeDurationMs,
+      errorCode: "INTERNAL_ERROR",
+    })
     throw error
   }
 

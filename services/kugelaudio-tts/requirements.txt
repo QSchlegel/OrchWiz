@@ -1,0 +1,6 @@
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+numpy>=1.24.0
+soundfile>=0.12.0
+torch>=2.0.0
+kugelaudio-open @ git+https://github.com/Kugelaudio/kugelaudio-open.git

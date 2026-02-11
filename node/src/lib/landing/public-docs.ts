@@ -8,51 +8,54 @@ export interface PublicDocsTopic {
 const TOPICS: PublicDocsTopic[] = [
   {
     slug: "bridge-roleplay",
-    title: "Bridge Roleplay",
-    summary: "How XO answers in short bridge-style teasers instead of full deep dives.",
+    title: "Quick Brief",
+    summary: "Platform overview covering boundary, control, and traceability.",
     teaser:
-      "XO keeps answers tactical and short. You get a mission nudge, then a docs route for the full brief.",
+      "Start here, then move to trust and cloud controls.",
   },
   {
     slug: "slash-commands",
-    title: "Slash Commands",
-    summary: "Available commands to navigate sections and jump to docs topics.",
+    title: "Command Deck",
+    summary: "Command reference for navigation and landing actions.",
     teaser:
-      "Use /go <section>, /docs <topic>, /newsletter, /register, and /help to steer XO quickly.",
+      "Use /docs <topic> for deep links and /help for the full list.",
   },
   {
     slug: "passkey-guard",
-    title: "Passkey Guard",
-    summary: "Why XO chat is passkey-gated and how to unlock it with optional email.",
+    title: "Trust Gate",
+    summary: "Passkey requirements for protected XO chat access.",
     teaser:
-      "Passkey is required before chat unlock. Email is optional at first and can be linked later.",
+      "Register a passkey before using authenticated landing chat.",
   },
   {
     slug: "newsletter",
-    title: "Newsletter",
-    summary: "How teaser updates are subscribed, confirmed, and managed.",
+    title: "Updates",
+    summary: "Subscription flow for product and release updates.",
     teaser:
-      "Newsletter opt-in is available in XO and landing forms; welcome mail is sent when provider keys exist.",
+      "Use /newsletter or the landing form to subscribe.",
   },
   {
     slug: "cloud-toggle",
-    title: "Cloud Toggle",
-    summary: "Deployment kill switch for public cloud operators.",
+    title: "Cloud Control",
+    summary: "Environment controls for enabling or disabling landing XO.",
     teaser:
-      "Set LANDING_XO_ENABLED=false to disable XO UI and APIs without a code change.",
+      "Set LANDING_XO_ENABLED=false to disable XO in public cloud.",
   },
   {
     slug: "langfuse-tracing",
-    title: "Langfuse Tracing",
-    summary: "Telemetry emitted for chat, register, and newsletter flows.",
+    title: "Trace Ledger",
+    summary: "Tracing coverage for landing chat and conversion endpoints.",
     teaser:
-      "Landing traces are emitted through the existing observability pipeline with full request/response payloads.",
+      "Review traces for diagnostics, behavior checks, and audit support.",
   },
 ]
 
 const TOPIC_ALIASES = new Map<string, string>([
   ["bridge", "bridge-roleplay"],
   ["roleplay", "bridge-roleplay"],
+  ["xo", "bridge-roleplay"],
+  ["brief", "bridge-roleplay"],
+  ["quick-brief", "bridge-roleplay"],
   ["commands", "slash-commands"],
   ["command", "slash-commands"],
   ["passkey", "passkey-guard"],

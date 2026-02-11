@@ -1,14 +1,12 @@
 "use client"
 
-import { FormEvent, useEffect, useMemo, useState } from "react"
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react"
 import Link from "next/link"
 import {
-  ChevronDown,
   ChevronUp,
-  KeyRound,
+  FingerprintPattern,
   MessageSquareText,
   SendHorizontal,
-  UserRound,
 } from "lucide-react"
 import { authClient, signIn, useSession } from "@/lib/auth-client"
 import {
@@ -32,19 +30,27 @@ interface ChatResponse {
   error?: string
 }
 
-const PASSKEY_SOFT_GATE_ERROR = "Passkey unlock is required before XO can dispatch live responses."
+const SLASH_HINTS = [
+  { cmd: "/help", hint: "List commands" },
+  { cmd: "/go", hint: "Navigate to section" },
+  { cmd: "/docs", hint: "Browse docs" },
+  { cmd: "/register", hint: "Create profile" },
+  { cmd: "/newsletter", hint: "Subscribe" },
+]
 
 function randomId(prefix: string): string {
   return `${prefix}-${Math.random().toString(36).slice(2, 10)}`
 }
 
 export function XoTeaserChatWindow() {
-  const { data: session } = useSession()
+  const { data: session, refetch: refetchSession } = useSession()
+  const messagesEndRef = useRef<HTMLDivElement>(null)
   const [configLoading, setConfigLoading] = useState(true)
   const [featureEnabled, setFeatureEnabled] = useState(true)
   const [isOpen, setIsOpen] = useState(false)
   const [hasPasskey, setHasPasskey] = useState(false)
   const [passkeyLoading, setPasskeyLoading] = useState(false)
+  const [passkeyError, setPasskeyError] = useState<string | null>(null)
   const [input, setInput] = useState("")
   const [messages, setMessages] = useState<XoWindowChatMessage[]>(() => buildInitialXoMessages())
   const [chatLoading, setChatLoading] = useState(false)
@@ -127,6 +133,22 @@ export function XoTeaserChatWindow() {
     }
   }, [session?.user?.email, session?.user?.name])
 
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
+  }, [messages, chatLoading])
+
+  useEffect(() => {
+    if (!registerResult) return
+    const timer = setTimeout(() => setRegisterResult(null), 4000)
+    return () => clearTimeout(timer)
+  }, [registerResult])
+
+  useEffect(() => {
+    if (!newsletterResult) return
+    const timer = setTimeout(() => setNewsletterResult(null), 4000)
+    return () => clearTimeout(timer)
+  }, [newsletterResult])
+
   const pushAssistantMessage = (content: string) => {
     setMessages((current) => [
       ...current,
@@ -139,90 +161,85 @@ export function XoTeaserChatWindow() {
   }
 
   const handleAction = (action?: XoAction | null) => {
-    if (!action) {
-      return
-    }
-
+    if (!action) return
     if (action.type === "navigate" && action.href) {
       window.location.hash = action.href.startsWith("#") ? action.href.slice(1) : action.href
       return
     }
-
     if (action.type === "open_docs" && action.href) {
       window.location.href = action.href
       return
     }
-
     if (action.type === "open_register") {
-      setIsOpen(true)
       setShowRegisterPanel(true)
+      setShowNewsletterPanel(false)
       return
     }
-
     if (action.type === "open_newsletter") {
-      setIsOpen(true)
       setShowNewsletterPanel(true)
-    }
-  }
-
-  const handleSignInPasskey = async () => {
-    setErrorMessage(null)
-    setRegisterResult(null)
-    try {
-      const result = await signIn.passkey()
-      if (result.error) {
-        setErrorMessage(result.error.message || "Unable to sign in with passkey.")
-        return
-      }
-      window.location.reload()
-    } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "Unable to sign in with passkey.")
+      setShowRegisterPanel(false)
     }
   }
 
   const handleCreateGuestPasskey = async () => {
-    setErrorMessage(null)
-    setRegisterResult(null)
-    setPasskeyLoading(true)
-    try {
-      if (!session?.user?.id) {
-        const anonymousSignIn = (signIn as unknown as { anonymous?: () => Promise<{ error?: { message?: string } }> }).anonymous
-        if (!anonymousSignIn) {
-          setErrorMessage("Anonymous passkey flow is unavailable in this deployment.")
-          return
-        }
-        const anonymousResult = await anonymousSignIn()
-        if (anonymousResult?.error) {
-          setErrorMessage(anonymousResult.error.message || "Unable to create guest session.")
-          return
-        }
-      }
-
-      const passkeyResult = await authClient.passkey.addPasskey({
-        name: "XO Bridge Passkey",
-      })
-      if (passkeyResult.error) {
-        setErrorMessage(passkeyResult.error.message || "Unable to register passkey.")
+    if (!session?.user?.id) {
+      const anonymousSignIn = (signIn as unknown as { anonymous?: () => Promise<{ error?: { message?: string } }> }).anonymous
+      if (!anonymousSignIn) {
+        setPasskeyError("Anonymous passkey flow is unavailable in this deployment.")
         return
       }
+      const anonymousResult = await anonymousSignIn()
+      if (anonymousResult?.error) {
+        setPasskeyError(anonymousResult.error.message || "Unable to create guest session.")
+        return
+      }
+      await refetchSession()
+    }
 
-      setRegisterResult("Passkey secured. XO channel unlocked.")
-      window.location.reload()
+    const passkeyResult = await authClient.passkey.addPasskey({
+      name: "XO Bridge Passkey",
+    })
+    if (passkeyResult.error) {
+      setPasskeyError(passkeyResult.error.message || "Unable to register passkey.")
+      return
+    }
+
+    setHasPasskey(true)
+    await refetchSession()
+  }
+
+  const handlePasskeyUnlock = async () => {
+    setPasskeyError(null)
+    setPasskeyLoading(true)
+    try {
+      const result = await signIn.passkey()
+      if (!result.error) {
+        await refetchSession()
+        const { data, error } = await authClient.passkey.listUserPasskeys()
+        if (!error && Array.isArray(data) && data.length > 0) {
+          setHasPasskey(true)
+        }
+        return
+      }
+    } catch {
+      // signIn.passkey() threw (user cancelled) — fall through to guest creation
+    }
+
+    try {
+      await handleCreateGuestPasskey()
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "Unable to register passkey.")
+      setPasskeyError(error instanceof Error ? error.message : "Unable to register passkey.")
     } finally {
       setPasskeyLoading(false)
     }
   }
 
-  const handleSend = async (event: FormEvent) => {
-    event.preventDefault()
-    if (!input.trim() || chatLoading) {
-      return
-    }
+  const handleSend = async (event?: FormEvent, overridePrompt?: string) => {
+    if (event) event.preventDefault()
+    const prompt = (overridePrompt || input).trim()
+    if (!prompt || chatLoading) return
 
     setErrorMessage(null)
-    const prompt = input.trim()
     const nextUserMessage: XoWindowChatMessage = {
       id: randomId("user"),
       role: "user",
@@ -235,10 +252,10 @@ export function XoTeaserChatWindow() {
 
     setMessages((current) => [...current, nextUserMessage])
     setInput("")
+    setIsOpen(true)
 
     if (!unlocked) {
       pushAssistantMessage(buildPasskeySoftGateReply())
-      setErrorMessage(PASSKEY_SOFT_GATE_ERROR)
       return
     }
 
@@ -247,28 +264,19 @@ export function XoTeaserChatWindow() {
     try {
       const response = await fetch("/api/landing/chat", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          prompt,
-          history,
-        }),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt, history }),
       })
       const payload = (await response.json().catch(() => ({}))) as ChatResponse
       if (!response.ok) {
-        const errorText = payload.error || "XO channel is currently unavailable."
-        pushAssistantMessage(`XO: ${errorText}`)
-        setErrorMessage(errorText)
+        pushAssistantMessage(payload.error || "XO channel is currently unavailable.")
         return
       }
 
-      pushAssistantMessage(payload.reply || "XO: No update available.")
+      pushAssistantMessage(payload.reply || "No update available.")
       handleAction(payload.action)
     } catch {
-      const fallbackError = "Network link unstable. Try again."
-      pushAssistantMessage(`XO: ${fallbackError}`)
-      setErrorMessage(fallbackError)
+      pushAssistantMessage("Network link unstable. Try again.")
     } finally {
       setChatLoading(false)
     }
@@ -276,9 +284,7 @@ export function XoTeaserChatWindow() {
 
   const handleRegister = async (event: FormEvent) => {
     event.preventDefault()
-    if (registerLoading) {
-      return
-    }
+    if (registerLoading) return
 
     setRegisterLoading(true)
     setRegisterResult(null)
@@ -286,9 +292,7 @@ export function XoTeaserChatWindow() {
     try {
       const response = await fetch("/api/landing/register", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           email: registerEmail.trim() || undefined,
           name: registerName.trim() || undefined,
@@ -310,11 +314,11 @@ export function XoTeaserChatWindow() {
         setNewsletterEmail(payload.user.email)
       }
 
-      if (payload.newsletter?.status === "requires_email") {
-        setRegisterResult("Passkey registration complete. Add an email to enable newsletter delivery.")
-      } else {
-        setRegisterResult("Registration complete. XO profile updated.")
-      }
+      setRegisterResult(
+        payload.newsletter?.status === "requires_email"
+          ? "Registered. Add an email to enable newsletter."
+          : "Registration complete.",
+      )
     } catch {
       setErrorMessage("Unable to complete registration right now.")
     } finally {
@@ -324,18 +328,14 @@ export function XoTeaserChatWindow() {
 
   const handleNewsletter = async (event: FormEvent) => {
     event.preventDefault()
-    if (!newsletterEmail.trim() || newsletterLoading) {
-      return
-    }
+    if (!newsletterEmail.trim() || newsletterLoading) return
     setNewsletterLoading(true)
     setNewsletterResult(null)
     setErrorMessage(null)
     try {
       const response = await fetch("/api/landing/newsletter", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           email: newsletterEmail.trim(),
           name: registerName.trim() || undefined,
@@ -346,7 +346,7 @@ export function XoTeaserChatWindow() {
         setErrorMessage(payload.error || "Unable to subscribe right now.")
         return
       }
-      setNewsletterResult(`Subscribed ${payload.email || newsletterEmail.trim()} to XO briefings.`)
+      setNewsletterResult(`Subscribed ${payload.email || newsletterEmail.trim()}.`)
     } catch {
       setErrorMessage("Unable to subscribe right now.")
     } finally {
@@ -354,19 +354,40 @@ export function XoTeaserChatWindow() {
     }
   }
 
+  const slashHints = useMemo(() => {
+    const trimmed = input.trimStart()
+    if (!trimmed.startsWith("/")) return []
+    const typed = trimmed.toLowerCase()
+    return SLASH_HINTS.filter((h) => h.cmd.startsWith(typed) || typed === "/")
+  }, [input])
+
+  const renderMessageContent = (content: string) => {
+    const parts = content.split(/((?:^|\s)\/\w+(?:\s\w+)?)/g)
+    return parts.map((part, i) => {
+      if (/(?:^|\s)\/\w+/.test(part)) {
+        const trimmed = part.trimStart()
+        const leading = part.slice(0, part.length - trimmed.length)
+        return (
+          <span key={i}>
+            {leading}
+            <code className="xo-cmd-token">{trimmed}</code>
+          </span>
+        )
+      }
+      return <span key={i}>{part}</span>
+    })
+  }
+
   if (configLoading) {
     return (
       <section id="xo-bridge" className="px-6 md:px-12 pb-24">
-        <div className="max-w-6xl mx-auto">
-          <div className="xo-teaser-dark xo-closed-card">
-            <div>
-              <p className="xo-readout">XO Window</p>
-              <h2 className="xo-closed-title">Tactical teaser mode</h2>
-              <p className="xo-closed-copy">XO bridge channel is syncing before tactical controls can be opened.</p>
+        <div className="max-w-3xl mx-auto">
+          <div className="xo-teaser-dark xo-open-shell">
+            <div className="xo-input-shell">
+              <div className="xo-input-row">
+                <input type="text" disabled placeholder="syncing..." className="xo-input" />
+              </div>
             </div>
-            <button type="button" className="xo-open-btn" disabled>
-              Syncing...
-            </button>
           </div>
         </div>
       </section>
@@ -376,14 +397,16 @@ export function XoTeaserChatWindow() {
   if (!featureEnabled) {
     return (
       <section id="xo-bridge" className="px-6 md:px-12 pb-24">
-        <div className="max-w-6xl mx-auto">
-          <div className="xo-teaser-dark xo-feature-off">
-            <p className="xo-readout">XO unavailable</p>
-            <h2 className="xo-closed-title">Landing XO is disabled on this deployment</h2>
-            <p className="xo-closed-copy">Chat and unlock controls are intentionally off. Public docs remain available.</p>
-            <Link href="/docs" className="xo-open-btn">
-              Open docs
-            </Link>
+        <div className="max-w-3xl mx-auto">
+          <div className="xo-teaser-dark xo-open-shell">
+            <div className="xo-input-shell">
+              <div className="xo-input-row">
+                <input type="text" disabled placeholder="XO offline" className="xo-input" />
+                <Link href="/docs" className="xo-send-btn" aria-label="Open docs">
+                  <MessageSquareText className="w-4 h-4" />
+                </Link>
+              </div>
+            </div>
           </div>
         </div>
       </section>
@@ -392,204 +415,181 @@ export function XoTeaserChatWindow() {
 
   return (
     <section id="xo-bridge" className="px-6 md:px-12 pb-24">
-      <div className="max-w-6xl mx-auto">
-        <div className="xo-teaser-dark">
-          {!isOpen ? (
-            <div className="xo-closed-card">
-              <div>
-                <p className="xo-readout">XO Window</p>
-                <h2 className="xo-closed-title">Tactical teaser mode</h2>
-                <p className="xo-closed-copy">
-                  XO bridge is standing by. Open the deck to run slash commands, registration, and newsletter routing.
-                </p>
-              </div>
-              <button type="button" onClick={() => setIsOpen(true)} className="xo-open-btn" aria-expanded="false">
-                Open XO
-                <ChevronDown className="w-4 h-4" />
-              </button>
-            </div>
-          ) : (
-            <div className="xo-open-shell animate-slide-in">
-              <div className="xo-layout">
-                <div className="xo-panel xo-chat-panel">
-                  <div className="xo-panel-header">
-                    <div className="xo-panel-title-wrap">
-                      <div className="xo-panel-title">
-                        <MessageSquareText className="w-4 h-4" />
-                        XO Window
-                      </div>
-                      <span className="xo-readout">tease-mode</span>
-                    </div>
-                    <button type="button" onClick={() => setIsOpen(false)} className="xo-close-btn" aria-expanded="true">
-                      Close
-                      <ChevronUp className="w-4 h-4" />
-                    </button>
-                  </div>
-
-                  <div className="xo-chat-log card-scroll">
-                    {messages.map((message) => (
-                      <div
-                        key={message.id}
-                        className={`xo-msg ${message.role === "assistant" ? "xo-msg-assistant" : "xo-msg-user"}`}
-                      >
-                        {message.content}
-                      </div>
-                    ))}
-                    {chatLoading && <div className="xo-msg xo-msg-assistant">XO is composing...</div>}
-                  </div>
-
-                  <form onSubmit={handleSend} className="xo-input-shell">
-                    <div className="xo-input-row">
-                      <input
-                        type="text"
-                        value={input}
-                        onChange={(event) => setInput(event.target.value)}
-                        placeholder="Send XO a tactical prompt or slash command..."
-                        disabled={chatLoading}
-                        className="xo-input"
-                      />
-                      <button
-                        type="submit"
-                        disabled={!input.trim() || chatLoading}
-                        className="xo-send-btn"
-                        aria-label="Send"
-                      >
-                        <SendHorizontal className="w-4 h-4" />
-                      </button>
-                    </div>
-
-                    {!unlocked && (
-                      <div className="xo-softgate">
-                        <span className="xo-softgate-copy">Passkey lock active. Live XO dispatch requires unlock.</span>
-                        <button
-                          type="button"
-                          onClick={handleSignInPasskey}
-                          disabled={passkeyLoading}
-                          className="xo-softgate-btn"
-                        >
-                          <KeyRound className="w-3.5 h-3.5" />
-                          Sign in with passkey
-                        </button>
-                        <button
-                          type="button"
-                          onClick={handleCreateGuestPasskey}
-                          disabled={passkeyLoading}
-                          className="xo-softgate-btn xo-softgate-btn-secondary"
-                        >
-                          <UserRound className="w-3.5 h-3.5" />
-                          Create guest passkey
-                        </button>
-                      </div>
-                    )}
-                  </form>
+      <div className="max-w-3xl mx-auto">
+        <div className="xo-teaser-dark xo-open-shell">
+          {isOpen && (
+            <>
+              <div className="xo-panel-header">
+                <div className="xo-panel-title">
+                  <MessageSquareText className="w-4 h-4" />
+                  XO
                 </div>
-
-                <aside className="xo-panel xo-side-panel">
-                  <div>
-                    <h3 className="xo-side-title">Command deck</h3>
-                    <div className="xo-chip-wrap">
-                      {["/help", "/go start", "/docs cloud", "/newsletter", "/register"].map((command) => (
-                        <button key={command} type="button" onClick={() => setInput(command)} className="xo-chip">
-                          {command}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="xo-side-section">
-                    <div className="xo-side-row">
-                      <h3 className="xo-side-title">Registration</h3>
-                      <button
-                        type="button"
-                        onClick={() => setShowRegisterPanel((current) => !current)}
-                        className="xo-link-btn"
-                      >
-                        {showRegisterPanel ? "Hide" : "Open"}
-                      </button>
-                    </div>
-                    {showRegisterPanel && (
-                      <form onSubmit={handleRegister} className="xo-side-form">
-                        <input
-                          type="email"
-                          value={registerEmail}
-                          onChange={(event) => setRegisterEmail(event.target.value)}
-                          placeholder="Email (optional)"
-                          className="xo-field"
-                        />
-                        <input
-                          type="text"
-                          value={registerName}
-                          onChange={(event) => setRegisterName(event.target.value)}
-                          placeholder="Display name (optional)"
-                          className="xo-field"
-                        />
-                        <label className="xo-checkbox-row">
-                          <input
-                            type="checkbox"
-                            checked={newsletterOptIn}
-                            onChange={(event) => setNewsletterOptIn(event.target.checked)}
-                            className="xo-checkbox"
-                          />
-                          Opt into XO newsletter
-                        </label>
-                        <button type="submit" disabled={!unlocked || registerLoading} className="xo-submit-btn xo-submit-btn-violet">
-                          {registerLoading ? "Saving..." : "Save registration"}
-                        </button>
-                      </form>
-                    )}
-                  </div>
-
-                  <div className="xo-side-section">
-                    <div className="xo-side-row">
-                      <h3 className="xo-side-title">Newsletter</h3>
-                      <button
-                        type="button"
-                        onClick={() => setShowNewsletterPanel((current) => !current)}
-                        className="xo-link-btn"
-                      >
-                        {showNewsletterPanel ? "Hide" : "Open"}
-                      </button>
-                    </div>
-                    {showNewsletterPanel && (
-                      <form onSubmit={handleNewsletter} className="xo-side-form">
-                        <input
-                          type="email"
-                          value={newsletterEmail}
-                          onChange={(event) => setNewsletterEmail(event.target.value)}
-                          placeholder="you@company.com"
-                          className="xo-field"
-                        />
-                        <button
-                          type="submit"
-                          disabled={!newsletterEmail.trim() || newsletterLoading}
-                          className="xo-submit-btn xo-submit-btn-cyan"
-                        >
-                          {newsletterLoading ? "Subscribing..." : "Subscribe"}
-                        </button>
-                      </form>
-                    )}
-                  </div>
-
-                  <p className="xo-inline-note">
-                    Need full references? Open{" "}
-                    <Link href="/docs" className="xo-inline-link">
-                      /docs
-                    </Link>
-                    .
-                  </p>
-                </aside>
+                <button type="button" onClick={() => setIsOpen(false)} className="xo-close-btn" aria-expanded="true">
+                  Close
+                  <ChevronUp className="w-4 h-4" />
+                </button>
               </div>
-            </div>
-          )}
-        </div>
 
-        {(errorMessage || registerResult || newsletterResult) && (
-          <div className="mt-4 space-y-2">
-            {errorMessage && <p className="xo-feedback xo-feedback-error">{errorMessage}</p>}
-            {registerResult && <p className="xo-feedback xo-feedback-success">{registerResult}</p>}
-            {newsletterResult && <p className="xo-feedback xo-feedback-success">{newsletterResult}</p>}
+              <div className="xo-chat-log card-scroll animate-slide-in">
+                {messages.map((message) => (
+                  <div
+                    key={message.id}
+                    className={`xo-msg xo-msg-enter ${message.role === "assistant" ? "xo-msg-assistant" : "xo-msg-user"}`}
+                  >
+                    {renderMessageContent(message.content)}
+                  </div>
+                ))}
+                {chatLoading && (
+                  <div className="xo-msg xo-msg-enter xo-msg-assistant">
+                    <div className="xo-typing-dots">
+                      <span className="xo-typing-dot" style={{ animationDelay: "0ms" }} />
+                      <span className="xo-typing-dot" style={{ animationDelay: "160ms" }} />
+                      <span className="xo-typing-dot" style={{ animationDelay: "320ms" }} />
+                    </div>
+                  </div>
+                )}
+                <div ref={messagesEndRef} />
+              </div>
+            </>
+          )}
+
+          <div className="xo-input-shell">
+            {(errorMessage || passkeyError) && (
+              <p className="xo-inline-feedback xo-inline-feedback-error">
+                {passkeyError || errorMessage}
+              </p>
+            )}
+
+            {slashHints.length > 0 && (
+              <div className="xo-slash-hints animate-slide-in">
+                {slashHints.map((h) => (
+                  <button
+                    key={h.cmd}
+                    type="button"
+                    className="xo-slash-hint"
+                    onClick={() => {
+                      if (h.cmd === "/go" || h.cmd === "/docs") {
+                        setInput(h.cmd + " ")
+                      } else {
+                        void handleSend(undefined, h.cmd)
+                      }
+                    }}
+                  >
+                    <span className="xo-slash-hint-cmd">{h.cmd}</span>
+                    <span className="xo-slash-hint-label">{h.hint}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <form onSubmit={handleSend} className="xo-input-row">
+              <input
+                type="text"
+                value={input}
+                onChange={(event) => setInput(event.target.value)}
+                placeholder={unlocked ? "Type a message or /help..." : "Tap fingerprint to unlock..."}
+                disabled={chatLoading}
+                className="xo-input"
+              />
+              {unlocked ? (
+                <button
+                  type="submit"
+                  disabled={!input.trim() || chatLoading}
+                  className="xo-send-btn"
+                  aria-label="Send"
+                >
+                  <SendHorizontal className="w-4 h-4" />
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => void handlePasskeyUnlock()}
+                  disabled={passkeyLoading}
+                  className="xo-send-btn xo-send-btn-locked"
+                  aria-label="Unlock with passkey"
+                >
+                  {passkeyLoading ? (
+                    <span className="xo-spinner" />
+                  ) : (
+                    <FingerprintPattern className="w-4 h-4 xo-fingerprint-pulse" />
+                  )}
+                </button>
+              )}
+            </form>
+
+            {showRegisterPanel && (
+              <div className="xo-drawer animate-slide-in">
+                <div className="xo-drawer-header">
+                  <span className="xo-drawer-title">Register</span>
+                  <button type="button" onClick={() => setShowRegisterPanel(false)} className="xo-link-btn">
+                    Close
+                  </button>
+                </div>
+                <form onSubmit={handleRegister} className="xo-drawer-form">
+                  <input
+                    type="email"
+                    value={registerEmail}
+                    onChange={(event) => setRegisterEmail(event.target.value)}
+                    placeholder="Email (optional)"
+                    className="xo-field"
+                  />
+                  <input
+                    type="text"
+                    value={registerName}
+                    onChange={(event) => setRegisterName(event.target.value)}
+                    placeholder="Display name (optional)"
+                    className="xo-field"
+                  />
+                  <label className="xo-checkbox-row">
+                    <input
+                      type="checkbox"
+                      checked={newsletterOptIn}
+                      onChange={(event) => setNewsletterOptIn(event.target.checked)}
+                      className="xo-checkbox"
+                    />
+                    Opt into newsletter
+                  </label>
+                  <button type="submit" disabled={!unlocked || registerLoading} className="xo-submit-btn xo-submit-btn-violet">
+                    {registerLoading ? "Saving..." : "Save"}
+                  </button>
+                  {registerResult && (
+                    <p className="xo-inline-feedback xo-inline-feedback-success">{registerResult}</p>
+                  )}
+                </form>
+              </div>
+            )}
+
+            {showNewsletterPanel && (
+              <div className="xo-drawer animate-slide-in">
+                <div className="xo-drawer-header">
+                  <span className="xo-drawer-title">Newsletter</span>
+                  <button type="button" onClick={() => setShowNewsletterPanel(false)} className="xo-link-btn">
+                    Close
+                  </button>
+                </div>
+                <form onSubmit={handleNewsletter} className="xo-drawer-form">
+                  <input
+                    type="email"
+                    value={newsletterEmail}
+                    onChange={(event) => setNewsletterEmail(event.target.value)}
+                    placeholder="you@company.com"
+                    className="xo-field"
+                  />
+                  <button
+                    type="submit"
+                    disabled={!newsletterEmail.trim() || newsletterLoading}
+                    className="xo-submit-btn xo-submit-btn-cyan"
+                  >
+                    {newsletterLoading ? "Subscribing..." : "Subscribe"}
+                  </button>
+                  {newsletterResult && (
+                    <p className="xo-inline-feedback xo-inline-feedback-success">{newsletterResult}</p>
+                  )}
+                </form>
+              </div>
+            )}
           </div>
-        )}
+        </div>
       </div>
     </section>
   )

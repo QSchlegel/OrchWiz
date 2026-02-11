@@ -81,8 +81,10 @@ export async function handleGetMessages(
 ) {
   try {
     const actor = await deps.requireActor()
-    const take = request.nextUrl.searchParams.get("take")
-    const cursor = request.nextUrl.searchParams.get("cursor")
+    const takeRaw = request.nextUrl.searchParams.get("take")
+    const parsedTake = takeRaw ? Number.parseInt(takeRaw, 10) : NaN
+    const take = Number.isFinite(parsedTake) && parsedTake > 0 ? parsedTake : undefined
+    const cursor = request.nextUrl.searchParams.get("cursor") || undefined
 
     const result = await deps.listMessages({
       actor,

@@ -1,4 +1,17 @@
 const DEFAULT_HOOK_WEBHOOK_TARGET_ALLOWLIST = ["localhost", "127.0.0.1", "::1"]
+const NGROK_HOOK_WEBHOOK_TARGET_ALLOWLIST = [".ngrok-free.app", ".ngrok.app", ".ngrok.io"]
+
+function asBoolean(value: string | undefined, fallback: boolean): boolean {
+  if (value === undefined) return fallback
+  const normalized = value.trim().toLowerCase()
+  if (["1", "true", "yes", "on"].includes(normalized)) return true
+  if (["0", "false", "no", "off"].includes(normalized)) return false
+  return fallback
+}
+
+function allowNgrokWebhookTargets(): boolean {
+  return asBoolean(process.env.HOOK_WEBHOOK_ALLOW_NGROK, false)
+}
 
 function normalizeAllowlistEntry(value: string): string | null {
   const trimmed = value.trim()
@@ -11,16 +24,25 @@ function normalizeAllowlistEntry(value: string): string | null {
 
 export function configuredHookWebhookTargetAllowlist(): string[] {
   const configured = process.env.HOOK_WEBHOOK_TARGET_ALLOWLIST
-  if (!configured || !configured.trim()) {
-    return [...DEFAULT_HOOK_WEBHOOK_TARGET_ALLOWLIST]
+  const parsed = (!configured || !configured.trim())
+    ? [...DEFAULT_HOOK_WEBHOOK_TARGET_ALLOWLIST]
+    : configured
+        .split(",")
+        .map((entry) => normalizeAllowlistEntry(entry))
+        .filter((entry): entry is string => Boolean(entry))
+
+  const baseAllowlist = parsed.length > 0 ? parsed : [...DEFAULT_HOOK_WEBHOOK_TARGET_ALLOWLIST]
+  if (!allowNgrokWebhookTargets()) {
+    return baseAllowlist
   }
 
-  const parsed = configured
-    .split(",")
-    .map((entry) => normalizeAllowlistEntry(entry))
-    .filter((entry): entry is string => Boolean(entry))
+  for (const entry of NGROK_HOOK_WEBHOOK_TARGET_ALLOWLIST) {
+    if (!baseAllowlist.includes(entry)) {
+      baseAllowlist.push(entry)
+    }
+  }
 
-  return parsed.length > 0 ? parsed : [...DEFAULT_HOOK_WEBHOOK_TARGET_ALLOWLIST]
+  return baseAllowlist
 }
 
 export function isLoopbackHostname(hostname: string): boolean {

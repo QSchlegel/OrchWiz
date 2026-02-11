@@ -90,6 +90,7 @@ test("fetchHetznerCatalog maps API payload into catalog shape", async () => {
     assert.equal(catalog.machineTypes.length, 1)
     assert.equal(catalog.machineTypes[0].name, "cx22")
     assert.equal(catalog.machineTypes[0].priceHourlyEur, 0.013)
+    assert.deepEqual(catalog.machineTypes[0].priceHourlyByLocationEur, { nbg1: 0.013 })
     assert.equal(catalog.images.length, 1)
     assert.equal(catalog.images[0].name, "ubuntu-24.04")
     assert.equal(callCount, 3)

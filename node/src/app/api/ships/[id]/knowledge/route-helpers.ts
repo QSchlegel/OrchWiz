@@ -1,4 +1,5 @@
 import { resolveVaultRagMode, type VaultRagQueryMode } from "@/lib/vault/rag"
+import { parseRagBackend, type RagBackend } from "@/lib/memory/rag-backend"
 import {
   composeShipKnowledgePath,
   normalizeShipKnowledgePath,
@@ -17,6 +18,10 @@ export type KnowledgeResyncScope = "ship" | "fleet" | "all"
 
 export function parseKnowledgeQueryMode(value: string | null | undefined): VaultRagQueryMode {
   return resolveVaultRagMode(value)
+}
+
+export function parseKnowledgeBackend(value: string | null | undefined): RagBackend {
+  return parseRagBackend(value)
 }
 
 export function parseKnowledgeScope(value: string | null | undefined): ShipKnowledgeScope {

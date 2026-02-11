@@ -343,7 +343,7 @@ async function processBridgeAgentChatReplyJob(job: BridgeAgentChatReplyJob): Pro
       callsign: string
       role: string
       name: string
-      focus?: string
+      focus: string | undefined
     } => Boolean(candidate.stationKey))
 
   const sender = loaded.sourceMessage.senderBridgeCrew

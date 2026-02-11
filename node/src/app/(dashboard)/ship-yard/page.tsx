@@ -71,6 +71,7 @@ import { useShipSelection } from "@/lib/shipyard/useShipSelection"
 import { EmptyState, InlineNotice, SurfaceCard } from "@/components/dashboard/PageLayout"
 import { ShipQuartermasterPanel } from "@/components/quartermaster/ShipQuartermasterPanel"
 import { CloudUtilityPanel } from "@/components/shipyard/CloudUtilityPanel"
+import { ShipToolsPanel } from "@/components/shipyard/ShipToolsPanel"
 
 type InfrastructureKind = InfrastructureConfig["kind"]
 
@@ -141,6 +142,27 @@ interface LaunchMessage {
   type: "success" | "error" | "info"
   text: string
   suggestedCommands?: string[]
+}
+
+interface ShipyardBillingWalletState {
+  id: string
+  userId: string
+  balanceCents: number
+  currency: "eur"
+}
+
+interface ShipyardBillingQuoteState {
+  provider: "hetzner"
+  location: string
+  currency: "eur"
+  hours: number
+  convenienceFeePercent: number
+  baseCostCents: number
+  convenienceFeeCents: number
+  totalCents: number
+  walletBalanceCents: number
+  shortfallCents: number
+  canLaunch: boolean
 }
 
 interface BridgeConnectionSummary {
@@ -511,6 +533,16 @@ function formatRelativeTimestamp(value: string): string {
   return relativeTimeFormatter.format(Math.round(diffMs / dayMs), "day")
 }
 
+function formatEuroCents(value: number): string {
+  const normalized = Number.isFinite(value) ? value : 0
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "EUR",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(normalized / 100)
+}
+
 function formatDefaultShipName(index: number): string {
   return `USS-OrchWiz-${String(index).padStart(2, "0")}`
 }
@@ -806,6 +838,12 @@ export default function ShipYardPage() {
   const [showAdvancedInfrastructure, setShowAdvancedInfrastructure] = useState(false)
   const [isLaunching, setIsLaunching] = useState(false)
   const [message, setMessage] = useState<LaunchMessage | null>(null)
+  const [billingWallet, setBillingWallet] = useState<ShipyardBillingWalletState | null>(null)
+  const [billingQuote, setBillingQuote] = useState<ShipyardBillingQuoteState | null>(null)
+  const [isBillingLoading, setIsBillingLoading] = useState(false)
+  const [isRefueling, setIsRefueling] = useState(false)
+  const [refuelAmountEur, setRefuelAmountEur] = useState("5")
+  const [refuelingError, setRefuelingError] = useState<string | null>(null)
   const [ships, setShips] = useState<ShipDeployment[]>([])
   const [isLoadingShips, setIsLoadingShips] = useState(true)
   const [runtimeSnapshot, setRuntimeSnapshot] = useState<RuntimeSnapshot | null>(null)
@@ -844,6 +882,9 @@ export default function ShipYardPage() {
 
   const currentStep = steps[stepIndex]
   const [mainTab, setMainTab] = useState<MainTab>("build")
+  const requiresRefueling = form.deploymentProfile === "cloud_shipyard"
+  const launchBlockedByRefueling =
+    requiresRefueling && (!billingQuote || !billingQuote.canLaunch || isBillingLoading)
 
   const derivedNodeType = useMemo(
     () =>
@@ -1213,6 +1254,106 @@ export default function ShipYardPage() {
     ])
   }, [fetchBridgeCrew, fetchConnectionSummary, fetchRuntimeSnapshot, fetchShips])
 
+  const refreshRefueling = useCallback(
+    async (forceRefresh = false) => {
+      if (form.deploymentProfile !== "cloud_shipyard") {
+        setBillingWallet(null)
+        setBillingQuote(null)
+        setRefuelingError(null)
+        return
+      }
+
+      setIsBillingLoading(true)
+      try {
+        const [walletResponse, quoteResponse] = await Promise.all([
+          fetch("/api/ship-yard/billing/wallet"),
+          fetch("/api/ship-yard/billing/quote", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              cloudProvider: form.cloudProvider,
+              forceRefresh,
+            }),
+          }),
+        ])
+
+        const walletPayload = await walletResponse.json().catch(() => ({}))
+        if (walletResponse.ok && walletPayload?.wallet) {
+          setBillingWallet(walletPayload.wallet as ShipyardBillingWalletState)
+        } else {
+          setBillingWallet(null)
+        }
+
+        const quotePayload = await quoteResponse.json().catch(() => ({}))
+        if (!quoteResponse.ok) {
+          const apiMessage = extractApiErrorMessage(quotePayload) || `Unable to load refueling quote (HTTP ${quoteResponse.status})`
+          setRefuelingError(apiMessage)
+          setBillingQuote(null)
+          return
+        }
+
+        if (quotePayload?.wallet) {
+          setBillingWallet(quotePayload.wallet as ShipyardBillingWalletState)
+        }
+        setBillingQuote((quotePayload?.quote || null) as ShipyardBillingQuoteState | null)
+        setRefuelingError(null)
+      } catch (error) {
+        console.error("Failed to refresh Ship Yard refueling state:", error)
+        setBillingQuote(null)
+        setRefuelingError("Unable to load refueling state.")
+      } finally {
+        setIsBillingLoading(false)
+      }
+    },
+    [form.cloudProvider, form.deploymentProfile],
+  )
+
+  const handleRefuelCredits = useCallback(async () => {
+    const amountEur = Number.parseFloat(refuelAmountEur)
+    if (!Number.isFinite(amountEur) || amountEur < 5) {
+      setMessage({ type: "error", text: "Refuel amount must be at least €5.00." })
+      return
+    }
+
+    setIsRefueling(true)
+    setMessage(null)
+    try {
+      const response = await fetch("/api/ship-yard/billing/topups", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          amountEur,
+        }),
+      })
+
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        setMessage({
+          type: "error",
+          text: extractApiErrorMessage(payload) || `Refueling failed (HTTP ${response.status})`,
+        })
+        return
+      }
+
+      const checkoutUrl = typeof payload?.checkoutUrl === "string" ? payload.checkoutUrl : null
+      if (!checkoutUrl) {
+        setMessage({ type: "error", text: "Refueling checkout URL is missing." })
+        return
+      }
+
+      window.location.assign(checkoutUrl)
+    } catch (error) {
+      console.error("Refueling checkout failed:", error)
+      setMessage({ type: "error", text: "Refueling checkout failed" })
+    } finally {
+      setIsRefueling(false)
+    }
+  }, [refuelAmountEur])
+
   const fetchSecretTemplate = useCallback(
     async (deploymentProfile: DeploymentProfile, includeValues = true) => {
       setIsLoadingSecrets(true)
@@ -1470,6 +1611,58 @@ export default function ShipYardPage() {
     fetchSecretTemplate(form.deploymentProfile, true)
   }, [currentStep.id, fetchSecretTemplate, form.deploymentProfile])
 
+  useEffect(() => {
+    if (currentStep.id !== "review") {
+      return
+    }
+    if (form.deploymentProfile !== "cloud_shipyard") {
+      setBillingWallet(null)
+      setBillingQuote(null)
+      setRefuelingError(null)
+      return
+    }
+    void refreshRefueling(false)
+  }, [currentStep.id, form.deploymentProfile, refreshRefueling])
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return
+    }
+
+    const params = new URLSearchParams(window.location.search)
+    const billingStatus = params.get("billing")
+    if (!billingStatus) {
+      return
+    }
+
+    if (billingStatus === "success") {
+      setMessage({ type: "success", text: "Refueling submitted. Waiting for payment confirmation..." })
+      void refreshRefueling(true)
+      const timers = [1200, 3200, 6200].map((delayMs) =>
+        window.setTimeout(() => {
+          void refreshRefueling(true)
+        }, delayMs),
+      )
+
+      const cleaned = new URL(window.location.href)
+      cleaned.searchParams.delete("billing")
+      window.history.replaceState({}, "", cleaned.toString())
+
+      return () => {
+        for (const timer of timers) {
+          window.clearTimeout(timer)
+        }
+      }
+    }
+
+    if (billingStatus === "cancel") {
+      setMessage({ type: "info", text: "Refueling canceled before payment completion." })
+      const cleaned = new URL(window.location.href)
+      cleaned.searchParams.delete("billing")
+      window.history.replaceState({}, "", cleaned.toString())
+    }
+  }, [refreshRefueling])
+
   const canAdvance = useMemo(() => {
     if (currentStep.id === "mission") {
       return resolvedShipName.length > 0 && resolvedNodeId.length > 0
@@ -1491,6 +1684,14 @@ export default function ShipYardPage() {
   }
 
   const handleLaunch = async () => {
+    if (launchBlockedByRefueling) {
+      setMessage({
+        type: "error",
+        text: refuelingError || "Refueling required before launch.",
+      })
+      return
+    }
+
     setIsLaunching(true)
     setMessage(null)
     try {
@@ -1544,6 +1745,9 @@ export default function ShipYardPage() {
           text: typeof payload?.error === "string" ? payload.error : "Ship launch failed",
           ...(suggestedCommands.length > 0 ? { suggestedCommands } : {}),
         })
+        if (payload?.code === "INSUFFICIENT_CREDITS") {
+          await refreshRefueling(true)
+        }
         await refreshFleetView()
         return
       }
@@ -1557,6 +1761,8 @@ export default function ShipYardPage() {
       setForm(createInitialFormState())
       setCloudSshKeyFingerprint(null)
       setMainTab("ops")
+      setBillingQuote(null)
+      setBillingWallet(null)
       await refreshFleetView()
     } catch (error) {
       console.error("Ship launch failed:", error)
@@ -2762,6 +2968,97 @@ export default function ShipYardPage() {
                   )}
                 </div>
 
+                {form.deploymentProfile === "cloud_shipyard" && (
+                  <div className="rounded-lg border border-amber-400/35 bg-amber-500/10 p-3 dark:border-amber-300/30">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <p className="readout text-amber-700 dark:text-amber-300">Refueling Control</p>
+                        <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
+                          Cloud launch charges 30-day estimated provider cost plus a 10% convenience fee.
+                        </p>
+                      </div>
+                      <span className="rounded-md border border-amber-500/35 px-2 py-0.5 text-[10px] uppercase tracking-wide text-amber-700 dark:text-amber-300">
+                        Min refuel €5
+                      </span>
+                    </div>
+
+                    <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                      <div className="rounded-md border border-amber-500/30 bg-white/70 px-2 py-1.5 dark:bg-white/[0.03]">
+                        <p className="text-[11px] uppercase tracking-wide text-slate-500 dark:text-slate-400">Credits Balance</p>
+                        <p className="mt-1 text-xs font-semibold text-slate-800 dark:text-slate-100">
+                          {formatEuroCents(billingQuote?.walletBalanceCents ?? billingWallet?.balanceCents ?? 0)}
+                        </p>
+                      </div>
+                      <div className="rounded-md border border-amber-500/30 bg-white/70 px-2 py-1.5 dark:bg-white/[0.03]">
+                        <p className="text-[11px] uppercase tracking-wide text-slate-500 dark:text-slate-400">Provider Cost (30d)</p>
+                        <p className="mt-1 text-xs font-semibold text-slate-800 dark:text-slate-100">
+                          {formatEuroCents(billingQuote?.baseCostCents ?? 0)}
+                        </p>
+                      </div>
+                      <div className="rounded-md border border-amber-500/30 bg-white/70 px-2 py-1.5 dark:bg-white/[0.03]">
+                        <p className="text-[11px] uppercase tracking-wide text-slate-500 dark:text-slate-400">Convenience Fee (10%)</p>
+                        <p className="mt-1 text-xs font-semibold text-slate-800 dark:text-slate-100">
+                          {formatEuroCents(billingQuote?.convenienceFeeCents ?? 0)}
+                        </p>
+                      </div>
+                      <div className="rounded-md border border-amber-500/30 bg-white/70 px-2 py-1.5 dark:bg-white/[0.03]">
+                        <p className="text-[11px] uppercase tracking-wide text-slate-500 dark:text-slate-400">Launch Debit</p>
+                        <p className="mt-1 text-xs font-semibold text-slate-800 dark:text-slate-100">
+                          {formatEuroCents(billingQuote?.totalCents ?? 0)}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="mt-2 rounded-md border border-amber-500/30 bg-white/70 px-2 py-1.5 text-xs dark:bg-white/[0.03]">
+                      {isBillingLoading ? (
+                        <p className="text-slate-600 dark:text-slate-300">Loading refueling quote...</p>
+                      ) : refuelingError ? (
+                        <p className="text-rose-700 dark:text-rose-300">{refuelingError}</p>
+                      ) : billingQuote ? (
+                        billingQuote.canLaunch ? (
+                          <p className="text-emerald-700 dark:text-emerald-300">Refueling complete. Launch can proceed.</p>
+                        ) : (
+                          <p className="text-amber-700 dark:text-amber-300">
+                            Refueling required. Shortfall: {formatEuroCents(billingQuote.shortfallCents)}.
+                          </p>
+                        )
+                      ) : (
+                        <p className="text-slate-600 dark:text-slate-300">Refueling quote unavailable.</p>
+                      )}
+                    </div>
+
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <label className="text-xs text-slate-600 dark:text-slate-300">
+                        Refuel Amount (EUR)
+                      </label>
+                      <input
+                        type="number"
+                        min={5}
+                        step={0.01}
+                        value={refuelAmountEur}
+                        onChange={(event) => setRefuelAmountEur(event.target.value)}
+                        className="w-32 rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
+                      />
+                      <button
+                        type="button"
+                        onClick={handleRefuelCredits}
+                        disabled={isRefueling}
+                        className="rounded-md border border-amber-500/35 bg-amber-500/10 px-3 py-1.5 text-xs font-medium text-amber-700 disabled:opacity-50 dark:text-amber-300"
+                      >
+                        {isRefueling ? "Redirecting..." : "Refuel Credits"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void refreshRefueling(true)}
+                        disabled={isBillingLoading}
+                        className="rounded-md border border-slate-300/70 bg-white/70 px-3 py-1.5 text-xs text-slate-700 disabled:opacity-50 dark:border-white/12 dark:bg-white/[0.04] dark:text-slate-200"
+                      >
+                        Refresh Quote
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 <div className="rounded-lg border border-cyan-400/35 bg-cyan-500/8 p-3 dark:border-cyan-300/35">
                   <p className="readout text-cyan-700 dark:text-cyan-300">Resource Footprint</p>
                   <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
@@ -2939,7 +3236,7 @@ export default function ShipYardPage() {
 
             {currentStep.id === "review" && (
               <p className="mt-3 text-[11px] text-slate-500 dark:text-slate-400">
-                Warnings are advisory; launch remains available.
+                Warnings are advisory. Cloud launches require sufficient refueled credits.
               </p>
             )}
 
@@ -2966,7 +3263,7 @@ export default function ShipYardPage() {
                 <button
                   type="button"
                   onClick={handleLaunch}
-                  disabled={isLaunching || !canAdvance}
+                  disabled={isLaunching || !canAdvance || launchBlockedByRefueling}
                   className="inline-flex items-center gap-2 rounded-lg bg-gradient-to-r from-amber-500 to-orange-500 px-5 py-2 text-sm font-semibold text-white shadow-lg shadow-amber-500/20 transition-all hover:shadow-xl hover:shadow-amber-500/30 hover:brightness-110 disabled:opacity-40 active:scale-[0.98] dark:from-amber-500/90 dark:to-orange-500/90"
                 >
                   {isLaunching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Rocket className="h-4 w-4" />}
@@ -3439,6 +3736,12 @@ export default function ShipYardPage() {
             </div>
 
             <ShipQuartermasterPanel
+              shipDeploymentId={selectedShipDeploymentId}
+              shipName={selectedShip?.name || undefined}
+              className="mb-4"
+            />
+
+            <ShipToolsPanel
               shipDeploymentId={selectedShipDeploymentId}
               shipName={selectedShip?.name || undefined}
               className="mb-4"

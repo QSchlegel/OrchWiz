@@ -133,7 +133,7 @@ export function CloudUtilityPanel({
   const [isLoading, setIsLoading] = useState(false)
   const [message, setMessage] = useState<{ type: "info" | "error" | "success"; text: string } | null>(null)
 
-  const [providers, setProviders] = useState<ProviderReadinessResponse["providers"]>([])
+  const [providers, setProviders] = useState<NonNullable<ProviderReadinessResponse["providers"]>>([])
   const [credentialConfigured, setCredentialConfigured] = useState(false)
   const [credentialUpdatedAt, setCredentialUpdatedAt] = useState<string | null>(null)
   const [credentialToken, setCredentialToken] = useState("")

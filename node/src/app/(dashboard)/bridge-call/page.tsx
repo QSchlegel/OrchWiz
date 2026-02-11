@@ -22,6 +22,7 @@ import {
   SUBTITLE_CYCLE_MS,
   VOICE_UNDO_DELAY_MS,
 } from "@/lib/bridge-chat/voice"
+import { playBridgeTts, type BridgeTtsPlaybackHandle } from "@/lib/bridge-chat/tts"
 import { ActiveSpeakerMobile } from "@/components/bridge-call/ActiveSpeakerMobile"
 import { CallControlsBar } from "@/components/bridge-call/CallControlsBar"
 import { OfficerGrid } from "@/components/bridge-call/OfficerGrid"
@@ -108,6 +109,8 @@ export default function BridgeCallPage() {
   const revealTimerIdsRef = useRef<number[]>([])
   const processedRoundIdsRef = useRef<Set<string>>(new Set())
   const bootstrappedRoundsRef = useRef(false)
+  const activeLeadAudioRef = useRef<BridgeTtsPlaybackHandle | null>(null)
+  const leadPlaybackTokenRef = useRef(0)
 
   const selectedShip = useMemo(() => {
     if (!selectedShipDeploymentId) {
@@ -154,23 +157,66 @@ export default function BridgeCallPage() {
     setSubtitleCues((current) => [...current, cue].slice(-2))
   }, [])
 
+  const stopLeadAudioPlayback = useCallback(() => {
+    if (activeLeadAudioRef.current) {
+      activeLeadAudioRef.current.stop()
+      activeLeadAudioRef.current = null
+    }
+
+    if (speechSynthesisSupported()) {
+      window.speechSynthesis.cancel()
+    }
+  }, [])
+
   const speakLeadCue = useCallback(
-    (speaker: string, text: string) => {
-      if (!speakerOn || !speechSynthesisSupported()) {
+    (speaker: string, text: string, stationKey: BridgeStationKey | null) => {
+      if (!speakerOn) {
         return
       }
 
-      const utterance = new SpeechSynthesisUtterance(text)
-      utterance.rate = 1
-      utterance.pitch = 1
-      utterance.volume = 1
-      utterance.lang = "en-US"
-
-      window.speechSynthesis.cancel()
-      window.speechSynthesis.speak(utterance)
       addSubtitleCue(speaker, text)
+      leadPlaybackTokenRef.current += 1
+      const playbackToken = leadPlaybackTokenRef.current
+      stopLeadAudioPlayback()
+
+      const fallbackToBrowserSpeech = () => {
+        if (!speakerOn || playbackToken !== leadPlaybackTokenRef.current || !speechSynthesisSupported()) {
+          return
+        }
+
+        const utterance = new SpeechSynthesisUtterance(text)
+        utterance.rate = 1
+        utterance.pitch = 1
+        utterance.volume = 1
+        utterance.lang = "en-US"
+        window.speechSynthesis.cancel()
+        window.speechSynthesis.speak(utterance)
+      }
+
+      void (async () => {
+        try {
+          const playback = await playBridgeTts({
+            text,
+            stationKey,
+            surface: "bridge-call",
+          })
+
+          if (!speakerOn || playbackToken !== leadPlaybackTokenRef.current) {
+            playback.stop()
+            return
+          }
+
+          activeLeadAudioRef.current = playback
+          await playback.done.catch(() => {})
+          if (activeLeadAudioRef.current === playback) {
+            activeLeadAudioRef.current = null
+          }
+        } catch {
+          fallbackToBrowserSpeech()
+        }
+      })()
     },
-    [addSubtitleCue, speakerOn],
+    [addSubtitleCue, speakerOn, stopLeadAudioPlayback],
   )
 
   const revealRound = useCallback(
@@ -206,7 +252,7 @@ export default function BridgeCallPage() {
           const cueText = cueTextForResult(result)
 
           if (index === 0) {
-            speakLeadCue(result.callsign, cueText)
+            speakLeadCue(result.callsign, cueText, result.stationKey)
           } else {
             addSubtitleCue(result.callsign, cueText)
           }
@@ -469,7 +515,14 @@ export default function BridgeCallPage() {
     setLeadStationKey(null)
     setSpeakingStationKey(null)
     setSubtitleCues([])
-  }, [selectedShipDeploymentId])
+    stopLeadAudioPlayback()
+  }, [selectedShipDeploymentId, stopLeadAudioPlayback])
+
+  useEffect(() => {
+    if (!speakerOn) {
+      stopLeadAudioPlayback()
+    }
+  }, [speakerOn, stopLeadAudioPlayback])
 
   useEffect(() => {
     if (!isMobileLayout || pinnedStationKey || speakingStationKey || mobileCycleOrder.length <= 1) {
@@ -504,8 +557,9 @@ export default function BridgeCallPage() {
         window.clearTimeout(undoTimerRef.current)
       }
       recognitionRef.current?.stop()
+      stopLeadAudioPlayback()
     }
-  }, [])
+  }, [stopLeadAudioPlayback])
 
   const latestRound = rounds[0] || null
 

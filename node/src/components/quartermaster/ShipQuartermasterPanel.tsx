@@ -1,11 +1,12 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { BookOpen, FilePlus2, Loader2, RefreshCw, Save, Search, ShieldCheck, Trash2, Wrench } from "lucide-react"
+import { BookOpen, FilePlus2, Loader2, PackagePlus, RefreshCw, Save, Search, ShieldCheck, Trash2, Wrench, X } from "lucide-react"
 import { useNotifications } from "@/components/notifications"
 import { QUARTERMASTER_TAB_NOTIFICATION_CHANNEL } from "@/lib/notifications/channels"
 import { formatUnreadBadgeCount } from "@/lib/notifications/store"
 import { useEventStream } from "@/lib/realtime/useEventStream"
+import type { ShipToolsStateDto } from "@/lib/tools/types"
 
 interface QuartermasterInteraction {
   id: string
@@ -98,6 +99,7 @@ interface KnowledgeSyncSummary {
 type QuartermasterTab = "chat" | "knowledge"
 type KnowledgeScope = "ship" | "fleet" | "all"
 type KnowledgeMode = "hybrid" | "lexical"
+type KnowledgeBackend = "auto" | "vault-local" | "data-core-merged"
 
 function providerFromInteraction(interaction: QuartermasterInteraction | null): {
   provider: string | null
@@ -208,9 +210,20 @@ export function ShipQuartermasterPanel({
   const [isSending, setIsSending] = useState(false)
   const [prompt, setPrompt] = useState("")
   const [error, setError] = useState<string | null>(null)
+  const [successMessage, setSuccessMessage] = useState<string | null>(null)
+
+  const [isToolRequestModalOpen, setIsToolRequestModalOpen] = useState(false)
+  const [isToolRequestOptionsLoading, setIsToolRequestOptionsLoading] = useState(false)
+  const [isToolRequestSubmitting, setIsToolRequestSubmitting] = useState(false)
+  const [toolRequestState, setToolRequestState] = useState<ShipToolsStateDto | null>(null)
+  const [toolRequestCatalogEntryId, setToolRequestCatalogEntryId] = useState("")
+  const [toolRequestBridgeCrewId, setToolRequestBridgeCrewId] = useState("")
+  const [toolRequestScopePreference, setToolRequestScopePreference] = useState<"requester_only" | "ship">("requester_only")
+  const [toolRequestRationale, setToolRequestRationale] = useState("")
 
   const [knowledgeScope, setKnowledgeScope] = useState<KnowledgeScope>("all")
   const [knowledgeMode, setKnowledgeMode] = useState<KnowledgeMode>("hybrid")
+  const [knowledgeBackend, setKnowledgeBackend] = useState<KnowledgeBackend>("auto")
   const [knowledgeQuery, setKnowledgeQuery] = useState("")
   const [knowledgeResults, setKnowledgeResults] = useState<KnowledgeCitation[]>([])
   const [knowledgeTree, setKnowledgeTree] = useState<KnowledgeTreeNode[]>([])
@@ -319,6 +332,34 @@ export function ShipQuartermasterPanel({
     }
   }, [])
 
+  const loadToolRequestOptions = useCallback(async () => {
+    if (!shipDeploymentId) {
+      setToolRequestState(null)
+      return
+    }
+
+    setIsToolRequestOptionsLoading(true)
+    try {
+      const response = await fetch(`/api/ships/${shipDeploymentId}/tools`, {
+        cache: "no-store",
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        throw new Error(typeof payload?.error === "string" ? payload.error : `HTTP ${response.status}`)
+      }
+
+      const parsed = payload as ShipToolsStateDto
+      setToolRequestState(parsed)
+      setError(null)
+    } catch (toolsError) {
+      console.error("Failed to load ship tool options:", toolsError)
+      setToolRequestState(null)
+      setError(toolsError instanceof Error ? toolsError.message : "Failed to load ship tool options")
+    } finally {
+      setIsToolRequestOptionsLoading(false)
+    }
+  }, [shipDeploymentId])
+
   useEffect(() => {
     void fetchState()
   }, [fetchState])
@@ -331,6 +372,12 @@ export function ShipQuartermasterPanel({
       setSelectedKnowledgePath(null)
       setKnowledgePathInput("")
       setKnowledgeDraft("")
+      setToolRequestState(null)
+      setToolRequestCatalogEntryId("")
+      setToolRequestBridgeCrewId("")
+      setToolRequestRationale("")
+      setToolRequestScopePreference("requester_only")
+      setIsToolRequestModalOpen(false)
       return
     }
 
@@ -375,6 +422,85 @@ export function ShipQuartermasterPanel({
 
   const providerState = providerFromInteraction(latestAiInteraction)
 
+  const toolRequestableEntries = useMemo(() => {
+    if (!toolRequestState) {
+      return []
+    }
+
+    const grantedEntryIds = new Set(toolRequestState.grants.map((grant) => grant.catalogEntryId))
+    return toolRequestState.catalog
+      .filter((entry) => entry.isInstalled && !grantedEntryIds.has(entry.id))
+      .sort((left, right) => left.slug.localeCompare(right.slug))
+  }, [toolRequestState])
+
+  useEffect(() => {
+    if (!isToolRequestModalOpen) {
+      return
+    }
+
+    if (toolRequestCatalogEntryId || toolRequestableEntries.length === 0) {
+      return
+    }
+
+    setToolRequestCatalogEntryId(toolRequestableEntries[0].id)
+  }, [isToolRequestModalOpen, toolRequestCatalogEntryId, toolRequestableEntries])
+
+  const openToolRequestModal = async () => {
+    if (!shipDeploymentId) {
+      return
+    }
+
+    setSuccessMessage(null)
+    setIsToolRequestModalOpen(true)
+    await loadToolRequestOptions()
+  }
+
+  const closeToolRequestModal = () => {
+    setIsToolRequestModalOpen(false)
+  }
+
+  const submitToolRequest = async () => {
+    if (!shipDeploymentId || !toolRequestCatalogEntryId || isToolRequestSubmitting) {
+      return
+    }
+
+    setIsToolRequestSubmitting(true)
+    try {
+      const response = await fetch(`/api/ships/${shipDeploymentId}/tools/requests`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          catalogEntryId: toolRequestCatalogEntryId,
+          requesterBridgeCrewId: toolRequestBridgeCrewId || null,
+          scopePreference: toolRequestScopePreference,
+          rationale: toolRequestRationale.trim() || null,
+          metadata: {
+            source: "ship_quartermaster_panel",
+          },
+        }),
+      })
+
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        throw new Error(typeof payload?.error === "string" ? payload.error : `HTTP ${response.status}`)
+      }
+
+      setToolRequestRationale("")
+      setToolRequestBridgeCrewId("")
+      setToolRequestScopePreference("requester_only")
+      setSuccessMessage("Tool request filed and queued for owner review.")
+      setError(null)
+      closeToolRequestModal()
+    } catch (requestError) {
+      console.error("Failed to submit tool access request:", requestError)
+      setError(requestError instanceof Error ? requestError.message : "Failed to submit tool request")
+    } finally {
+      setIsToolRequestSubmitting(false)
+    }
+  }
+
   const handleProvision = async () => {
     if (!shipDeploymentId || isProvisioning) {
       return
@@ -414,6 +540,7 @@ export function ShipQuartermasterPanel({
         },
         body: JSON.stringify({
           prompt: prompt.trim(),
+          backend: knowledgeBackend,
         }),
       })
 
@@ -454,6 +581,7 @@ export function ShipQuartermasterPanel({
         q: knowledgeQuery.trim(),
         scope: knowledgeScope,
         mode: knowledgeMode,
+        backend: knowledgeBackend,
         k: compact ? "6" : "12",
       })
       const response = await fetch(`/api/ships/${shipDeploymentId}/knowledge?${params.toString()}`)
@@ -560,6 +688,7 @@ export function ShipQuartermasterPanel({
         body: JSON.stringify({
           scope,
           mode: knowledgeMode,
+          backend: knowledgeBackend,
         }),
       })
       const payload = await response.json().catch(() => ({}))
@@ -621,6 +750,15 @@ export function ShipQuartermasterPanel({
               Fallback
             </span>
           )}
+          <button
+            type="button"
+            onClick={() => void openToolRequestModal()}
+            disabled={isToolRequestOptionsLoading}
+            className="inline-flex items-center gap-1 rounded-md border border-cyan-500/45 bg-cyan-500/10 px-2 py-1 text-cyan-700 disabled:opacity-50 dark:border-cyan-300/45 dark:text-cyan-200"
+          >
+            {isToolRequestOptionsLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <PackagePlus className="h-3.5 w-3.5" />}
+            File Tool Request
+          </button>
         </div>
       </div>
 
@@ -746,6 +884,22 @@ export function ShipQuartermasterPanel({
                   >
                     <option value="hybrid">Hybrid</option>
                     <option value="lexical">Lexical</option>
+                  </select>
+                  <select
+                    value={knowledgeBackend}
+                    onChange={(event) => {
+                      const next = event.target.value
+                      if (next === "vault-local" || next === "data-core-merged") {
+                        setKnowledgeBackend(next)
+                        return
+                      }
+                      setKnowledgeBackend("auto")
+                    }}
+                    className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-800 dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-100"
+                  >
+                    <option value="auto">Backend: Auto</option>
+                    <option value="vault-local">Backend: Vault Local</option>
+                    <option value="data-core-merged">Backend: Data Core Merged</option>
                   </select>
                   <div className="relative min-w-[180px] flex-1">
                     <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
@@ -942,6 +1096,118 @@ export function ShipQuartermasterPanel({
           )}
         </>
       ) : null}
+
+      {isToolRequestModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4">
+          <div className="w-full max-w-lg rounded-xl border border-slate-300/80 bg-white p-4 shadow-2xl dark:border-white/15 dark:bg-slate-900">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-[11px] uppercase tracking-wide text-slate-500 dark:text-slate-400">Quartermaster Action</p>
+                <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">File Tool Request</h4>
+              </div>
+              <button
+                type="button"
+                onClick={closeToolRequestModal}
+                className="inline-flex items-center justify-center rounded-md border border-slate-300 p-1 text-slate-600 hover:bg-slate-100 dark:border-white/15 dark:text-slate-300 dark:hover:bg-white/[0.06]"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            {isToolRequestOptionsLoading ? (
+              <div className="mt-4 inline-flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Loading tool options...
+              </div>
+            ) : (
+              <div className="mt-4 space-y-3">
+                <label className="space-y-1">
+                  <span className="text-[11px] uppercase tracking-wide text-slate-500 dark:text-slate-400">Tool</span>
+                  <select
+                    value={toolRequestCatalogEntryId}
+                    onChange={(event) => setToolRequestCatalogEntryId(event.target.value)}
+                    className="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900 dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-100"
+                  >
+                    {toolRequestableEntries.length === 0 ? (
+                      <option value="">No installed tools pending grant</option>
+                    ) : (
+                      toolRequestableEntries.map((entry) => (
+                        <option key={entry.id} value={entry.id}>
+                          {entry.slug}
+                        </option>
+                      ))
+                    )}
+                  </select>
+                </label>
+
+                <label className="space-y-1">
+                  <span className="text-[11px] uppercase tracking-wide text-slate-500 dark:text-slate-400">Requester Bridge Crew (optional)</span>
+                  <select
+                    value={toolRequestBridgeCrewId}
+                    onChange={(event) => setToolRequestBridgeCrewId(event.target.value)}
+                    className="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900 dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-100"
+                  >
+                    <option value="">None (operator request)</option>
+                    {(toolRequestState?.bridgeCrew || []).map((member) => (
+                      <option key={member.id} value={member.id}>
+                        {member.callsign} ({member.role})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="space-y-1">
+                  <span className="text-[11px] uppercase tracking-wide text-slate-500 dark:text-slate-400">Scope Preference</span>
+                  <select
+                    value={toolRequestScopePreference}
+                    onChange={(event) => setToolRequestScopePreference(event.target.value as "requester_only" | "ship")}
+                    className="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900 dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-100"
+                  >
+                    <option value="requester_only">requester_only</option>
+                    <option value="ship">ship</option>
+                  </select>
+                </label>
+
+                <label className="space-y-1">
+                  <span className="text-[11px] uppercase tracking-wide text-slate-500 dark:text-slate-400">Rationale</span>
+                  <textarea
+                    value={toolRequestRationale}
+                    onChange={(event) => setToolRequestRationale(event.target.value)}
+                    rows={3}
+                    placeholder="State why this tool is needed."
+                    className="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900 dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-100"
+                  />
+                </label>
+              </div>
+            )}
+
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={closeToolRequestModal}
+                className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-100 dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-200"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void submitToolRequest()}
+                disabled={isToolRequestSubmitting || isToolRequestOptionsLoading || !toolRequestCatalogEntryId}
+                className="inline-flex items-center gap-2 rounded-md border border-cyan-500/45 bg-cyan-500/12 px-3 py-1.5 text-xs font-medium text-cyan-700 disabled:opacity-50 dark:border-cyan-300/45 dark:text-cyan-200"
+              >
+                {isToolRequestSubmitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <PackagePlus className="h-3.5 w-3.5" />}
+                {isToolRequestSubmitting ? "Submitting..." : "Submit Request"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {successMessage && (
+        <div className="mt-3 rounded-md border border-emerald-400/45 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-700 dark:text-emerald-200">
+          {successMessage}
+        </div>
+      )}
 
       {error && (
         <div className="mt-3 rounded-md border border-rose-400/45 bg-rose-500/10 px-3 py-2 text-xs text-rose-700 dark:text-rose-200">

@@ -29,12 +29,24 @@ import {
 import { buildOpenClawBridgeCrewContextBundle } from "@/lib/deployment/openclaw-context"
 import { resolveShipyardApiActorFromRequest } from "@/lib/shipyard/api-auth"
 import { ensureShipQuartermaster } from "@/lib/quartermaster/service"
+import { getCloudProviderHandler } from "@/lib/shipyard/cloud/providers/registry"
 import { readCloudProviderConfig } from "@/lib/shipyard/cloud/types"
 import {
   resolveCloudCredentialToken,
   resolveCloudSshPrivateKey,
   ShipyardCloudVaultError,
 } from "@/lib/shipyard/cloud/vault"
+import {
+  buildShipyardCloudLaunchQuote,
+  ShipyardBillingQuoteError,
+  withWalletBalance,
+} from "@/lib/shipyard/billing/pricing"
+import {
+  debitForLaunch,
+  getOrCreateWallet,
+  refundLaunchDebit,
+  ShipyardInsufficientCreditsError,
+} from "@/lib/shipyard/billing/wallet"
 
 export const dynamic = "force-dynamic"
 
@@ -292,6 +304,14 @@ export async function POST(request: NextRequest) {
       })),
     })
 
+    let launchMetadataState: Record<string, unknown> = {
+      ...((created.deployment.metadata as Record<string, unknown> | null) || {}),
+    }
+    let launchDebitedAmountCents = 0
+    let launchDebitLedgerEntryId: string | null = null
+    let launchRefundLedgerEntryId: string | null = null
+    let launchRefunded = false
+
     const failLaunch = async (args: {
       error: string
       code: string
@@ -299,11 +319,62 @@ export async function POST(request: NextRequest) {
       metadata?: Record<string, unknown>
       httpStatus?: number
     }) => {
+      if (launchDebitedAmountCents > 0 && !launchRefunded) {
+        try {
+          const refundResult = await refundLaunchDebit({
+            userId: ownerUserId,
+            amountCents: launchDebitedAmountCents,
+            launchReferenceId: created.deployment.id,
+            metadata: {
+              reason: "launch_failed",
+              failureCode: args.code,
+              failureError: args.error,
+            },
+          })
+          launchRefunded = true
+          launchRefundLedgerEntryId = refundResult.ledgerEntryId
+          launchMetadataState = {
+            ...launchMetadataState,
+            billing: {
+              ...(launchMetadataState.billing as Record<string, unknown> | undefined),
+              refund: {
+                refunded: true,
+                amountCents: launchDebitedAmountCents,
+                refundLedgerEntryId: refundResult.ledgerEntryId,
+                idempotent: refundResult.idempotent,
+              },
+            },
+          }
+        } catch (refundError) {
+          launchMetadataState = {
+            ...launchMetadataState,
+            billing: {
+              ...(launchMetadataState.billing as Record<string, unknown> | undefined),
+              refund: {
+                refunded: false,
+                amountCents: launchDebitedAmountCents,
+                error: (refundError as Error).message,
+              },
+            },
+          }
+        }
+      }
+
       const failureMetadata = {
-        ...(created.deployment.metadata as Record<string, unknown> | null),
+        ...launchMetadataState,
         ...(args.metadata || {}),
         deploymentError: args.error,
         deploymentErrorCode: args.code,
+        ...(launchDebitLedgerEntryId
+          ? {
+              billingDebitLedgerEntryId: launchDebitLedgerEntryId,
+            }
+          : {}),
+        ...(launchRefundLedgerEntryId
+          ? {
+              billingRefundLedgerEntryId: launchRefundLedgerEntryId,
+            }
+          : {}),
         ...(args.details
           ? { deploymentErrorDetails: args.details as Prisma.InputJsonValue }
           : {}),
@@ -421,8 +492,9 @@ export async function POST(request: NextRequest) {
         }
 
         let sshPrivateKey: string
+        let credentialToken: string
         try {
-          await resolveCloudCredentialToken({
+          credentialToken = await resolveCloudCredentialToken({
             userId: ownerUserId,
             provider: "hetzner",
             stored: credentials.tokenEnvelope,
@@ -439,6 +511,93 @@ export async function POST(request: NextRequest) {
               error: error.message,
               code: error.code,
               details: error.details,
+              httpStatus: error.status,
+            })
+          }
+          throw error
+        }
+
+        let launchQuote
+        try {
+          const catalog = await getCloudProviderHandler("hetzner").catalog({
+            token: credentialToken,
+          })
+          launchQuote = buildShipyardCloudLaunchQuote({
+            cloudProvider,
+            catalog,
+          })
+        } catch (error) {
+          if (error instanceof ShipyardBillingQuoteError) {
+            return await failLaunch({
+              error: error.message,
+              code: error.code,
+              httpStatus: error.status,
+            })
+          }
+          return await failLaunch({
+            error: "Failed to generate cloud launch billing quote.",
+            code: "BILLING_QUOTE_UNAVAILABLE",
+            httpStatus: 422,
+          })
+        }
+
+        const wallet = await getOrCreateWallet({ userId: ownerUserId })
+        const quoteWithBalance = withWalletBalance(launchQuote, wallet.balanceCents)
+        if (!quoteWithBalance.canLaunch) {
+          return await failLaunch({
+            error: "Insufficient credits. Refuel before launching managed cloud service.",
+            code: "INSUFFICIENT_CREDITS",
+            details: {
+              requiredCents: quoteWithBalance.totalCents,
+              balanceCents: quoteWithBalance.walletBalanceCents,
+              shortfallCents: quoteWithBalance.shortfallCents,
+            },
+            httpStatus: 402,
+          })
+        }
+
+        try {
+          const debitResult = await debitForLaunch({
+            userId: ownerUserId,
+            amountCents: launchQuote.totalCents,
+            launchReferenceId: created.deployment.id,
+            metadata: {
+              provider: "hetzner",
+              location: launchQuote.location,
+              baseCostCents: launchQuote.baseCostCents,
+              convenienceFeeCents: launchQuote.convenienceFeeCents,
+              totalCents: launchQuote.totalCents,
+              quoteHours: launchQuote.hours,
+            },
+          })
+
+          launchDebitedAmountCents = launchQuote.totalCents
+          launchDebitLedgerEntryId = debitResult.ledgerEntryId
+          launchMetadataState = {
+            ...launchMetadataState,
+            billing: {
+              provider: "hetzner",
+              location: launchQuote.location,
+              quoteHours: launchQuote.hours,
+              currency: launchQuote.currency,
+              baseCostCents: launchQuote.baseCostCents,
+              convenienceFeePercent: launchQuote.convenienceFeePercent,
+              convenienceFeeCents: launchQuote.convenienceFeeCents,
+              totalDebitedCents: launchQuote.totalCents,
+              debitLedgerEntryId: debitResult.ledgerEntryId,
+              walletBalanceAfterDebitCents: debitResult.balanceAfterCents,
+            },
+          }
+        } catch (error) {
+          if (error instanceof ShipyardInsufficientCreditsError) {
+            return await failLaunch({
+              error: "Insufficient credits. Refuel before launching managed cloud service.",
+              code: error.code,
+              details: {
+                requiredCents: error.requiredCents,
+                balanceCents: error.balanceCents,
+                shortfallCents: error.shortfallCents,
+              },
               httpStatus: error.status,
             })
           }
@@ -494,7 +653,7 @@ export async function POST(request: NextRequest) {
     }
 
     const successMetadata = {
-      ...(created.deployment.metadata as Record<string, unknown> | null),
+      ...launchMetadataState,
       ...(adapterResult.metadata || {}),
       ...(adapterResult.error ? { deploymentError: adapterResult.error } : {}),
     }

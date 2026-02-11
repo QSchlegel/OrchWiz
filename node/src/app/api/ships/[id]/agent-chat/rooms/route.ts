@@ -83,7 +83,9 @@ export async function handleGetRooms(
   try {
     const actor = await deps.requireActor()
     const memberBridgeCrewId = asNonEmptyString(request.nextUrl.searchParams.get("memberBridgeCrewId"))
-    const take = request.nextUrl.searchParams.get("take")
+    const takeRaw = request.nextUrl.searchParams.get("take")
+    const parsedTake = takeRaw ? Number.parseInt(takeRaw, 10) : NaN
+    const take = Number.isFinite(parsedTake) && parsedTake > 0 ? parsedTake : undefined
 
     const result = await deps.listRooms({
       actor,
@@ -111,7 +113,7 @@ export async function handlePostRooms(
       actor,
       shipDeploymentId,
       input: {
-        roomType: body.roomType,
+        roomType: typeof body.roomType === "string" ? body.roomType : "",
         title: asNonEmptyString(body.title),
         memberBridgeCrewIds: asStringArray(body.memberBridgeCrewIds),
         createdByBridgeCrewId: asNonEmptyString(body.createdByBridgeCrewId),

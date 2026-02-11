@@ -31,6 +31,7 @@ import {
 } from "lucide-react"
 import { NodeInfoCard } from "@/components/orchestration/NodeInfoCard"
 import { ShipQuartermasterPanel } from "@/components/quartermaster/ShipQuartermasterPanel"
+import { ShipToolsPanel } from "@/components/shipyard/ShipToolsPanel"
 import { useEventStream } from "@/lib/realtime/useEventStream"
 
 // ---------------------------------------------------------------------------
@@ -256,7 +257,7 @@ function relativeTime(value: string | null | undefined): string {
 // ---------------------------------------------------------------------------
 // Detail Panel Tab
 // ---------------------------------------------------------------------------
-type DetailTab = "overview" | "quartermaster"
+type DetailTab = "overview" | "quartermaster" | "tools"
 
 // ---------------------------------------------------------------------------
 // Page
@@ -952,6 +953,7 @@ function DetailPanel({
         {([
           { key: "overview" as const, icon: Info, label: "Overview" },
           { key: "quartermaster" as const, icon: MessageSquare, label: "Quartermaster" },
+          { key: "tools" as const, icon: Package, label: "Tools" },
         ]).map(t => (
           <button
             key={t.key}
@@ -1031,9 +1033,13 @@ function DetailPanel({
               </>
             )}
           </div>
-        ) : (
+        ) : tab === "quartermaster" ? (
           <div className="animate-slide-in">
             <ShipQuartermasterPanel shipDeploymentId={ship.id} shipName={ship.name} />
+          </div>
+        ) : (
+          <div className="animate-slide-in">
+            <ShipToolsPanel shipDeploymentId={ship.id} shipName={ship.name} compact />
           </div>
         )}
       </div>

@@ -24,6 +24,7 @@ import {
   FolderKanban,
   Database,
   Video,
+  Gauge,
 } from "lucide-react"
 // Github is imported from lucide-react as "Github"
 import { Github } from "lucide-react"
@@ -106,9 +107,10 @@ export const sidebarNav: NavGroup[] = [
   },
   {
     key: "intel",
-    label: "Intel",
+    label: "Ready Room",
     icon: ScanSearch,
     items: [
+      navItem("/performance", "Performance", Gauge),
       navItem("/verification", "Verification", BadgeCheck),
       navItem("/security", "Security", ShieldCheck),
       navItem("/github/prs", "GitHub PRs", Github),

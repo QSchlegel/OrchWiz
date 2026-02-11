@@ -15,6 +15,7 @@ import {
   SUBTITLE_FADE_MS,
   VOICE_UNDO_DELAY_MS,
 } from "@/lib/bridge-chat/voice"
+import { playBridgeTts, type BridgeTtsPlaybackHandle } from "@/lib/bridge-chat/tts"
 import type { BridgeStationKey } from "@/lib/bridge/stations"
 
 interface BridgeThreadRecord {
@@ -126,11 +127,15 @@ export function BridgeChatUtility({ operatorLabel }: BridgeChatUtilityProps) {
   const subtitleTickerRef = useRef<number | null>(null)
   const seenAssistantMessageIdsRef = useRef<Set<string>>(new Set())
   const bootstrappedThreadSubtitleRef = useRef<Set<string>>(new Set())
+  const activePlaybackRef = useRef<BridgeTtsPlaybackHandle | null>(null)
+  const playbackQueueRef = useRef<Promise<void>>(Promise.resolve())
+  const playbackGenerationRef = useRef(0)
 
   const selectedThread = useMemo(
     () => threads.find((thread) => thread.id === selectedThreadId) || null,
     [threads, selectedThreadId],
   )
+  const selectedStationKey = selectedThread?.stationKey || null
 
   const generalThread = useMemo(
     () => threads.find((thread) => thread.stationKey === null) || null,
@@ -270,24 +275,92 @@ export function BridgeChatUtility({ operatorLabel }: BridgeChatUtilityProps) {
     ].slice(-2))
   }, [])
 
-  const speakAssistantMessage = useCallback(
-    (content: string) => {
-      if (!voiceMode || !speakReplies || !speechSynthesisSupported()) {
-        return
-      }
+  const resetPlaybackQueue = useCallback(() => {
+    playbackGenerationRef.current += 1
+    playbackQueueRef.current = Promise.resolve()
+  }, [])
 
-      if (bargeInMode === "interrupt") {
-        window.speechSynthesis.cancel()
-      }
+  const stopAssistantPlayback = useCallback(() => {
+    if (activePlaybackRef.current) {
+      activePlaybackRef.current.stop()
+      activePlaybackRef.current = null
+    }
 
+    if (speechSynthesisSupported()) {
+      window.speechSynthesis.cancel()
+    }
+  }, [])
+
+  const speakWithBrowserSynthesis = useCallback((content: string) => {
+    if (!speechSynthesisSupported()) {
+      return Promise.resolve()
+    }
+
+    return new Promise<void>((resolve) => {
       const utterance = new SpeechSynthesisUtterance(content)
       utterance.rate = 1
       utterance.pitch = 1
       utterance.volume = 1
       utterance.lang = "en-US"
+      utterance.onend = () => resolve()
+      utterance.onerror = () => resolve()
       window.speechSynthesis.speak(utterance)
+    })
+  }, [])
+
+  const playAssistantMessage = useCallback(
+    async (content: string, stationKey: BridgeStationKey | null, generation: number) => {
+      if (!voiceMode || !speakReplies || generation !== playbackGenerationRef.current) {
+        return
+      }
+
+      try {
+        const playback = await playBridgeTts({
+          text: content,
+          stationKey,
+          surface: "bridge-chat",
+        })
+
+        if (!voiceMode || !speakReplies || generation !== playbackGenerationRef.current) {
+          playback.stop()
+          return
+        }
+
+        activePlaybackRef.current = playback
+        await playback.done.catch(() => {})
+        if (activePlaybackRef.current === playback) {
+          activePlaybackRef.current = null
+        }
+      } catch {
+        if (!voiceMode || !speakReplies || generation !== playbackGenerationRef.current) {
+          return
+        }
+        await speakWithBrowserSynthesis(content)
+      }
     },
-    [bargeInMode, speakReplies, voiceMode],
+    [speakReplies, speakWithBrowserSynthesis, voiceMode],
+  )
+
+  const speakAssistantMessage = useCallback(
+    (content: string, stationKey: BridgeStationKey | null) => {
+      if (!voiceMode || !speakReplies) {
+        return
+      }
+
+      if (bargeInMode === "interrupt") {
+        resetPlaybackQueue()
+        stopAssistantPlayback()
+        const generation = playbackGenerationRef.current
+        void playAssistantMessage(content, stationKey, generation)
+        return
+      }
+
+      const generation = playbackGenerationRef.current
+      playbackQueueRef.current = playbackQueueRef.current
+        .catch(() => {})
+        .then(() => playAssistantMessage(content, stationKey, generation))
+    },
+    [bargeInMode, playAssistantMessage, resetPlaybackQueue, speakReplies, stopAssistantPlayback, voiceMode],
   )
 
   const commitPendingVoiceSend = useCallback(() => {
@@ -477,9 +550,23 @@ export function BridgeChatUtility({ operatorLabel }: BridgeChatUtilityProps) {
 
       seenAssistantMessageIdsRef.current.add(message.id)
       pushSubtitleCue("BRIDGE", message.content)
-      speakAssistantMessage(message.content)
+      speakAssistantMessage(message.content, selectedStationKey)
     }
-  }, [messages, pushSubtitleCue, selectedThreadId, speakAssistantMessage])
+  }, [messages, pushSubtitleCue, selectedStationKey, selectedThreadId, speakAssistantMessage])
+
+  useEffect(() => {
+    if (voiceMode && speakReplies) {
+      return
+    }
+
+    resetPlaybackQueue()
+    stopAssistantPlayback()
+  }, [resetPlaybackQueue, speakReplies, stopAssistantPlayback, voiceMode])
+
+  useEffect(() => {
+    resetPlaybackQueue()
+    stopAssistantPlayback()
+  }, [resetPlaybackQueue, selectedThreadId, stopAssistantPlayback])
 
   useEffect(() => {
     if (!voiceMode) {
@@ -526,8 +613,10 @@ export function BridgeChatUtility({ operatorLabel }: BridgeChatUtilityProps) {
         window.clearTimeout(undoTimerRef.current)
       }
       recognitionRef.current?.stop()
+      stopAssistantPlayback()
+      resetPlaybackQueue()
     }
-  }, [])
+  }, [resetPlaybackQueue, stopAssistantPlayback])
 
   useEventStream({
     enabled: Boolean(selectedThreadId),

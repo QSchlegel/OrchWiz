@@ -1,5 +1,6 @@
 export type VaultId = "orchwiz" | "ship" | "agent-public" | "agent-private" | "joined"
 export type VaultRagMode = "hybrid" | "lexical"
+export type VaultRagBackend = "auto" | "vault-local" | "data-core-merged"
 export type VaultRagScopeType = "ship" | "fleet" | "global"
 
 export type PhysicalVaultId = Exclude<VaultId, "joined">
@@ -110,6 +111,14 @@ export interface VaultSearchResponse {
   exists: boolean
   mode?: VaultRagMode
   fallbackUsed?: boolean
+  requestedBackend?: VaultRagBackend
+  effectiveBackend?: VaultRagBackend
+  performance?: {
+    durationMs: number
+    resultCount: number
+    fallbackUsed: boolean
+    status: string
+  }
   results: VaultSearchResult[]
 }
 
@@ -153,4 +162,31 @@ export interface VaultGraphResponse {
   nodes: VaultGraphNode[]
   edges: VaultGraphEdge[]
   stats: VaultGraphStats
+}
+
+export interface VaultSeedPackSummary {
+  id: string
+  label: string
+  description: string
+  vaultId: PhysicalVaultId
+  targetRoot: string
+  tags: string[]
+  noteCount: number
+}
+
+export interface VaultSeedPackInstalledFile {
+  path: string
+  size: number
+  mtime: string
+}
+
+export interface VaultSeedPackInstallResponse {
+  packId: string
+  vaultId: PhysicalVaultId
+  targetRoot: string
+  createdDate: string
+  installedAt: string
+  overwrite: true
+  noteCount: number
+  files: VaultSeedPackInstalledFile[]
 }

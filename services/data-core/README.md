@@ -10,6 +10,7 @@ Standalone memory core for signed public memory domains (`orchwiz`, `ship`, `age
 - Obsidian-style link graph generation
 - Fleet sync delta feed and ingest endpoints
 - Pending merge job worker (`QTM-LGR` deterministic merge)
+- Optional EdgeQuake plugin for async write sync + hybrid query retrieval (fail-open)
 
 ## Endpoints
 
@@ -54,6 +55,33 @@ Optional:
 - `WALLET_ENCLAVE_URL` (default `http://127.0.0.1:3377`)
 - `WALLET_ENCLAVE_SHARED_SECRET`
 - `OPENAI_API_KEY` (optional, for semantic embeddings)
+- `DATA_CORE_PLUGIN_EDGEQUAKE_ENABLED` (default `false`)
+- `DATA_CORE_PLUGIN_EDGEQUAKE_BASE_URL` (required when EdgeQuake plugin is enabled)
+- `DATA_CORE_PLUGIN_EDGEQUAKE_API_KEY` (optional)
+- `DATA_CORE_PLUGIN_EDGEQUAKE_BEARER_TOKEN` (optional)
+- `DATA_CORE_PLUGIN_EDGEQUAKE_TIMEOUT_MS` (default `6000`)
+- `DATA_CORE_PLUGIN_EDGEQUAKE_TENANT_ID` (default `00000000-0000-0000-0000-000000000002`)
+- `DATA_CORE_PLUGIN_EDGEQUAKE_MAX_RETRIES` (default `12`)
+- `DATA_CORE_PLUGIN_EDGEQUAKE_DRAIN_BATCH` (default `25`)
+- `DATA_CORE_PLUGIN_EDGEQUAKE_DRAIN_INTERVAL_MS` (default `15000`)
+
+## EdgeQuake plugin behavior
+
+- Disabled by default; no behavior changes unless explicitly enabled.
+- `mode=hybrid`: plugin-first query path; if plugin errors or yields no mapped citations, data-core automatically falls back to local retrieval (`fallbackUsed=true`).
+- `mode=lexical`: always local-only (unchanged).
+- Write sync (`upsert`, `move`, `delete`, `merge`) is async best-effort via local retry queue.
+- EdgeQuake workspaces are partitioned per `cluster + domain`.
+
+## EdgeQuake backfill
+
+When enabling the plugin for an existing dataset, backfill current documents:
+
+```bash
+cd services/data-core
+npm run edgequake:backfill -- --dry-run
+npm run edgequake:backfill -- --domain ship --limit 500
+```
 
 ## Run
 

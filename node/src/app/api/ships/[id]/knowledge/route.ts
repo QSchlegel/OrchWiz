@@ -8,12 +8,19 @@ import { queryVaultRag } from "@/lib/vault/rag"
 import { normalizeShipKnowledgePath } from "@/lib/vault/knowledge"
 import { dataCoreEnabled } from "@/lib/data-core/config"
 import {
+  type RagBackend,
+  RagBackendUnavailableError,
+  resolveRagBackend,
+} from "@/lib/memory/rag-backend"
+import {
   deleteVaultFileToDataCore,
   moveVaultFileToDataCore,
   saveVaultFileToDataCore,
 } from "@/lib/data-core/vault-adapter"
 import { getMergedMemoryRetriever } from "@/lib/data-core/merged-memory-retriever"
+import { recordRagPerformanceSample } from "@/lib/performance/tracker"
 import {
+  parseKnowledgeBackend,
   parseKnowledgeContent,
   parseKnowledgeQueryMode,
   parseKnowledgeScope,
@@ -53,36 +60,76 @@ export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  const startedAt = Date.now()
+  const searchParams = request.nextUrl.searchParams
+  const query = (searchParams.get("q") || "").trim()
+  const mode = parseKnowledgeQueryMode(searchParams.get("mode"))
+  const scope = parseKnowledgeScope(searchParams.get("scope"))
+  const requestedBackend = parseKnowledgeBackend(searchParams.get("backend"))
+  let effectiveBackend: RagBackend = requestedBackend
+  let userId: string | null = null
+  let shipDeploymentId: string | null = null
+
   try {
     const session = await auth.api.getSession({ headers: await headers() })
     if (!session) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
+    userId = session.user.id
 
     const { id } = await params
+    shipDeploymentId = id
     const owned = await ensureOwnedShip(session.user.id, id)
     if (!owned) {
       return NextResponse.json({ error: "Ship not found" }, { status: 404 })
     }
 
-    const searchParams = request.nextUrl.searchParams
-    const query = (searchParams.get("q") || "").trim()
-    const mode = parseKnowledgeQueryMode(searchParams.get("mode"))
-    const scope = parseKnowledgeScope(searchParams.get("scope"))
     const k = parseTopK(searchParams.get("k"))
+    const backendResolution = resolveRagBackend({
+      requestedBackend,
+      dataCoreEnabled: dataCoreEnabled(),
+    })
+    effectiveBackend = backendResolution.effectiveBackend
 
     if (!query) {
+      const durationMs = Date.now() - startedAt
+      const performance = {
+        durationMs,
+        resultCount: 0,
+        fallbackUsed: false,
+        status: "success" as const,
+      }
+
+      await recordRagPerformanceSample({
+        userId,
+        shipDeploymentId: id,
+        route: "/api/ships/[id]/knowledge",
+        operation: "search",
+        requestedBackend: backendResolution.requestedBackend,
+        effectiveBackend: backendResolution.effectiveBackend,
+        mode,
+        scope,
+        status: "success",
+        fallbackUsed: false,
+        durationMs,
+        resultCount: 0,
+        query,
+      })
+
       return NextResponse.json({
         shipDeploymentId: id,
         query,
         scope,
         mode,
+        requestedBackend: backendResolution.requestedBackend,
+        effectiveBackend: backendResolution.effectiveBackend,
+        performance,
         fallbackUsed: false,
         results: [],
       })
     }
 
-    const result = dataCoreEnabled()
+    const result = backendResolution.effectiveBackend === "data-core-merged"
       ? await getMergedMemoryRetriever().query({
           query,
           mode,
@@ -101,15 +148,97 @@ export async function GET(
           k,
         })
 
+    const durationMs = Date.now() - startedAt
+    const performance = {
+      durationMs,
+      resultCount: result.results.length,
+      fallbackUsed: result.fallbackUsed,
+      status: "success" as const,
+    }
+
+    await recordRagPerformanceSample({
+      userId,
+      shipDeploymentId: id,
+      route: "/api/ships/[id]/knowledge",
+      operation: "search",
+      requestedBackend: backendResolution.requestedBackend,
+      effectiveBackend: backendResolution.effectiveBackend,
+      mode,
+      scope,
+      status: "success",
+      fallbackUsed: result.fallbackUsed,
+      durationMs,
+      resultCount: result.results.length,
+      query,
+    })
+
     return NextResponse.json({
       shipDeploymentId: id,
       query,
       scope,
       mode: result.mode,
+      requestedBackend: backendResolution.requestedBackend,
+      effectiveBackend: backendResolution.effectiveBackend,
+      performance,
       fallbackUsed: result.fallbackUsed,
       results: result.results,
     })
   } catch (error) {
+    if (error instanceof RagBackendUnavailableError) {
+      const durationMs = Date.now() - startedAt
+
+      await recordRagPerformanceSample({
+        userId,
+        shipDeploymentId,
+        route: "/api/ships/[id]/knowledge",
+        operation: "search",
+        requestedBackend,
+        effectiveBackend: requestedBackend,
+        mode,
+        scope,
+        status: "backend_unavailable",
+        fallbackUsed: false,
+        durationMs,
+        resultCount: 0,
+        query,
+        errorCode: error.code,
+      })
+
+      return NextResponse.json(
+        {
+          error: error.message,
+          code: error.code,
+          requestedBackend,
+          effectiveBackend: requestedBackend,
+          performance: {
+            durationMs,
+            resultCount: 0,
+            fallbackUsed: false,
+            status: "backend_unavailable",
+          },
+        },
+        { status: error.status },
+      )
+    }
+
+    const durationMs = Date.now() - startedAt
+    await recordRagPerformanceSample({
+      userId,
+      shipDeploymentId,
+      route: "/api/ships/[id]/knowledge",
+      operation: "search",
+      requestedBackend,
+      effectiveBackend,
+      mode,
+      scope,
+      status: "error",
+      fallbackUsed: false,
+      durationMs,
+      resultCount: 0,
+      query,
+      errorCode: "INTERNAL_ERROR",
+    })
+
     console.error("Failed to query ship knowledge:", error)
     return NextResponse.json({ error: "Internal server error" }, { status: 500 })
   }

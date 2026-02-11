@@ -36,8 +36,8 @@ This feature map reflects what is implemented in this repository as of February 
 ### Bridge Ops
 
 - Bridge state and active command surface (`/bridge`).
-- Bridge Call UI with station rounds, subtitle lane, and voice input/output helpers.
-- Mobile-first Bridge Chat utility (`/bridge-chat`) with station threads.
+- Bridge Call UI with station rounds, subtitle lane, and server-backed Kugelaudio TTS (with browser speech fallback).
+- Mobile-first Bridge Chat utility (`/bridge-chat`) with station threads and optional server-backed reply speech.
 - Ship-scoped cross-agent chat APIs for bridge-crew DM/group messaging with optional async auto-replies.
 - External bridge connection management (`telegram`, `discord`, `whatsapp`) including test + dispatch.
 - USS-K8S topology board with interactive node graph and focus panes.
