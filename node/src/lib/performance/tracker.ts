@@ -54,6 +54,53 @@ export interface RuntimePerformanceSampleInput {
   fallbackUsed?: boolean
   durationMs: number
   errorCode?: string | null
+  executionKind?: string | null
+  intelligenceTier?: string | null
+  intelligenceDecision?: string | null
+  resolvedModel?: string | null
+  classifierModel?: string | null
+  classifierConfidence?: number | null
+  thresholdBefore?: number | null
+  thresholdAfter?: number | null
+  rewardScore?: number | null
+  estimatedPromptTokens?: number | null
+  estimatedCompletionTokens?: number | null
+  estimatedTotalTokens?: number | null
+  estimatedCostUsd?: number | null
+  estimatedCostEur?: number | null
+  baselineMaxCostUsd?: number | null
+  baselineMaxCostEur?: number | null
+  estimatedSavingsUsd?: number | null
+  estimatedSavingsEur?: number | null
+  currencyFxUsdToEur?: number | null
+  economicsEstimated?: boolean | null
+}
+
+function normalizeOptionalString(value: string | null | undefined): string | null {
+  if (typeof value !== "string") {
+    return null
+  }
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : null
+}
+
+function normalizeOptionalFloat(value: number | null | undefined): number | null {
+  if (!Number.isFinite(value as number)) {
+    return null
+  }
+  return Number(value)
+}
+
+function normalizeOptionalInt(value: number | null | undefined): number | null {
+  if (!Number.isFinite(value as number)) {
+    return null
+  }
+  const rounded = Math.round(value as number)
+  return rounded < 0 ? 0 : rounded
+}
+
+function normalizeOptionalBoolean(value: boolean | null | undefined): boolean | null {
+  return typeof value === "boolean" ? value : null
 }
 
 interface RagPerformanceDeps {
@@ -133,6 +180,26 @@ export async function recordRuntimePerformanceSample(
       fallbackUsed: input.fallbackUsed === true,
       durationMs: normalizeDurationMs(input.durationMs),
       errorCode: input.errorCode || null,
+      executionKind: normalizeOptionalString(input.executionKind),
+      intelligenceTier: normalizeOptionalString(input.intelligenceTier),
+      intelligenceDecision: normalizeOptionalString(input.intelligenceDecision),
+      resolvedModel: normalizeOptionalString(input.resolvedModel),
+      classifierModel: normalizeOptionalString(input.classifierModel),
+      classifierConfidence: normalizeOptionalFloat(input.classifierConfidence),
+      thresholdBefore: normalizeOptionalFloat(input.thresholdBefore),
+      thresholdAfter: normalizeOptionalFloat(input.thresholdAfter),
+      rewardScore: normalizeOptionalFloat(input.rewardScore),
+      estimatedPromptTokens: normalizeOptionalInt(input.estimatedPromptTokens),
+      estimatedCompletionTokens: normalizeOptionalInt(input.estimatedCompletionTokens),
+      estimatedTotalTokens: normalizeOptionalInt(input.estimatedTotalTokens),
+      estimatedCostUsd: normalizeOptionalFloat(input.estimatedCostUsd),
+      estimatedCostEur: normalizeOptionalFloat(input.estimatedCostEur),
+      baselineMaxCostUsd: normalizeOptionalFloat(input.baselineMaxCostUsd),
+      baselineMaxCostEur: normalizeOptionalFloat(input.baselineMaxCostEur),
+      estimatedSavingsUsd: normalizeOptionalFloat(input.estimatedSavingsUsd),
+      estimatedSavingsEur: normalizeOptionalFloat(input.estimatedSavingsEur),
+      currencyFxUsdToEur: normalizeOptionalFloat(input.currencyFxUsdToEur),
+      economicsEstimated: normalizeOptionalBoolean(input.economicsEstimated),
     })
   } catch (error) {
     console.error("Failed to persist runtime performance sample (fail-open):", error)

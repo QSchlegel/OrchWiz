@@ -387,6 +387,9 @@ async function executeOfficerDirective(args: {
         sessionId: threadRef.sessionId,
         prompt: args.directive,
         metadata: {
+          runtime: {
+            executionKind: "autonomous_task",
+          },
           bridge: {
             channel: "bridge-agent",
             roundId: args.roundId,

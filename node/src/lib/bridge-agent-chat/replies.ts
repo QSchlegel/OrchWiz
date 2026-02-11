@@ -366,6 +366,9 @@ async function processBridgeAgentChatReplyJob(job: BridgeAgentChatReplyJob): Pro
     sessionId: loaded.recipientSession.id,
     prompt: runtimePrompt,
     metadata: {
+      runtime: {
+        executionKind: "autonomous_task",
+      },
       bridge: {
         channel: "bridge-agent",
         stationKey: recipientRole,

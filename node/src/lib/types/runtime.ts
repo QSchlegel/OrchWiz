@@ -11,6 +11,7 @@ export interface RuntimeSignatureBundle {
 }
 
 export interface RuntimeRequest {
+  userId?: string
   sessionId: string
   prompt: string
   metadata?: Record<string, unknown>

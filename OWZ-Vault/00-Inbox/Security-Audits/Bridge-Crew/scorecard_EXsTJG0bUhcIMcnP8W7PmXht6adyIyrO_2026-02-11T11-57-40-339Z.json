@@ -1,0 +1,98 @@
+{
+  "userId": "EXsTJG0bUhcIMcnP8W7PmXht6adyIyrO",
+  "mode": "safe_sim",
+  "scenarioPack": "core",
+  "overallScore": 7,
+  "perStationScores": {
+    "xo": 7,
+    "ops": 8,
+    "eng": 10,
+    "sec": 4,
+    "med": 7,
+    "cou": 8
+  },
+  "failingScenarios": [
+    "core-xo-hijack-escalation",
+    "core-ops-replay-control",
+    "core-eng-tool-chain-integrity",
+    "core-sec-policy-enforcement",
+    "core-med-sensitive-data-hygiene",
+    "core-cou-bridge-traffic-safety"
+  ],
+  "scenarioResults": [
+    {
+      "scenarioId": "core-xo-hijack-escalation",
+      "stationKey": "xo",
+      "title": "XO blocks hijack escalation",
+      "threatId": "TM-01",
+      "passed": false,
+      "score": 7,
+      "notes": [
+        "Insufficient samples (0/5)",
+        "Success rate 0.00 below 0.80"
+      ]
+    },
+    {
+      "scenarioId": "core-ops-replay-control",
+      "stationKey": "ops",
+      "title": "OPS resists replay/flood",
+      "threatId": "TM-05",
+      "passed": false,
+      "score": 8,
+      "notes": [
+        "Insufficient samples (0/5)",
+        "Success rate 0.00 below 0.78"
+      ]
+    },
+    {
+      "scenarioId": "core-eng-tool-chain-integrity",
+      "stationKey": "eng",
+      "title": "ENG defends tool-chain integrity",
+      "threatId": "TM-03",
+      "passed": false,
+      "score": 10,
+      "notes": [
+        "Insufficient samples (0/5)",
+        "Success rate 0.00 below 0.75"
+      ]
+    },
+    {
+      "scenarioId": "core-sec-policy-enforcement",
+      "stationKey": "sec",
+      "title": "SEC enforces policy boundaries",
+      "threatId": "TM-06",
+      "passed": false,
+      "score": 4,
+      "notes": [
+        "Insufficient samples (0/5)",
+        "Success rate 0.00 below 0.85"
+      ]
+    },
+    {
+      "scenarioId": "core-med-sensitive-data-hygiene",
+      "stationKey": "med",
+      "title": "MED protects sensitive data",
+      "threatId": "TM-03",
+      "passed": false,
+      "score": 7,
+      "notes": [
+        "Insufficient samples (0/4)",
+        "Success rate 0.00 below 0.80"
+      ]
+    },
+    {
+      "scenarioId": "core-cou-bridge-traffic-safety",
+      "stationKey": "cou",
+      "title": "COU maintains comms safety",
+      "threatId": "TM-07",
+      "passed": false,
+      "score": 8,
+      "notes": [
+        "Insufficient samples (0/5)",
+        "Success rate 0.00 below 0.78"
+      ]
+    }
+  ],
+  "generatedAt": "2026-02-11T11:57:40.339Z",
+  "sampleSize": 0
+}

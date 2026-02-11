@@ -43,6 +43,7 @@ Copy `node/.env.example`. Key groups:
 - PostToolUse hooks/webhooks: `HOOK_TRIGGER_BEARER_TOKEN`, `HOOK_WEBHOOK_TARGET_ALLOWLIST`, `HOOK_WEBHOOK_ALLOW_NGROK`, `HOOK_WEBHOOK_TIMEOUT_MS`
 - Command execution policy: `ENABLE_LOCAL_COMMAND_EXECUTION`, `LOCAL_COMMAND_TIMEOUT_MS`, `COMMAND_EXECUTION_SHELL`, `ENABLE_LOCAL_INFRA_AUTO_INSTALL`, `LOCAL_INFRA_COMMAND_TIMEOUT_MS`, `CLOUD_DEPLOY_ONLY` (set `true` to block local starship launches and force cloud-only Ship Yard posture)
 - Runtime provider: `OPENCLAW_*`, `OPENCLAW_DISPATCH_PATH`, `OPENCLAW_DISPATCH_TIMEOUT_MS`, `ENABLE_OPENAI_RUNTIME_FALLBACK`, `OPENAI_API_KEY`, `OPENAI_RUNTIME_FALLBACK_MODEL`, `CODEX_CLI_PATH`, `CODEX_RUNTIME_TIMEOUT_MS`, `CODEX_RUNTIME_MODEL`, `RUNTIME_PROFILE_DEFAULT`, `RUNTIME_PROFILE_QUARTERMASTER`
+- Runtime intelligence policy: `RUNTIME_INTELLIGENCE_POLICY_ENABLED`, `RUNTIME_INTELLIGENCE_REQUIRE_CONTROLLABLE_PROVIDERS`, `RUNTIME_INTELLIGENCE_MAX_MODEL`, `RUNTIME_INTELLIGENCE_SIMPLE_MODEL`, `RUNTIME_INTELLIGENCE_CLASSIFIER_MODEL`, `RUNTIME_INTELLIGENCE_CLASSIFIER_TIMEOUT_MS`, `RUNTIME_INTELLIGENCE_LANGFUSE_PROMPT_NAME`, `RUNTIME_INTELLIGENCE_LANGFUSE_PROMPT_LABEL`, `RUNTIME_INTELLIGENCE_LANGFUSE_PROMPT_VERSION`, `RUNTIME_INTELLIGENCE_LANGFUSE_PROMPT_CACHE_TTL_SECONDS`, `RUNTIME_INTELLIGENCE_USD_TO_EUR`, `RUNTIME_INTELLIGENCE_MODEL_PRICING_USD_PER_1M`, `RUNTIME_INTELLIGENCE_THRESHOLD_DEFAULT`, `RUNTIME_INTELLIGENCE_THRESHOLD_MIN`, `RUNTIME_INTELLIGENCE_THRESHOLD_MAX`, `RUNTIME_INTELLIGENCE_LEARNING_RATE`, `RUNTIME_INTELLIGENCE_EXPLORATION_RATE`, `RUNTIME_INTELLIGENCE_TARGET_REWARD`, `RUNTIME_INTELLIGENCE_NIGHTLY_CRON_TOKEN`
 - Bridge TTS (optional Kugelaudio sidecar): `BRIDGE_TTS_ENABLED`, `KUGELAUDIO_TTS_BASE_URL`, `KUGELAUDIO_TTS_TIMEOUT_MS`, `KUGELAUDIO_TTS_BEARER_TOKEN`, `KUGELAUDIO_TTS_CFG_SCALE`, `KUGELAUDIO_TTS_MAX_TOKENS`, `KUGELAUDIO_TTS_VOICE_DEFAULT`, `KUGELAUDIO_TTS_VOICE_XO`, `KUGELAUDIO_TTS_VOICE_OPS`, `KUGELAUDIO_TTS_VOICE_ENG`, `KUGELAUDIO_TTS_VOICE_SEC`, `KUGELAUDIO_TTS_VOICE_MED`, `KUGELAUDIO_TTS_VOICE_COU`
 - Skills catalog/import: `ORCHWIZ_CODEX_HOME_ROOT`, `ORCHWIZ_SKILL_IMPORT_TIMEOUT_MS`, `ORCHWIZ_SKILL_CATALOG_STALE_MS`
 - Bridge chat compatibility auth: `BRIDGE_ADMIN_TOKEN`
@@ -238,6 +239,30 @@ You can override chain order per profile with:
 Unknown provider ids are ignored and `local-fallback` is always appended.
 
 Quartermaster prompts set `metadata.runtime.profile=quartermaster` and include ship-scoped metadata for `QTM-LGR`.
+
+## Runtime Intelligence Policy (v2)
+
+When `RUNTIME_INTELLIGENCE_POLICY_ENABLED=true`, runtime model tiering is enforced as:
+
+- `metadata.runtime.executionKind=human_chat` -> hard-pinned `max` model tier.
+- `metadata.runtime.executionKind=autonomous_task` -> classifier + per-user RL threshold decides `max` vs `simple`.
+- Unknown or missing execution kind defaults to `human_chat`.
+
+Classifier prompt management:
+
+- Pulls prompt template from Langfuse prompt management (`@langfuse/client`) by name + label (`production` default).
+- Optional version pin via `RUNTIME_INTELLIGENCE_LANGFUSE_PROMPT_VERSION`.
+- Local fallback prompt is always used if fetch fails.
+
+Economics + telemetry:
+
+- Runtime records estimated tokens/cost/savings in USD and EUR.
+- Performance summary endpoint (`/api/performance/summary`) includes economics, tier adoption, and RL aggregates.
+
+Nightly RL consolidation:
+
+- `POST /api/runtime/intelligence/nightly`
+- Auth: `Authorization: Bearer ${RUNTIME_INTELLIGENCE_NIGHTLY_CRON_TOKEN}`
 
 ## Bridge TTS
 

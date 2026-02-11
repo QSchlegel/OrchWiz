@@ -325,6 +325,7 @@ export async function POST(
       metadata: {
         runtime: {
           profile: QUARTERMASTER_RUNTIME_PROFILE,
+          executionKind: "human_chat",
         },
         quartermaster: {
           channel: QUARTERMASTER_CHANNEL,

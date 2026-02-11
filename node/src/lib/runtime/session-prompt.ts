@@ -27,7 +27,10 @@ import {
 import { RuntimeProviderError } from "@/lib/runtime/errors"
 import { buildExocompCapabilityInstructionBlock } from "@/lib/subagents/capabilities"
 import { getShipToolRuntimeContext } from "@/lib/tools/requests"
-import { recordRuntimePerformanceSample } from "@/lib/performance/tracker"
+import {
+  recordRuntimePerformanceSample,
+  type RuntimePerformanceSampleInput,
+} from "@/lib/performance/tracker"
 
 function asRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object") {
@@ -40,6 +43,59 @@ function nonEmptyString(value: unknown): string | null {
   if (typeof value !== "string") return null
   const trimmed = value.trim()
   return trimmed.length > 0 ? trimmed : null
+}
+
+function numericValue(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value
+  }
+
+  if (typeof value === "string") {
+    const parsed = Number.parseFloat(value)
+    if (Number.isFinite(parsed)) {
+      return parsed
+    }
+  }
+
+  return null
+}
+
+function booleanValue(value: unknown): boolean | null {
+  return typeof value === "boolean" ? value : null
+}
+
+function runtimeIntelligencePerformanceFields(
+  metadata: Record<string, unknown> | undefined,
+): Partial<RuntimePerformanceSampleInput> {
+  const metadataRecord = asRecord(metadata)
+  const intelligence = asRecord(metadataRecord.intelligence)
+
+  const estimatedPromptTokens = numericValue(intelligence.estimatedPromptTokens)
+  const estimatedCompletionTokens = numericValue(intelligence.estimatedCompletionTokens)
+  const estimatedTotalTokens = numericValue(intelligence.estimatedTotalTokens)
+
+  return {
+    executionKind: nonEmptyString(intelligence.executionKind),
+    intelligenceTier: nonEmptyString(intelligence.tier),
+    intelligenceDecision: nonEmptyString(intelligence.decision),
+    resolvedModel: nonEmptyString(intelligence.resolvedModel) || nonEmptyString(intelligence.selectedModel),
+    classifierModel: nonEmptyString(intelligence.classifierModel),
+    classifierConfidence: numericValue(intelligence.classifierConfidence),
+    thresholdBefore: numericValue(intelligence.thresholdBefore),
+    thresholdAfter: numericValue(intelligence.thresholdAfter),
+    rewardScore: numericValue(intelligence.rewardScore),
+    estimatedPromptTokens: estimatedPromptTokens === null ? null : Math.max(0, Math.round(estimatedPromptTokens)),
+    estimatedCompletionTokens: estimatedCompletionTokens === null ? null : Math.max(0, Math.round(estimatedCompletionTokens)),
+    estimatedTotalTokens: estimatedTotalTokens === null ? null : Math.max(0, Math.round(estimatedTotalTokens)),
+    estimatedCostUsd: numericValue(intelligence.estimatedCostUsd),
+    estimatedCostEur: numericValue(intelligence.estimatedCostEur),
+    baselineMaxCostUsd: numericValue(intelligence.baselineMaxCostUsd),
+    baselineMaxCostEur: numericValue(intelligence.baselineMaxCostEur),
+    estimatedSavingsUsd: numericValue(intelligence.estimatedSavingsUsd),
+    estimatedSavingsEur: numericValue(intelligence.estimatedSavingsEur),
+    currencyFxUsdToEur: numericValue(intelligence.currencyFxUsdToEur),
+    economicsEstimated: booleanValue(intelligence.economicsEstimated),
+  }
 }
 
 function toJsonMetadata(value: Record<string, unknown>): Prisma.InputJsonValue {
@@ -432,14 +488,18 @@ export async function executeSessionPrompt(args: ExecuteSessionPromptArgs): Prom
 
   const runtimeMetadata = asRecord(metadataAsRecord.runtime)
   const runtimeProfile = nonEmptyString(runtimeMetadata.profile)
+  const runtimeExecutionKind = nonEmptyString(runtimeMetadata.executionKind)
   const runtimeStartedAt = Date.now()
   let runtimeResult: RuntimeResult
   try {
     runtimeResult = await runSessionRuntime({
+      userId: args.userId,
       sessionId: args.sessionId,
       prompt: runtimePrompt,
       metadata: metadataRecord,
     })
+
+    const runtimeIntelligence = runtimeIntelligencePerformanceFields(runtimeResult.metadata)
 
     await recordRuntimePerformanceSample({
       userId: args.userId,
@@ -450,6 +510,8 @@ export async function executeSessionPrompt(args: ExecuteSessionPromptArgs): Prom
       status: "success",
       fallbackUsed: runtimeResult.fallbackUsed,
       durationMs: Date.now() - runtimeStartedAt,
+      executionKind: runtimeExecutionKind,
+      ...runtimeIntelligence,
     })
   } catch (error) {
     const runtimeDurationMs = Date.now() - runtimeStartedAt
@@ -464,6 +526,7 @@ export async function executeSessionPrompt(args: ExecuteSessionPromptArgs): Prom
         fallbackUsed: false,
         durationMs: runtimeDurationMs,
         errorCode: error.code,
+        executionKind: runtimeExecutionKind,
       })
 
       throw new SessionPromptError(error.message, error.status, {
@@ -484,6 +547,7 @@ export async function executeSessionPrompt(args: ExecuteSessionPromptArgs): Prom
       fallbackUsed: false,
       durationMs: runtimeDurationMs,
       errorCode: "INTERNAL_ERROR",
+      executionKind: runtimeExecutionKind,
     })
     throw error
   }

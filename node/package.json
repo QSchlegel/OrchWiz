@@ -29,6 +29,7 @@
   },
   "dependencies": {
     "@better-auth/passkey": "^1.4.15",
+    "@langfuse/client": "^4.6.0",
     "@octokit/rest": "^22.0.1",
     "@prisma/adapter-pg": "^7.3.0",
     "@prisma/client": "^7.3.0",

@@ -65,6 +65,7 @@ model User {
   userMemorySigner      UserMemorySigner?
   ragPerformanceSamples RagPerformanceSample[]
   runtimePerformanceSamples RuntimePerformanceSample[]
+  runtimeIntelligencePolicyState RuntimeIntelligencePolicyState?
 }
 
 enum UserRole {
@@ -1933,6 +1934,26 @@ model RuntimePerformanceSample {
   fallbackUsed   Boolean  @default(false)
   durationMs     Int
   errorCode      String?
+  executionKind  String?
+  intelligenceTier String?
+  intelligenceDecision String?
+  resolvedModel  String?
+  classifierModel String?
+  classifierConfidence Float?
+  thresholdBefore Float?
+  thresholdAfter Float?
+  rewardScore    Float?
+  estimatedPromptTokens Int?
+  estimatedCompletionTokens Int?
+  estimatedTotalTokens Int?
+  estimatedCostUsd Float?
+  estimatedCostEur Float?
+  baselineMaxCostUsd Float?
+  baselineMaxCostEur Float?
+  estimatedSavingsUsd Float?
+  estimatedSavingsEur Float?
+  currencyFxUsdToEur Float?
+  economicsEstimated Boolean?
   createdAt      DateTime @default(now())
 
   user    User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
@@ -1944,6 +1965,26 @@ model RuntimePerformanceSample {
   @@index([runtimeProfile, createdAt])
   @@index([source, createdAt])
   @@index([userId, createdAt])
+  @@index([executionKind, createdAt])
+  @@index([intelligenceTier, createdAt])
+}
+
+model RuntimeIntelligencePolicyState {
+  id               String   @id @default(cuid())
+  userId           String   @unique
+  threshold        Float
+  explorationRate  Float
+  learningRate     Float
+  targetReward     Float
+  emaReward        Float
+  sampleCount      Int      @default(0)
+  lastConsolidatedAt DateTime?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([updatedAt])
 }
 
 enum NewsletterSubscriptionStatus {

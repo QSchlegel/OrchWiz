@@ -98,6 +98,60 @@ test("recordRuntimePerformanceSample is fail-open on persist errors", async () =
   }
 })
 
+test("recordRuntimePerformanceSample persists intelligence economics fields", async () => {
+  const restoreEnabled = withEnv("PERFORMANCE_TRACKING_ENABLED", "true")
+  const captured: Record<string, unknown>[] = []
+
+  try {
+    await recordRuntimePerformanceSample(
+      {
+        source: "runtime.session-prompt",
+        runtimeProfile: "default",
+        provider: "openai-fallback",
+        status: "success",
+        fallbackUsed: false,
+        durationMs: 77.2,
+        executionKind: "autonomous_task",
+        intelligenceTier: "simple",
+        intelligenceDecision: "classifier_keep_simple",
+        resolvedModel: "gpt-5-mini",
+        classifierModel: "gpt-5-nano",
+        classifierConfidence: 0.64,
+        thresholdBefore: 0.62,
+        thresholdAfter: 0.63,
+        rewardScore: 0.58,
+        estimatedPromptTokens: 900.4,
+        estimatedCompletionTokens: 220.2,
+        estimatedTotalTokens: 1120.6,
+        estimatedCostUsd: 0.008,
+        estimatedCostEur: 0.00736,
+        baselineMaxCostUsd: 0.019,
+        baselineMaxCostEur: 0.01748,
+        estimatedSavingsUsd: 0.011,
+        estimatedSavingsEur: 0.01012,
+        currencyFxUsdToEur: 0.92,
+        economicsEstimated: true,
+      },
+      {
+        create: async (data) => {
+          captured.push(data)
+        },
+      },
+    )
+
+    assert.equal(captured.length, 1)
+    const row = captured[0]
+    assert.equal(row.executionKind, "autonomous_task")
+    assert.equal(row.intelligenceTier, "simple")
+    assert.equal(row.estimatedPromptTokens, 900)
+    assert.equal(row.estimatedCompletionTokens, 220)
+    assert.equal(row.estimatedTotalTokens, 1121)
+    assert.equal(row.economicsEstimated, true)
+  } finally {
+    restoreEnabled()
+  }
+})
+
 test("tracking can be disabled via env", async () => {
   const restoreEnabled = withEnv("PERFORMANCE_TRACKING_ENABLED", "false")
   let writes = 0

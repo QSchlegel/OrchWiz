@@ -2,14 +2,41 @@ import type { RuntimeRequest, RuntimeResult } from "@/lib/types/runtime"
 import { createRecoverableRuntimeError, RuntimeProviderError } from "@/lib/runtime/errors"
 import type { RuntimeProviderDefinition } from "@/lib/runtime/providers/types"
 
+function asRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {}
+  }
+  return value as Record<string, unknown>
+}
+
+function asString(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null
+  }
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : null
+}
+
 function openAiConfigured(): boolean {
   return Boolean(process.env.OPENAI_API_KEY) && process.env.ENABLE_OPENAI_RUNTIME_FALLBACK !== "false"
 }
 
-function openAiModel(): string {
-  const model = process.env.OPENAI_RUNTIME_FALLBACK_MODEL
-  if (model && model.trim()) {
-    return model.trim()
+function resolveRuntimeIntelligenceModel(request: RuntimeRequest): string | null {
+  const metadata = asRecord(request.metadata)
+  const runtimeMetadata = asRecord(metadata.runtime)
+  const intelligenceMetadata = asRecord(runtimeMetadata.intelligence)
+  return asString(intelligenceMetadata.selectedModel) || asString(intelligenceMetadata.resolvedModel)
+}
+
+export function resolveOpenAiFallbackModel(request: RuntimeRequest): string {
+  const intelligenceModel = resolveRuntimeIntelligenceModel(request)
+  if (intelligenceModel) {
+    return intelligenceModel
+  }
+
+  const configuredModel = asString(process.env.OPENAI_RUNTIME_FALLBACK_MODEL)
+  if (configuredModel) {
+    return configuredModel
   }
 
   return "gpt-4.1-mini"
@@ -46,7 +73,7 @@ async function runOpenAiFallback(request: RuntimeRequest): Promise<RuntimeResult
   }
 
   const apiKey = process.env.OPENAI_API_KEY!
-  const model = openAiModel()
+  const model = resolveOpenAiFallbackModel(request)
 
   try {
     const response = await fetch("https://api.openai.com/v1/responses", {

@@ -42,8 +42,15 @@ function codexTimeoutMs(): number {
   return 120000
 }
 
-function codexModel(): string | null {
-  return asString(process.env.CODEX_RUNTIME_MODEL)
+function resolveRuntimeIntelligenceModel(request: RuntimeRequest): string | null {
+  const metadata = asRecord(request.metadata)
+  const runtimeMetadata = asRecord(metadata.runtime)
+  const intelligenceMetadata = asRecord(runtimeMetadata.intelligence)
+  return asString(intelligenceMetadata.selectedModel) || asString(intelligenceMetadata.resolvedModel)
+}
+
+export function resolveCodexRuntimeModel(request: RuntimeRequest): string | null {
+  return resolveRuntimeIntelligenceModel(request) || asString(process.env.CODEX_RUNTIME_MODEL)
 }
 
 function codexWorkspace(): string {
@@ -185,7 +192,7 @@ function classifyCodexExecFailure(error: unknown): RuntimeProviderError {
 }
 
 async function runCodexCliRuntime(request: RuntimeRequest): Promise<RuntimeResult> {
-  const model = codexModel()
+  const model = resolveCodexRuntimeModel(request)
   await enforceQuartermasterPolicy(request, model)
 
   const executable = codexCliPath()

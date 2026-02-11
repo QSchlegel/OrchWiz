@@ -72,11 +72,11 @@ const CONTEXT_SOURCES = [
 ]
 
 const toneClasses: Record<ContextNodeTone, string> = {
-  source: "border-cyan-500/30 bg-cyan-500/10 text-cyan-200",
-  agent: "border-indigo-500/30 bg-indigo-500/10 text-indigo-100",
-  layer: "border-fuchsia-500/30 bg-fuchsia-500/10 text-fuchsia-100",
-  output: "border-emerald-500/30 bg-emerald-500/10 text-emerald-100",
-  risk: "border-rose-500/30 bg-rose-500/10 text-rose-100",
+  source: "border-cyan-300 bg-cyan-50 text-cyan-800 dark:border-cyan-500/30 dark:bg-cyan-500/10 dark:text-cyan-200",
+  agent: "border-indigo-300 bg-indigo-50 text-indigo-800 dark:border-indigo-500/30 dark:bg-indigo-500/10 dark:text-indigo-100",
+  layer: "border-fuchsia-300 bg-fuchsia-50 text-fuchsia-800 dark:border-fuchsia-500/30 dark:bg-fuchsia-500/10 dark:text-fuchsia-100",
+  output: "border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-100",
+  risk: "border-rose-300 bg-rose-50 text-rose-800 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-100",
 }
 
 const toneLabels: Record<ContextNodeTone, string> = {
@@ -341,12 +341,14 @@ export function ContextOrchestrationBoard({
             animated: false,
             type: "smoothstep",
             style: {
-              stroke: subagent.id === selectedAgentId ? "rgba(34,211,238,0.62)" : "rgba(34,211,238,0.28)",
+              stroke: subagent.id === selectedAgentId ? "var(--context-edge-source-active)" : "var(--context-edge-source-muted)",
               strokeWidth: subagent.id === selectedAgentId ? 2 : 1.4,
             },
             markerEnd: {
               type: MarkerType.ArrowClosed,
-              color: subagent.id === selectedAgentId ? "rgba(34,211,238,0.62)" : "rgba(34,211,238,0.3)",
+              color: subagent.id === selectedAgentId
+                ? "var(--context-edge-source-marker-active)"
+                : "var(--context-edge-source-marker-muted)",
             },
           })
         })
@@ -368,13 +370,13 @@ export function ContextOrchestrationBoard({
               borderRadius: 14,
             },
             style: {
-              stroke: "rgba(251,191,36,0.76)",
+              stroke: "var(--context-edge-handoff)",
               strokeWidth: 2,
               zIndex: 0,
             },
             markerEnd: {
               type: MarkerType.ArrowClosed,
-              color: "rgba(251,191,36,0.76)",
+              color: "var(--context-edge-handoff)",
             },
           })
         })
@@ -415,14 +417,14 @@ export function ContextOrchestrationBoard({
                 borderRadius: 14,
               },
               style: {
-                stroke: "rgba(148,163,184,0.78)",
+                stroke: "var(--context-edge-transitive)",
                 strokeWidth: 1.8,
                 strokeDasharray: "6 4",
                 zIndex: 0,
               },
               markerEnd: {
                 type: MarkerType.ArrowClosed,
-                color: "rgba(148,163,184,0.78)",
+                color: "var(--context-edge-transitive)",
               },
             })
           })
@@ -468,12 +470,12 @@ export function ContextOrchestrationBoard({
         targetHandle: "target-left",
         type: "smoothstep",
         style: {
-          stroke: "rgba(16,185,129,0.5)",
+          stroke: "var(--context-edge-aggregate)",
           strokeWidth: 1.6,
         },
         markerEnd: {
           type: MarkerType.ArrowClosed,
-          color: "rgba(16,185,129,0.5)",
+          color: "var(--context-edge-aggregate)",
         },
       })
     })
@@ -535,12 +537,12 @@ export function ContextOrchestrationBoard({
           animated: false,
           type: "smoothstep",
           style: {
-            stroke: "rgba(217,70,239,0.65)",
+            stroke: "var(--context-edge-section)",
             strokeWidth: 2,
           },
           markerEnd: {
             type: MarkerType.ArrowClosed,
-            color: "rgba(217,70,239,0.65)",
+            color: "var(--context-edge-section)",
           },
         })
       })
@@ -581,12 +583,12 @@ export function ContextOrchestrationBoard({
           targetHandle: "target-left",
           type: "smoothstep",
           style: {
-            stroke: "rgba(16,185,129,0.6)",
+            stroke: "var(--context-edge-output)",
             strokeWidth: 1.8,
           },
           markerEnd: {
             type: MarkerType.ArrowClosed,
-            color: "rgba(16,185,129,0.6)",
+            color: "var(--context-edge-output)",
           },
         })
       })
@@ -623,13 +625,13 @@ export function ContextOrchestrationBoard({
           type: "smoothstep",
           animated: risk.level === "warning",
           style: {
-            stroke: "rgba(244,63,94,0.56)",
+            stroke: "var(--context-edge-risk)",
             strokeWidth: 1.8,
             strokeDasharray: "6 4",
           },
           markerEnd: {
             type: MarkerType.ArrowClosed,
-            color: "rgba(244,63,94,0.56)",
+            color: "var(--context-edge-risk)",
           },
         })
       })
@@ -690,7 +692,7 @@ export function ContextOrchestrationBoard({
           const baseColor =
             (edge.style?.stroke && typeof edge.style.stroke === "string")
               ? edge.style.stroke
-              : "rgba(148,163,184,0.68)"
+              : "var(--context-edge-transitive)"
 
           edge.animated = depth === 1
           const activeOpacity = depth <= 1 ? 1 : depth === 2 ? 0.5 : 0.22
@@ -853,7 +855,7 @@ export function ContextOrchestrationBoard({
   return (
     <div
       ref={boardRef}
-      className={`space-y-4 ${isFullscreen ? "h-screen overflow-auto bg-slate-950/95 p-4 sm:p-6" : ""} ${className}`}
+      className={`space-y-4 ${isFullscreen ? "h-screen overflow-auto bg-slate-100/95 p-4 sm:p-6 dark:bg-slate-950/95" : ""} ${className}`}
     >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
@@ -926,7 +928,7 @@ export function ContextOrchestrationBoard({
       </div>
 
       <div className={`grid gap-4 ${isFullscreen ? "h-[calc(100vh-8.5rem)] xl:grid-cols-[minmax(0,1fr)_380px]" : "xl:grid-cols-[minmax(0,1fr)_350px]"}`}>
-        <div className="rounded-2xl border border-slate-200/80 bg-white/80 p-3 shadow-sm backdrop-blur dark:border-white/10 dark:bg-white/[0.04]">
+        <div className="rounded-2xl border border-slate-300/90 bg-white/95 p-3 shadow-sm backdrop-blur dark:border-white/10 dark:bg-white/[0.04]">
           <FlowCanvas
             nodes={graph.nodes}
             edges={graph.edges}
@@ -966,7 +968,7 @@ export function ContextOrchestrationBoard({
           </div>
         </div>
 
-        <aside className={`rounded-2xl border border-slate-200/80 bg-white/85 p-4 shadow-sm backdrop-blur dark:border-white/10 dark:bg-white/[0.05] ${isFullscreen ? "overflow-auto" : ""}`}>
+        <aside className={`rounded-2xl border border-slate-300/90 bg-white/95 p-4 shadow-sm backdrop-blur dark:border-white/10 dark:bg-white/[0.05] ${isFullscreen ? "overflow-auto" : ""}`}>
           {!activeDetail ? (
             <p className="text-sm text-slate-600 dark:text-slate-400">Select a node to inspect its context details.</p>
           ) : (
@@ -988,10 +990,10 @@ export function ContextOrchestrationBoard({
                   {activeDetail.stats.map((stat) => (
                     <div
                       key={`${activeDetail.title}-${stat.label}`}
-                      className="rounded-lg border border-slate-200/70 bg-slate-50/90 px-2.5 py-2 text-xs dark:border-white/10 dark:bg-white/[0.04]"
+                      className="rounded-lg border border-slate-300/80 bg-slate-50 px-2.5 py-2 text-xs dark:border-white/10 dark:bg-white/[0.04]"
                     >
-                      <p className="uppercase tracking-[0.13em] text-[10px] text-slate-500 dark:text-slate-500">{stat.label}</p>
-                      <p className="mt-1 break-words text-slate-800 dark:text-slate-200">{stat.value}</p>
+                      <p className="uppercase tracking-[0.13em] text-[10px] text-slate-600 dark:text-slate-400">{stat.label}</p>
+                      <p className="mt-1 break-words text-slate-900 dark:text-slate-200">{stat.value}</p>
                     </div>
                   ))}
                 </div>
@@ -1066,10 +1068,10 @@ export function ContextOrchestrationBoard({
                       value={payloadDraft}
                       onChange={(event) => setPayloadDraft(event.target.value)}
                       rows={10}
-                      className="max-h-[380px] w-full rounded-xl border border-slate-200/80 bg-slate-50/85 p-3 text-[11px] leading-relaxed whitespace-pre-wrap text-slate-700 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-300"
+                      className="max-h-[380px] w-full rounded-xl border border-slate-300/80 bg-white p-3 text-[11px] leading-relaxed whitespace-pre-wrap text-slate-800 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-300"
                     />
                   ) : (
-                    <pre className="max-h-[350px] overflow-auto rounded-xl border border-slate-200/80 bg-slate-50/85 p-3 text-[11px] leading-relaxed whitespace-pre-wrap text-slate-700 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-300">
+                    <pre className="max-h-[350px] overflow-auto rounded-xl border border-slate-300/80 bg-white p-3 text-[11px] leading-relaxed whitespace-pre-wrap text-slate-800 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-300">
                       {activeDetail.body}
                     </pre>
                   )}
@@ -1078,8 +1080,8 @@ export function ContextOrchestrationBoard({
             </div>
           )}
 
-          <div className="mt-5 space-y-2 rounded-xl border border-slate-200/80 bg-slate-50/80 p-3 dark:border-white/10 dark:bg-white/[0.03]">
-            <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-[0.14em] text-slate-500">
+          <div className="mt-5 space-y-2 rounded-xl border border-slate-300/80 bg-slate-50/95 p-3 dark:border-white/10 dark:bg-white/[0.03]">
+            <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-[0.14em] text-slate-600 dark:text-slate-400">
               <Focus className="h-3.5 w-3.5" />
               Composition Snapshot
             </div>
@@ -1103,9 +1105,9 @@ export function ContextOrchestrationBoard({
             </div>
           </div>
 
-          <div className="mt-4 space-y-2 rounded-xl border border-slate-200/80 bg-slate-50/80 p-3 dark:border-white/10 dark:bg-white/[0.03]">
+          <div className="mt-4 space-y-2 rounded-xl border border-slate-300/80 bg-slate-50/95 p-3 dark:border-white/10 dark:bg-white/[0.03]">
             <div className="flex items-center justify-between gap-2">
-              <p className="text-xs font-medium uppercase tracking-[0.14em] text-slate-500">Context Composition Diagram</p>
+              <p className="text-xs font-medium uppercase tracking-[0.14em] text-slate-600 dark:text-slate-400">Context Composition Diagram</p>
               <p className="text-[11px] text-slate-500 dark:text-slate-400">
                 {aggregateWordCount} words · ~{aggregateTokenCount} tokens
               </p>

@@ -35,12 +35,20 @@ export async function POST(
     }
 
     const metadata = asRecord(body.metadata)
+    const runtimeMetadata = asRecord(metadata.runtime)
+    const metadataWithExecutionKind = {
+      ...metadata,
+      runtime: {
+        ...runtimeMetadata,
+        executionKind: "human_chat",
+      },
+    }
 
     const result = await executeSessionPrompt({
       userId: session.user.id,
       sessionId: id,
       prompt,
-      metadata,
+      metadata: metadataWithExecutionKind,
     })
 
     return NextResponse.json({
