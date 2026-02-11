@@ -129,6 +129,9 @@ export async function PUT(
       if (Object.prototype.hasOwnProperty.call(settings, "capabilities")) {
         channels.add(personalDetailChannelForSubagent(subagent.isShared, "capabilities"))
       }
+      if (Object.prototype.hasOwnProperty.call(settings, "harness")) {
+        channels.add(personalDetailChannelForSubagent(subagent.isShared, "harness"))
+      }
     }
 
     if (channels.size === 0) {

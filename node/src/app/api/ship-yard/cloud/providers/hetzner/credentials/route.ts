@@ -1,13 +1,14 @@
 import { NextRequest, NextResponse } from "next/server"
 import type { Prisma } from "@prisma/client"
 import { prisma } from "@/lib/prisma"
-import { AccessControlError, requireAccessActor } from "@/lib/security/access-control"
+import { AccessControlError } from "@/lib/security/access-control"
 import {
   ShipyardCloudVaultError,
   storeCloudCredentialEnvelope,
   summarizeCloudSecretEnvelope,
 } from "@/lib/shipyard/cloud/vault"
 import { asNonEmptyString, readJsonBody } from "@/lib/shipyard/cloud/http"
+import { requireShipyardRequestActor } from "@/lib/shipyard/request-actor"
 
 export const dynamic = "force-dynamic"
 
@@ -15,9 +16,9 @@ function toInputJsonValue(value: unknown): Prisma.InputJsonValue {
   return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    const actor = await requireAccessActor()
+    const actor = await requireShipyardRequestActor(request)
 
     const credentials = await prisma.shipyardCloudCredential.findUnique({
       where: {
@@ -57,7 +58,7 @@ export async function GET() {
 
 export async function PUT(request: NextRequest) {
   try {
-    const actor = await requireAccessActor()
+    const actor = await requireShipyardRequestActor(request)
     const body = await readJsonBody(request)
 
     const token = asNonEmptyString(body.token)
@@ -111,9 +112,9 @@ export async function PUT(request: NextRequest) {
   }
 }
 
-export async function DELETE() {
+export async function DELETE(request: NextRequest) {
   try {
-    const actor = await requireAccessActor()
+    const actor = await requireShipyardRequestActor(request)
 
     const deleted = await prisma.shipyardCloudCredential.deleteMany({
       where: {

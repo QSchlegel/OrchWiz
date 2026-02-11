@@ -27,6 +27,7 @@ import {
 import { RuntimeProviderError } from "@/lib/runtime/errors"
 import { buildExocompCapabilityInstructionBlock } from "@/lib/subagents/capabilities"
 import { getShipToolRuntimeContext } from "@/lib/tools/requests"
+import { resolveHarnessPodContext } from "@/lib/runtime/harness"
 import {
   recordRuntimePerformanceSample,
   type RuntimePerformanceSampleInput,
@@ -109,7 +110,13 @@ function resolvePromptSubagentId(metadata: Record<string, unknown>): string | nu
   }
 
   const quartermaster = asRecord(metadata.quartermaster)
-  return nonEmptyString(quartermaster.subagentId)
+  const quartermasterSubagent = nonEmptyString(quartermaster.subagentId)
+  if (quartermasterSubagent) {
+    return quartermasterSubagent
+  }
+
+  const bridge = asRecord(metadata.bridge)
+  return nonEmptyString(bridge.subagentId)
 }
 
 function resolveShipToolPromptContext(metadata: Record<string, unknown>): {
@@ -430,25 +437,73 @@ export interface ExecuteSessionPromptResult {
   provider: string
   fallbackUsed: boolean
   signature: BridgeMessageSignatureMetadata | null
+  warnings?: string[]
 }
 
 export async function executeSessionPrompt(args: ExecuteSessionPromptArgs): Promise<ExecuteSessionPromptResult> {
-  const metadataRecord = args.metadata && typeof args.metadata === "object" ? args.metadata : {}
-  const metadataAsRecord = asRecord(metadataRecord)
+  const rawMetadataRecord = args.metadata && typeof args.metadata === "object" ? args.metadata : {}
+  const metadataAsRecord = asRecord(rawMetadataRecord)
+  const resolvedSubagentId = resolvePromptSubagentId(metadataAsRecord)
+  const metadataRecord: Record<string, unknown> = resolvedSubagentId
+    ? { ...metadataAsRecord, subagentId: resolvedSubagentId }
+    : { ...metadataAsRecord }
+  const harnessWarnings: string[] = []
+
   const promptResolution = resolveSessionRuntimePrompt({
     userPrompt: args.prompt,
-    metadata: metadataAsRecord,
+    metadata: metadataRecord,
   })
+
+  const runtimeMetadata = asRecord(metadataRecord.runtime)
+  let metadataForRuntime: Record<string, unknown> = metadataRecord
+  if (resolvedSubagentId) {
+    try {
+      const harnessContext = await resolveHarnessPodContext({
+        userId: args.userId,
+        subagentId: resolvedSubagentId,
+      })
+
+      if (harnessContext.promptFragments.length > 0) {
+        promptResolution.runtimePrompt = `${promptResolution.runtimePrompt}\n\n${harnessContext.promptFragments.join("\n\n")}`
+      }
+
+      harnessWarnings.push(...harnessContext.warnings)
+
+      if (
+        harnessContext.runtimeProfile
+        && !nonEmptyString(runtimeMetadata.profile)
+      ) {
+        metadataForRuntime = {
+          ...metadataRecord,
+          runtime: {
+            ...runtimeMetadata,
+            profile: harnessContext.runtimeProfile,
+          },
+        }
+      }
+    } catch (error) {
+      harnessWarnings.push(`Harness resolution failed: ${(error as Error)?.message || "unknown error"}`)
+    }
+  }
+
   const runtimePromptWithCapabilities = await appendExocompCapabilityInstructions({
     userId: args.userId,
-    metadata: metadataAsRecord,
+    metadata: metadataForRuntime,
     runtimePrompt: promptResolution.runtimePrompt,
   })
   const runtimePrompt = await appendShipToolInstructions({
     userId: args.userId,
-    metadata: metadataAsRecord,
+    metadata: metadataForRuntime,
     runtimePrompt: runtimePromptWithCapabilities,
   })
+
+  if (harnessWarnings.length > 0) {
+    console.warn("Harness pod fail-open warnings:", {
+      sessionId: args.sessionId,
+      subagentId: resolvedSubagentId,
+      warnings: harnessWarnings,
+    })
+  }
 
   const dbSession = await prisma.session.findFirst({
     where: {
@@ -466,7 +521,7 @@ export async function executeSessionPrompt(args: ExecuteSessionPromptArgs): Prom
       sessionId: args.sessionId,
       type: "user_input",
       content: promptResolution.interactionContent,
-      metadata: metadataRecord as Prisma.InputJsonValue,
+      metadata: metadataForRuntime as Prisma.InputJsonValue,
     },
   })
 
@@ -486,9 +541,9 @@ export async function executeSessionPrompt(args: ExecuteSessionPromptArgs): Prom
     })
   }
 
-  const runtimeMetadata = asRecord(metadataAsRecord.runtime)
-  const runtimeProfile = nonEmptyString(runtimeMetadata.profile)
-  const runtimeExecutionKind = nonEmptyString(runtimeMetadata.executionKind)
+  const runtimeMetadataRecord = asRecord(metadataForRuntime.runtime)
+  const runtimeProfile = nonEmptyString(runtimeMetadataRecord.profile)
+  const runtimeExecutionKind = nonEmptyString(runtimeMetadataRecord.executionKind)
   const runtimeStartedAt = Date.now()
   let runtimeResult: RuntimeResult
   try {
@@ -496,7 +551,7 @@ export async function executeSessionPrompt(args: ExecuteSessionPromptArgs): Prom
       userId: args.userId,
       sessionId: args.sessionId,
       prompt: runtimePrompt,
-      metadata: metadataRecord,
+      metadata: metadataForRuntime,
     })
 
     const runtimeIntelligence = runtimeIntelligencePerformanceFields(runtimeResult.metadata)
@@ -552,11 +607,11 @@ export async function executeSessionPrompt(args: ExecuteSessionPromptArgs): Prom
     throw error
   }
 
-  const bridgeMetadata = asRecord(metadataAsRecord.bridge)
-  const quartermasterMetadata = asRecord(metadataAsRecord.quartermaster)
+  const bridgeMetadata = asRecord(metadataForRuntime.bridge)
+  const quartermasterMetadata = asRecord(metadataForRuntime.quartermaster)
   const isQuartermasterChannel = quartermasterMetadata.channel === "ship-quartermaster"
   const finalOutput = isQuartermasterChannel
-    ? enforceQuartermasterCitationFooter(runtimeResult.output, quartermasterCitationSources(metadataAsRecord))
+    ? enforceQuartermasterCitationFooter(runtimeResult.output, quartermasterCitationSources(metadataForRuntime))
     : runtimeResult.output
 
   const isBridgeAgentChannel = bridgeMetadata.channel === "bridge-agent"
@@ -658,6 +713,7 @@ export async function executeSessionPrompt(args: ExecuteSessionPromptArgs): Prom
     provider: runtimeResult.provider,
     fallbackUsed: runtimeResult.fallbackUsed,
     ...(runtimeResult.metadata || {}),
+    ...(harnessWarnings.length > 0 ? { warnings: harnessWarnings } : {}),
     ...(promptResolution.bridgeResponseMetadata || {}),
     ...(signatureMetadata ? { signature: signatureMetadata } : {}),
   })
@@ -735,5 +791,6 @@ export async function executeSessionPrompt(args: ExecuteSessionPromptArgs): Prom
     provider: runtimeResult.provider,
     fallbackUsed: runtimeResult.fallbackUsed,
     signature: signatureMetadata || null,
+    ...(harnessWarnings.length > 0 ? { warnings: harnessWarnings } : {}),
   }
 }

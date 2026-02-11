@@ -38,4 +38,36 @@ test("mergeSubagentSettings applies partial patch over defaults", () => {
   assert.equal(merged.capabilities.diagnostics, false)
   assert.equal(merged.capabilities.microRepairPlanning, true)
   assert.equal(merged.capabilities.statusRelay, false)
+  assert.equal(merged.harness.runtimeProfile, "default")
+  assert.equal(merged.harness.autoload.context, true)
+  assert.equal(merged.harness.applyWhenSubagentPresent, true)
+  assert.equal(merged.harness.failureMode, "fail-open")
+})
+
+test("normalizeSubagentSettings defaults harness settings when omitted", () => {
+  const normalized = normalizeSubagentSettings({
+    orchestration: {
+      handoffEnabled: false,
+      handoffMode: "manual",
+      riskChecksEnabled: true,
+      outputContractStrict: true,
+    },
+  })
+
+  assert.equal(normalized.harness.runtimeProfile, "default")
+  assert.equal(normalized.harness.autoload.context, true)
+  assert.equal(normalized.harness.autoload.tools, true)
+  assert.equal(normalized.harness.autoload.skills, true)
+  assert.equal(normalized.harness.applyWhenSubagentPresent, true)
+  assert.equal(normalized.harness.failureMode, "fail-open")
+})
+
+test("normalizeSubagentSettings rejects invalid harness runtime profile", () => {
+  const normalized = normalizeSubagentSettings({
+    harness: {
+      runtimeProfile: "invalid",
+    },
+  })
+
+  assert.deepEqual(normalized, DEFAULT_SUBAGENT_SETTINGS)
 })

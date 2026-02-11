@@ -1,44 +1,51 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import {
-  Package,
-  Server,
-  Cloud,
-  HardDrive,
-  Network,
-  CheckCircle,
-  XCircle,
-  Clock,
+  Activity,
   AlertCircle,
+  Box,
+  CheckCircle2,
+  ChevronDown,
+  ChevronUp,
+  Cloud,
+  Code,
+  Container,
+  Copy,
+  ExternalLink,
+  FileCode,
+  GitBranch,
+  HardDrive,
+  Hash,
+  Layers,
+  Network,
+  Package,
   Play,
+  RefreshCw,
+  Search,
+  Settings2,
   Square,
   Trash2,
-  Activity,
-  Globe,
-  Box,
-  Layers,
-  Code,
-  FileCode,
-  Container,
-  GitBranch,
-  RefreshCw,
-  ExternalLink,
-  Copy,
-  Settings,
-  Terminal,
-  Hash
+  X,
 } from "lucide-react"
+import type { Node } from "reactflow"
+import Link from "next/link"
 import { OrchestrationSurface } from "@/components/orchestration/OrchestrationSurface"
-import { FlipCard } from "@/components/orchestration/FlipCard"
-import { NodeInfoCard, nodeTypeInfo, UseCaseBadge } from "@/components/orchestration/NodeInfoCard"
+import { UseCaseBadge, NodeInfoCard } from "@/components/orchestration/NodeInfoCard"
 import { FlowCanvas } from "@/components/flow/FlowCanvas"
 import { ApplicationNode, SystemNode } from "@/components/flow/nodes"
 import { layoutColumns } from "@/lib/flow/layout"
 import { buildEdgesToAnchors, mapAnchorsToNodes, mapApplicationsToNodes } from "@/lib/flow/mappers"
-import type { Node } from "reactflow"
 import { useEventStream } from "@/lib/realtime/useEventStream"
-import Link from "next/link"
+import { useShipSelection } from "@/lib/shipyard/useShipSelection"
+import {
+  computeApplicationSummary,
+  filterApplications,
+  getApplicationActionCapability,
+  resolveSelectedApplicationId,
+  type ApplicationListItem,
+  type ApplicationViewFilters,
+} from "@/lib/applications/view-model"
 
 type DeploymentProfile = "local_starship_build" | "cloud_shipyard"
 type ProvisioningMode = "terraform_ansible" | "terraform_only" | "ansible_only"
@@ -89,6 +96,47 @@ interface ShipSelectorItem {
   config: unknown
 }
 
+interface Application {
+  id: string
+  name: string
+  description: string | null
+  applicationType: "docker" | "nodejs" | "python" | "static" | "custom"
+  image: string | null
+  repository: string | null
+  branch: string | null
+  buildCommand: string | null
+  startCommand: string | null
+  port: number | null
+  environment: Record<string, unknown>
+  shipDeploymentId: string | null
+  ship: {
+    id: string
+    name: string
+    status: string
+    nodeId: string
+    nodeType: NodeType
+    deploymentProfile: DeploymentProfile
+  } | null
+  nodeId: string
+  nodeType: NodeType
+  deploymentProfile: DeploymentProfile
+  provisioningMode: ProvisioningMode
+  nodeUrl: string | null
+  status: "pending" | "deploying" | "active" | "inactive" | "failed" | "updating"
+  config: unknown
+  metadata: unknown
+  deployedAt: string | null
+  lastHealthCheck: string | null
+  healthStatus: string | null
+  version: string | null
+  createdAt: string
+}
+
+interface Notice {
+  type: "success" | "error" | "info"
+  text: string
+}
+
 const deploymentProfileLabels: Record<DeploymentProfile, string> = {
   local_starship_build: "Local Starship Build",
   cloud_shipyard: "Cloud Shipyard",
@@ -106,17 +154,134 @@ const infrastructureKindLabels: Record<InfrastructureKind, string> = {
   existing_k8s: "Existing Kubernetes",
 }
 
+const statusConfig = {
+  pending: {
+    icon: RefreshCw,
+    label: "Pending",
+    color: "text-amber-700 dark:text-amber-300",
+    bg: "bg-amber-500/15 dark:bg-amber-500/20",
+    border: "border-amber-500/30",
+    pulse: true,
+  },
+  deploying: {
+    icon: Package,
+    label: "Deploying",
+    color: "text-blue-700 dark:text-blue-300",
+    bg: "bg-blue-500/15 dark:bg-blue-500/20",
+    border: "border-blue-500/30",
+    pulse: true,
+  },
+  active: {
+    icon: Activity,
+    label: "Active",
+    color: "text-emerald-700 dark:text-emerald-300",
+    bg: "bg-emerald-500/15 dark:bg-emerald-500/20",
+    border: "border-emerald-500/30",
+    pulse: false,
+  },
+  inactive: {
+    icon: Square,
+    label: "Inactive",
+    color: "text-slate-700 dark:text-slate-300",
+    bg: "bg-slate-500/12 dark:bg-slate-500/20",
+    border: "border-slate-500/30",
+    pulse: false,
+  },
+  failed: {
+    icon: AlertCircle,
+    label: "Failed",
+    color: "text-rose-700 dark:text-rose-300",
+    bg: "bg-rose-500/15 dark:bg-rose-500/20",
+    border: "border-rose-500/30",
+    pulse: false,
+  },
+  updating: {
+    icon: Settings2,
+    label: "Updating",
+    color: "text-orange-700 dark:text-orange-300",
+    bg: "bg-orange-500/15 dark:bg-orange-500/20",
+    border: "border-orange-500/30",
+    pulse: true,
+  },
+}
+
+const appTypeConfig = {
+  docker: {
+    icon: Container,
+    label: "Docker",
+    color: "text-blue-700 dark:text-blue-300",
+    bg: "bg-blue-500/15 dark:bg-blue-500/20",
+    description: "Containerized application",
+  },
+  nodejs: {
+    icon: Code,
+    label: "Node.js",
+    color: "text-emerald-700 dark:text-emerald-300",
+    bg: "bg-emerald-500/15 dark:bg-emerald-500/20",
+    description: "JavaScript runtime application",
+  },
+  python: {
+    icon: FileCode,
+    label: "Python",
+    color: "text-amber-700 dark:text-amber-300",
+    bg: "bg-amber-500/15 dark:bg-amber-500/20",
+    description: "Python application",
+  },
+  static: {
+    icon: Layers,
+    label: "Static",
+    color: "text-violet-700 dark:text-violet-300",
+    bg: "bg-violet-500/15 dark:bg-violet-500/20",
+    description: "Static file hosting",
+  },
+  custom: {
+    icon: Box,
+    label: "Custom",
+    color: "text-slate-700 dark:text-slate-300",
+    bg: "bg-slate-500/12 dark:bg-slate-500/20",
+    description: "Custom deployment",
+  },
+}
+
+const nodeTypeConfig = {
+  local: { icon: HardDrive, label: "Local", color: "text-violet-700 dark:text-violet-300" },
+  cloud: { icon: Cloud, label: "Cloud", color: "text-sky-700 dark:text-sky-300" },
+  hybrid: { icon: Network, label: "Hybrid", color: "text-pink-700 dark:text-pink-300" },
+}
+
+const nodeTypes = {
+  applicationNode: ApplicationNode,
+  systemNode: SystemNode,
+}
+
+const STATUS_FILTER_VALUES: Array<"all" | Application["status"]> = [
+  "all",
+  "pending",
+  "deploying",
+  "active",
+  "inactive",
+  "failed",
+  "updating",
+]
+
+const APPLICATION_TYPE_FILTER_VALUES: Array<"all" | Application["applicationType"]> = [
+  "all",
+  "docker",
+  "nodejs",
+  "python",
+  "static",
+  "custom",
+]
+
+const NODE_TYPE_FILTER_VALUES: Array<"all" | NodeType> = ["all", "local", "cloud", "hybrid"]
+
 function isInfrastructureKind(value: unknown): value is InfrastructureKind {
   return value === "kind" || value === "minikube" || value === "existing_k8s"
 }
 
 function kubeContextForKind(kind: InfrastructureKind): string {
-  if (kind === "kind") {
-    return "kind-orchwiz"
-  }
-  if (kind === "minikube") {
-    return "minikube"
-  }
+  if (kind === "kind") return "kind-orchwiz"
+  if (kind === "minikube") return "minikube"
   return "existing-cluster"
 }
 
@@ -160,143 +325,6 @@ function deriveNodeType(
   return "cloud"
 }
 
-interface Application {
-  id: string
-  name: string
-  description: string | null
-  applicationType: "docker" | "nodejs" | "python" | "static" | "custom"
-  image: string | null
-  repository: string | null
-  branch: string | null
-  buildCommand: string | null
-  startCommand: string | null
-  port: number | null
-  environment: any
-  shipDeploymentId: string | null
-  ship: {
-    id: string
-    name: string
-    status: string
-    nodeId: string
-    nodeType: NodeType
-    deploymentProfile: DeploymentProfile
-  } | null
-  nodeId: string
-  nodeType: NodeType
-  deploymentProfile: DeploymentProfile
-  provisioningMode: ProvisioningMode
-  nodeUrl: string | null
-  status: "pending" | "deploying" | "active" | "inactive" | "failed" | "updating"
-  config: any
-  metadata: any
-  deployedAt: string | null
-  lastHealthCheck: string | null
-  healthStatus: string | null
-  version: string | null
-  createdAt: string
-}
-
-const statusConfig = {
-  pending: {
-    icon: Clock,
-    color: "text-yellow-400",
-    bg: "bg-yellow-500/20",
-    border: "border-yellow-500/30",
-    label: "Pending",
-    pulse: true
-  },
-  deploying: {
-    icon: Package,
-    color: "text-blue-400",
-    bg: "bg-blue-500/20",
-    border: "border-blue-500/30",
-    label: "Deploying",
-    pulse: true
-  },
-  active: {
-    icon: Activity,
-    color: "text-green-400",
-    bg: "bg-green-500/20",
-    border: "border-green-500/30",
-    label: "Active",
-    pulse: false
-  },
-  inactive: {
-    icon: Square,
-    color: "text-gray-400",
-    bg: "bg-gray-500/20",
-    border: "border-gray-500/30",
-    label: "Inactive",
-    pulse: false
-  },
-  failed: {
-    icon: XCircle,
-    color: "text-red-400",
-    bg: "bg-red-500/20",
-    border: "border-red-500/30",
-    label: "Failed",
-    pulse: false
-  },
-  updating: {
-    icon: AlertCircle,
-    color: "text-orange-400",
-    bg: "bg-orange-500/20",
-    border: "border-orange-500/30",
-    label: "Updating",
-    pulse: true
-  },
-}
-
-const nodeTypeConfig = {
-  local: { icon: HardDrive, label: "Local", color: "text-purple-400" },
-  cloud: { icon: Cloud, label: "Cloud", color: "text-blue-400" },
-  hybrid: { icon: Network, label: "Hybrid", color: "text-pink-400" },
-}
-
-const appTypeConfig = {
-  docker: {
-    icon: Container,
-    label: "Docker",
-    color: "text-blue-400",
-    bg: "bg-blue-500/20",
-    description: "Containerized application"
-  },
-  nodejs: {
-    icon: Code,
-    label: "Node.js",
-    color: "text-green-400",
-    bg: "bg-green-500/20",
-    description: "JavaScript runtime application"
-  },
-  python: {
-    icon: FileCode,
-    label: "Python",
-    color: "text-yellow-400",
-    bg: "bg-yellow-500/20",
-    description: "Python application"
-  },
-  static: {
-    icon: Layers,
-    label: "Static",
-    color: "text-purple-400",
-    bg: "bg-purple-500/20",
-    description: "Static file hosting"
-  },
-  custom: {
-    icon: Box,
-    label: "Custom",
-    color: "text-gray-400",
-    bg: "bg-gray-500/20",
-    description: "Custom deployment"
-  },
-}
-
-const nodeTypes = {
-  applicationNode: ApplicationNode,
-  systemNode: SystemNode,
-}
-
-// Helper function to format uptime
 function formatUptime(deployedAt: Date): string {
   const now = new Date()
   const diff = now.getTime() - deployedAt.getTime()
@@ -349,22 +377,60 @@ function extractInfrastructureConfig(
   }
 }
 
+async function readResponseError(response: Response, fallback: string): Promise<string> {
+  const payload = (await response.json().catch(() => null)) as { error?: unknown } | null
+  if (payload && typeof payload.error === "string" && payload.error.trim().length > 0) {
+    return payload.error
+  }
+
+  return fallback
+}
+
+function asApplicationListItem(application: Application): ApplicationListItem {
+  return {
+    id: application.id,
+    name: application.name,
+    status: application.status,
+    applicationType: application.applicationType,
+    nodeType: application.nodeType,
+    nodeId: application.nodeId,
+    repository: application.repository,
+    ship: application.ship ? { name: application.ship.name } : null,
+    metadata: application.metadata,
+  }
+}
+
 export default function ApplicationsPage() {
   const initialDeploymentProfile: DeploymentProfile = "local_starship_build"
+  const { selectedShipDeploymentId, setSelectedShipDeploymentId } = useShipSelection()
 
   const [applications, setApplications] = useState<Application[]>([])
+  const [ships, setShips] = useState<ShipSelectorItem[]>([])
+
   const [isLoading, setIsLoading] = useState(true)
-  const [selectedApplicationId, setSelectedApplicationId] = useState<string | null>(null)
+  const [isLoadingShips, setIsLoadingShips] = useState(true)
   const [isCreating, setIsCreating] = useState(false)
+
+  const [selectedApplicationId, setSelectedApplicationId] = useState<string | null>(null)
   const [showCreateForm, setShowCreateForm] = useState(false)
+  const [showTopology, setShowTopology] = useState(true)
+  const [showAdvancedDeployConfig, setShowAdvancedDeployConfig] = useState(false)
+
   const [includeForwarded, setIncludeForwarded] = useState(false)
   const [sourceNodeId, setSourceNodeId] = useState("")
-  const [ships, setShips] = useState<ShipSelectorItem[]>([])
-  const [isLoadingShips, setIsLoadingShips] = useState(true)
+
+  const [search, setSearch] = useState("")
+  const [statusFilter, setStatusFilter] = useState<"all" | Application["status"]>("all")
+  const [appTypeFilter, setAppTypeFilter] = useState<"all" | Application["applicationType"]>("all")
+  const [nodeTypeFilter, setNodeTypeFilter] = useState<"all" | NodeType>("all")
+
+  const [notice, setNotice] = useState<Notice | null>(null)
+  const [pendingAction, setPendingAction] = useState<{ id: string; type: "status" | "delete" } | null>(null)
+
   const [formData, setFormData] = useState<ApplicationFormData>({
     name: "",
     description: "",
-    applicationType: "docker" as Application["applicationType"],
+    applicationType: "docker",
     image: "",
     repository: "",
     branch: "main",
@@ -374,9 +440,9 @@ export default function ApplicationsPage() {
     environment: {},
     shipDeploymentId: "",
     nodeId: "",
-    nodeType: "local" as NodeType,
+    nodeType: "local",
     deploymentProfile: initialDeploymentProfile,
-    provisioningMode: "terraform_ansible" as ProvisioningMode,
+    provisioningMode: "terraform_ansible",
     advancedNodeTypeOverride: false,
     infrastructure: defaultInfrastructure(initialDeploymentProfile),
     nodeUrl: "",
@@ -393,8 +459,47 @@ export default function ApplicationsPage() {
     [formData.advancedNodeTypeOverride, formData.deploymentProfile, formData.nodeType],
   )
 
-  const applyShipToForm = (ship: ShipSelectorItem, current: ApplicationFormData): ApplicationFormData => {
+  const viewFilters = useMemo<ApplicationViewFilters>(
+    () => ({
+      query: search,
+      status: statusFilter,
+      applicationType: appTypeFilter,
+      nodeType: nodeTypeFilter,
+    }),
+    [appTypeFilter, nodeTypeFilter, search, statusFilter],
+  )
+
+  const filteredApplications = useMemo(
+    () => {
+      const filteredItems = filterApplications(applications.map(asApplicationListItem), viewFilters)
+      if (filteredItems.length === 0) {
+        return []
+      }
+
+      const applicationById = new Map(applications.map((application) => [application.id, application] as const))
+      return filteredItems
+        .map((item) => applicationById.get(item.id))
+        .filter((application): application is Application => Boolean(application))
+    },
+    [applications, viewFilters],
+  )
+
+  const summary = useMemo(
+    () => computeApplicationSummary(applications.map(asApplicationListItem), filteredApplications.map(asApplicationListItem)),
+    [applications, filteredApplications],
+  )
+
+  const hasFilters =
+    search.trim().length > 0 || statusFilter !== "all" || appTypeFilter !== "all" || nodeTypeFilter !== "all"
+
+  const selectedApplication = useMemo(
+    () => filteredApplications.find((application) => application.id === selectedApplicationId) || null,
+    [filteredApplications, selectedApplicationId],
+  )
+
+  const applyShipToForm = useCallback((ship: ShipSelectorItem, current: ApplicationFormData): ApplicationFormData => {
     const infrastructure = extractInfrastructureConfig(ship.config, ship.deploymentProfile)
+
     return {
       ...current,
       shipDeploymentId: ship.id,
@@ -406,183 +511,115 @@ export default function ApplicationsPage() {
       nodeUrl: ship.nodeUrl || "",
       infrastructure: infrastructure || defaultInfrastructure(ship.deploymentProfile),
     }
-  }
+  }, [])
 
-  const fetchShips = async () => {
+  const fetchShips = useCallback(async () => {
     setIsLoadingShips(true)
+
     try {
       const response = await fetch("/api/ships")
-      if (response.ok) {
-        const data = (await response.json()) as ShipSelectorItem[]
-        const nextShips = Array.isArray(data) ? data : []
-        setShips(nextShips)
-        setFormData((current) => {
-          if (nextShips.length === 0) {
-            return { ...current, shipDeploymentId: "" }
-          }
-          const existing = nextShips.find((ship) => ship.id === current.shipDeploymentId)
-          if (existing) {
-            return applyShipToForm(existing, current)
-          }
-          return applyShipToForm(nextShips[0], current)
-        })
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`)
       }
+
+      const payload = (await response.json()) as unknown
+      const nextShips = Array.isArray(payload) ? (payload as ShipSelectorItem[]) : []
+      setShips(nextShips)
     } catch (error) {
       console.error("Error fetching ships:", error)
+      setNotice({
+        type: "error",
+        text: "Unable to load ships. Deploying a new application may be unavailable.",
+      })
+      setShips([])
     } finally {
       setIsLoadingShips(false)
     }
-  }
-
-  useEffect(() => {
-    fetchShips()
   }, [])
 
-  useEffect(() => {
-    fetchApplications()
-  }, [includeForwarded, sourceNodeId])
-
-  useEventStream({
-    enabled: true,
-    types: ["ship.application.updated", "application.updated", "ship.updated", "forwarding.received"],
-    onEvent: () => {
-      fetchApplications()
-      fetchShips()
-    },
-  })
-
-  const fetchApplications = async () => {
+  const fetchApplications = useCallback(async () => {
     setIsLoading(true)
+
     try {
       const params = new URLSearchParams()
       if (includeForwarded) params.append("includeForwarded", "true")
       if (sourceNodeId.trim()) params.append("sourceNodeId", sourceNodeId.trim())
       const response = await fetch(`/api/applications?${params.toString()}`)
-      if (response.ok) {
-        const data = await response.json()
-        setApplications(data)
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`)
       }
+
+      const payload = (await response.json()) as unknown
+      const nextApplications = Array.isArray(payload) ? (payload as Application[]) : []
+      setApplications(nextApplications)
     } catch (error) {
       console.error("Error fetching applications:", error)
+      setNotice({ type: "error", text: "Unable to load applications." })
+      setApplications([])
     } finally {
       setIsLoading(false)
     }
-  }
+  }, [includeForwarded, sourceNodeId])
 
-  const handleCreate = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!formData.shipDeploymentId) {
+  useEffect(() => {
+    void fetchShips()
+  }, [fetchShips])
+
+  useEffect(() => {
+    void fetchApplications()
+  }, [fetchApplications])
+
+  useEventStream({
+    enabled: true,
+    types: ["ship.application.updated", "application.updated", "ship.updated", "forwarding.received"],
+    onEvent: () => {
+      void fetchApplications()
+      void fetchShips()
+    },
+  })
+
+  useEffect(() => {
+    if (ships.length === 0) {
+      if (selectedShipDeploymentId) {
+        setSelectedShipDeploymentId(null)
+      }
+
+      setFormData((current) => ({
+        ...current,
+        shipDeploymentId: "",
+      }))
       return
     }
-    setIsCreating(true)
 
-    try {
-      const response = await fetch("/api/applications", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          name: formData.name,
-          description: formData.description,
-          applicationType: formData.applicationType,
-          image: formData.image,
-          repository: formData.repository,
-          branch: formData.branch,
-          buildCommand: formData.buildCommand,
-          startCommand: formData.startCommand,
-          port: formData.port || null,
-          environment: formData.environment || {},
-          shipDeploymentId: formData.shipDeploymentId,
-          version: formData.version || null,
-          config: {
-            infrastructure: formData.infrastructure,
-          },
-        }),
-      })
+    const resolvedShipId =
+      selectedShipDeploymentId && ships.some((ship) => ship.id === selectedShipDeploymentId)
+        ? selectedShipDeploymentId
+        : ships[0].id
 
-      if (response.ok) {
-        setShowCreateForm(false)
-        setFormData((current) => {
-          const base: ApplicationFormData = {
-            name: "",
-            description: "",
-            applicationType: "docker",
-            image: "",
-            repository: "",
-            branch: "main",
-            buildCommand: "",
-            startCommand: "",
-            port: 3000,
-            environment: {},
-            shipDeploymentId: current.shipDeploymentId,
-            nodeId: "",
-            nodeType: "local",
-            deploymentProfile: initialDeploymentProfile,
-            provisioningMode: "terraform_ansible",
-            advancedNodeTypeOverride: false,
-            infrastructure: defaultInfrastructure(initialDeploymentProfile),
-            nodeUrl: "",
-            version: "",
-          }
-          const activeShip = ships.find((ship) => ship.id === base.shipDeploymentId)
-          return activeShip ? applyShipToForm(activeShip, base) : base
-        })
-        fetchApplications()
-      }
-    } catch (error) {
-      console.error("Error creating application:", error)
-    } finally {
-      setIsCreating(false)
+    if (resolvedShipId !== selectedShipDeploymentId) {
+      setSelectedShipDeploymentId(resolvedShipId)
     }
-  }
 
-  const handleDelete = async (id: string) => {
-    if (!confirm("Are you sure you want to delete this application deployment?")) return
+    const ship = ships.find((entry) => entry.id === resolvedShipId) || ships[0]
+    setFormData((current) => applyShipToForm(ship, { ...current, shipDeploymentId: ship.id }))
+  }, [applyShipToForm, selectedShipDeploymentId, setSelectedShipDeploymentId, ships])
 
-    try {
-      const response = await fetch(`/api/applications/${id}`, {
-        method: "DELETE",
-      })
-
-      if (response.ok) {
-        fetchApplications()
-      }
-    } catch (error) {
-      console.error("Error deleting application:", error)
-    }
-  }
-
-  const handleStatusUpdate = async (id: string, status: Application["status"]) => {
-    try {
-      const response = await fetch(`/api/applications/${id}`, {
-        method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ status }),
-      })
-
-      if (response.ok) {
-        fetchApplications()
-      }
-    } catch (error) {
-      console.error("Error updating application:", error)
-    }
-  }
+  useEffect(() => {
+    setSelectedApplicationId((current) => resolveSelectedApplicationId(filteredApplications, current))
+  }, [filteredApplications])
 
   const topologyNodes = useMemo(() => {
-    const appInputs = applications.map((app) => {
-      const infrastructure = extractInfrastructureConfig(app.config, app.deploymentProfile)
+    const appInputs = filteredApplications.map((application) => {
+      const infrastructure = extractInfrastructureConfig(application.config, application.deploymentProfile)
       return {
-        id: app.id,
-        name: app.name,
-        status: app.status,
-        nodeType: app.nodeType,
-        applicationType: app.applicationType,
-        shipName: app.ship?.name,
-        deploymentProfile: app.deploymentProfile,
-        provisioningMode: app.provisioningMode,
+        id: application.id,
+        name: application.name,
+        status: application.status,
+        nodeType: application.nodeType,
+        applicationType: application.applicationType,
+        shipName: application.ship?.name,
+        deploymentProfile: application.deploymentProfile,
+        provisioningMode: application.provisioningMode,
         infrastructureKind: infrastructure?.kind,
       }
     })
@@ -625,88 +662,584 @@ export default function ApplicationsPage() {
         { key: "hybrid", nodes: [hybridAnchor, ...hybridNodes] },
       ],
       260,
-      150
+      150,
     )
-  }, [applications, selectedApplicationId])
+  }, [filteredApplications, selectedApplicationId])
 
   const topologyEdges = useMemo(() => {
-    const edgeItems = applications.map((app) => ({
-      id: app.id,
-      status: app.status,
-      anchorId: `anchor-${app.nodeType}`,
+    const edgeItems = filteredApplications.map((application) => ({
+      id: application.id,
+      status: application.status,
+      anchorId: `anchor-${application.nodeType}`,
     }))
     return buildEdgesToAnchors(edgeItems)
-  }, [applications])
+  }, [filteredApplications])
 
-  const handleTopologyNodeClick = (_: unknown, node: Node) => {
+  const handleTopologyNodeClick = useCallback((_: unknown, node: Node) => {
     if (node.type === "applicationNode") {
       setSelectedApplicationId(node.id)
     }
-  }
+  }, [])
+
+  const resetCreateForm = useCallback(() => {
+    setShowAdvancedDeployConfig(false)
+
+    setFormData((current) => {
+      const base: ApplicationFormData = {
+        name: "",
+        description: "",
+        applicationType: "docker",
+        image: "",
+        repository: "",
+        branch: "main",
+        buildCommand: "",
+        startCommand: "",
+        port: 3000,
+        environment: {},
+        shipDeploymentId: selectedShipDeploymentId || current.shipDeploymentId,
+        nodeId: "",
+        nodeType: "local",
+        deploymentProfile: initialDeploymentProfile,
+        provisioningMode: "terraform_ansible",
+        advancedNodeTypeOverride: false,
+        infrastructure: defaultInfrastructure(initialDeploymentProfile),
+        nodeUrl: "",
+        version: "",
+      }
+
+      const ship = ships.find((entry) => entry.id === base.shipDeploymentId)
+      return ship ? applyShipToForm(ship, base) : base
+    })
+  }, [applyShipToForm, selectedShipDeploymentId, ships])
+
+  const handleCreate = useCallback(
+    async (event: React.FormEvent) => {
+      event.preventDefault()
+
+      if (!formData.shipDeploymentId) {
+        setNotice({ type: "error", text: "Select a ship before deploying an application." })
+        return
+      }
+
+      setIsCreating(true)
+      setNotice(null)
+
+      try {
+        const response = await fetch("/api/applications", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            name: formData.name,
+            description: formData.description,
+            applicationType: formData.applicationType,
+            image: formData.image,
+            repository: formData.repository,
+            branch: formData.branch,
+            buildCommand: formData.buildCommand,
+            startCommand: formData.startCommand,
+            port: formData.port || null,
+            environment: formData.environment || {},
+            shipDeploymentId: formData.shipDeploymentId,
+            version: formData.version || null,
+            config: {
+              infrastructure: formData.infrastructure,
+            },
+          }),
+        })
+
+        if (!response.ok) {
+          throw new Error(await readResponseError(response, "Failed to deploy application."))
+        }
+
+        const created = (await response.json()) as Application
+        setShowCreateForm(false)
+        resetCreateForm()
+        if (created?.id) {
+          setSelectedApplicationId(created.id)
+        }
+        setNotice({ type: "success", text: `Deployment created for ${formData.name}.` })
+        await fetchApplications()
+      } catch (error) {
+        console.error("Error creating application:", error)
+        setNotice({
+          type: "error",
+          text: error instanceof Error ? error.message : "Failed to deploy application.",
+        })
+      } finally {
+        setIsCreating(false)
+      }
+    },
+    [fetchApplications, formData, resetCreateForm],
+  )
+
+  const handleDelete = useCallback(
+    async (application: Application) => {
+      const capability = getApplicationActionCapability(asApplicationListItem(application))
+      if (!capability.canMutate) {
+        setNotice({ type: "info", text: capability.reason || "Mutating actions are disabled for this entry." })
+        return
+      }
+
+      if (!confirm("Are you sure you want to delete this application deployment?")) {
+        return
+      }
+
+      setPendingAction({ id: application.id, type: "delete" })
+      setNotice(null)
+
+      try {
+        const response = await fetch(`/api/applications/${application.id}`, {
+          method: "DELETE",
+        })
+
+        if (!response.ok) {
+          throw new Error(await readResponseError(response, "Failed to delete application."))
+        }
+
+        setNotice({ type: "success", text: `Deleted ${application.name}.` })
+        await fetchApplications()
+      } catch (error) {
+        console.error("Error deleting application:", error)
+        setNotice({
+          type: "error",
+          text: error instanceof Error ? error.message : "Failed to delete application.",
+        })
+      } finally {
+        setPendingAction(null)
+      }
+    },
+    [fetchApplications],
+  )
+
+  const handleStatusUpdate = useCallback(
+    async (application: Application, status: Application["status"]) => {
+      const capability = getApplicationActionCapability(asApplicationListItem(application))
+      if (!capability.canMutate) {
+        setNotice({ type: "info", text: capability.reason || "Mutating actions are disabled for this entry." })
+        return
+      }
+
+      setPendingAction({ id: application.id, type: "status" })
+      setNotice(null)
+
+      try {
+        const response = await fetch(`/api/applications/${application.id}`, {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ status }),
+        })
+
+        if (!response.ok) {
+          throw new Error(await readResponseError(response, "Failed to update application status."))
+        }
+
+        setNotice({
+          type: "success",
+          text: `${application.name} is now ${statusConfig[status].label.toLowerCase()}.`,
+        })
+        await fetchApplications()
+      } catch (error) {
+        console.error("Error updating application:", error)
+        setNotice({
+          type: "error",
+          text: error instanceof Error ? error.message : "Failed to update application status.",
+        })
+      } finally {
+        setPendingAction(null)
+      }
+    },
+    [fetchApplications],
+  )
+
+  const handleShipSelect = useCallback(
+    (selectedId: string) => {
+      if (!selectedId) {
+        setSelectedShipDeploymentId(null)
+        setFormData((current) => ({ ...current, shipDeploymentId: "" }))
+        return
+      }
+
+      setSelectedShipDeploymentId(selectedId)
+      const ship = ships.find((entry) => entry.id === selectedId)
+      if (ship) {
+        setFormData((current) => applyShipToForm(ship, { ...current, shipDeploymentId: selectedId }))
+      }
+    },
+    [applyShipToForm, setSelectedShipDeploymentId, ships],
+  )
+
+  const handleCopyNodeId = useCallback(async (nodeId: string) => {
+    try {
+      await navigator.clipboard.writeText(nodeId)
+      setNotice({ type: "success", text: "Node ID copied to clipboard." })
+    } catch {
+      setNotice({ type: "error", text: "Unable to copy Node ID." })
+    }
+  }, [])
+
+  const inputCls =
+    "w-full rounded-lg border border-slate-300/70 dark:border-white/15 bg-white/60 dark:bg-white/[0.04] px-3 py-2 text-sm text-slate-900 dark:text-white outline-none placeholder:text-slate-400 dark:placeholder:text-gray-500 focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/20 transition-colors"
+  const selectCls =
+    "rounded-lg border border-slate-300/70 dark:border-white/15 bg-white/60 dark:bg-white/[0.04] px-3 py-2 text-sm text-slate-900 dark:text-white outline-none focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/20 transition-colors"
 
   return (
-    <div className="min-h-screen gradient-orb perspective p-8">
-      <div className="max-w-7xl mx-auto">
-        <div className="flex items-center justify-between mb-8">
-          <div className="flex items-center gap-3">
-            <div className="p-3 rounded-xl bg-gradient-to-br from-blue-500/20 to-cyan-500/20">
-              <Package className="w-8 h-8 text-blue-400" />
+    <div className="min-h-screen gradient-orb">
+      <div className="pointer-events-none fixed inset-0 bridge-grid opacity-40 dark:opacity-100" />
+
+      <div className="relative mx-auto max-w-[1600px] px-4 py-6 sm:px-6 lg:px-8">
+        <header className="mb-6">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-4">
+              <div className="rounded-2xl bg-gradient-to-br from-blue-500/20 to-cyan-500/20 p-3">
+                <Package className="h-7 w-7 text-blue-600 dark:text-blue-300" />
+              </div>
+              <div>
+                <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-white sm:text-3xl">
+                  Application Deployments
+                </h1>
+                <p className="readout mt-1 text-slate-500 dark:text-gray-500">MANAGE DEPLOYED APPLICATIONS</p>
+              </div>
             </div>
-            <h1 className="text-4xl font-bold bg-gradient-to-r from-blue-400 via-cyan-400 to-teal-400 bg-clip-text text-transparent">
-              Application Deployments
-            </h1>
+
+            <button
+              onClick={() => {
+                resetCreateForm()
+                setShowCreateForm(true)
+              }}
+              disabled={isLoadingShips || ships.length === 0}
+              className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-blue-600 to-cyan-600 px-5 py-2.5 text-sm font-medium text-white transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <Package className="h-4 w-4" />
+              Deploy Application
+            </button>
           </div>
-          <button
-            onClick={() => setShowCreateForm(true)}
-            disabled={isLoadingShips || ships.length === 0}
-            className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-blue-600 to-cyan-600 text-white rounded-xl hover:from-blue-700 hover:to-cyan-700 transition-all duration-300 stack-2 transform hover:scale-105 disabled:opacity-60 disabled:cursor-not-allowed disabled:transform-none"
-          >
-            <Package className="w-5 h-5" />
-            Deploy Application
-          </button>
+
+          <div className="mt-5 flex flex-wrap gap-2">
+            {[
+              { label: "TOTAL", value: summary.total, cls: "border-slate-300/70 text-slate-700 dark:text-slate-200" },
+              { label: "ACTIVE", value: summary.active, cls: "border-emerald-500/25 text-emerald-700 dark:text-emerald-300" },
+              { label: "FAILED", value: summary.failed, cls: "border-rose-500/25 text-rose-700 dark:text-rose-300" },
+              ...(hasFilters
+                ? [
+                    {
+                      label: "SHOWING",
+                      value: summary.showing,
+                      cls: "border-cyan-500/25 text-cyan-700 dark:text-cyan-200",
+                    },
+                  ]
+                : []),
+            ].map((stat) => (
+              <div key={stat.label} className={`glass rounded-lg border px-3 py-1.5 ${stat.cls}`}>
+                <span className="readout opacity-70">{stat.label}</span>{" "}
+                <span className="font-semibold font-tactical tabular-nums">{stat.value}</span>
+              </div>
+            ))}
+          </div>
+
+          {notice && (
+            <div
+              className={`mt-4 rounded-lg border px-3 py-2 text-sm ${
+                notice.type === "success"
+                  ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+                  : notice.type === "error"
+                    ? "border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-300"
+                    : "border-cyan-500/30 bg-cyan-500/10 text-cyan-700 dark:text-cyan-300"
+              }`}
+            >
+              {notice.text}
+            </div>
+          )}
+        </header>
+
+        <div className="mb-4 rounded-xl border border-slate-300/70 bg-white/70 p-3 dark:border-white/10 dark:bg-white/[0.03]">
+          <div className="grid grid-cols-1 gap-2 lg:grid-cols-[minmax(0,1fr)_repeat(3,minmax(0,170px))_auto]">
+            <label className="flex items-center gap-2 rounded-lg border border-slate-300/70 bg-white/70 px-3 py-2 dark:border-white/15 dark:bg-white/[0.04]">
+              <Search className="h-4 w-4 text-slate-400 dark:text-slate-500" />
+              <input
+                type="text"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="Search applications, ships, node IDs..."
+                className="w-full bg-transparent text-sm text-slate-900 outline-none placeholder:text-slate-400 dark:text-white dark:placeholder:text-gray-500"
+              />
+            </label>
+
+            <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as typeof statusFilter)} className={selectCls}>
+              {STATUS_FILTER_VALUES.map((status) => (
+                <option key={status} value={status}>
+                  {status === "all" ? "All statuses" : statusConfig[status].label}
+                </option>
+              ))}
+            </select>
+
+            <select value={appTypeFilter} onChange={(event) => setAppTypeFilter(event.target.value as typeof appTypeFilter)} className={selectCls}>
+              {APPLICATION_TYPE_FILTER_VALUES.map((appType) => (
+                <option key={appType} value={appType}>
+                  {appType === "all" ? "All app types" : appTypeConfig[appType].label}
+                </option>
+              ))}
+            </select>
+
+            <select value={nodeTypeFilter} onChange={(event) => setNodeTypeFilter(event.target.value as typeof nodeTypeFilter)} className={selectCls}>
+              {NODE_TYPE_FILTER_VALUES.map((nodeType) => (
+                <option key={nodeType} value={nodeType}>
+                  {nodeType === "all" ? "All node types" : nodeTypeConfig[nodeType].label}
+                </option>
+              ))}
+            </select>
+
+            {hasFilters ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setSearch("")
+                  setStatusFilter("all")
+                  setAppTypeFilter("all")
+                  setNodeTypeFilter("all")
+                }}
+                className="rounded-lg border border-slate-300/70 px-3 py-2 text-sm text-slate-600 transition-colors hover:bg-slate-100 dark:border-white/15 dark:text-slate-300 dark:hover:bg-white/[0.1]"
+              >
+                Clear
+              </button>
+            ) : (
+              <div className="hidden lg:block" />
+            )}
+          </div>
+
+          <div className="mt-2 flex flex-wrap items-center gap-3">
+            <label className="inline-flex items-center gap-2 rounded-lg border border-slate-300/70 bg-white/70 px-3 py-2 text-sm text-slate-700 dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-300">
+              <input
+                type="checkbox"
+                checked={includeForwarded}
+                onChange={(event) => setIncludeForwarded(event.target.checked)}
+              />
+              Include forwarded
+            </label>
+
+            {includeForwarded && (
+              <input
+                type="text"
+                value={sourceNodeId}
+                onChange={(event) => setSourceNodeId(event.target.value)}
+                placeholder="Source node filter"
+                className={`${inputCls} w-full md:max-w-sm`}
+              />
+            )}
+          </div>
         </div>
 
-        <div className="mb-6 flex flex-wrap items-center gap-3">
-          <label className="inline-flex items-center gap-2 rounded-lg border border-white/15 bg-white/[0.04] px-3 py-2 text-sm text-gray-300">
-            <input
-              type="checkbox"
-              checked={includeForwarded}
-              onChange={(e) => setIncludeForwarded(e.target.checked)}
-            />
-            Include forwarded
-          </label>
-          <input
-            type="text"
-            value={sourceNodeId}
-            onChange={(e) => setSourceNodeId(e.target.value)}
-            placeholder="Source node filter"
-            className="rounded-lg border border-white/15 bg-white/[0.04] px-3 py-2 text-sm text-white"
-          />
-        </div>
-
-        <OrchestrationSurface level={4} className="mb-8 bg-white/5">
+        <OrchestrationSurface level={4} className="mb-5">
           <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold">Application Topology</h2>
-            <span className="text-xs text-gray-500 dark:text-gray-400">Interactive runtime map</span>
+            <div>
+              <h2 className="text-lg font-semibold text-slate-900 dark:text-white">Application Topology</h2>
+              <p className="text-xs text-slate-500 dark:text-gray-400">Interactive runtime map</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowTopology((open) => !open)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300/70 bg-white/70 px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-100 dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-300 dark:hover:bg-white/[0.12]"
+            >
+              {showTopology ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+              {showTopology ? "Hide topology" : "Show topology"}
+            </button>
           </div>
-          <div className="mt-4">
-            <FlowCanvas
-              nodes={topologyNodes}
-              edges={topologyEdges}
-              nodeTypes={nodeTypes}
-              onNodeClick={handleTopologyNodeClick}
-              showMiniMap
-              className="h-[360px]"
-            />
-          </div>
+
+          {showTopology ? (
+            <div className="mt-4">
+              <FlowCanvas
+                nodes={topologyNodes}
+                edges={topologyEdges}
+                nodeTypes={nodeTypes}
+                onNodeClick={handleTopologyNodeClick}
+                showMiniMap
+                className="h-[360px]"
+              />
+            </div>
+          ) : null}
         </OrchestrationSurface>
 
-        {showCreateForm && (
-          <OrchestrationSurface level={5} className="mb-8">
-            <h2 className="text-2xl font-semibold mb-6">Deploy New Application</h2>
+        <div className="flex flex-col gap-5 lg:flex-row lg:items-start">
+          <aside className="w-full shrink-0 lg:w-[410px] xl:w-[450px]">
+            <div className="card-scroll space-y-2 overflow-y-auto pr-1" style={{ maxHeight: "calc(100vh - 350px)" }}>
+              {isLoading ? (
+                Array.from({ length: 6 }).map((_, index) => (
+                  <div key={index} className="skeleton-shimmer h-[74px] rounded-xl" />
+                ))
+              ) : filteredApplications.length === 0 ? (
+                <div className="glass rounded-xl px-5 py-10 text-center">
+                  {applications.length === 0 ? (
+                    <>
+                      <Package className="mx-auto mb-3 h-10 w-10 text-blue-500/70 dark:text-blue-300/70" />
+                      <p className="text-sm font-medium text-slate-700 dark:text-slate-200">No applications yet</p>
+                      <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                        Deploy your first application to get started.
+                      </p>
+                      <div className="mt-4 flex flex-wrap justify-center gap-2">
+                        {Object.entries(appTypeConfig).map(([type, config]) => (
+                          <UseCaseBadge
+                            key={type}
+                            label={config.label}
+                            variant={type === "docker" ? "blue" : type === "nodejs" ? "green" : type === "python" ? "orange" : "purple"}
+                          />
+                        ))}
+                      </div>
+                      {ships.length === 0 ? (
+                        <Link
+                          href="/ship-yard"
+                          className="mt-4 inline-flex rounded-lg bg-indigo-600 px-4 py-2 text-xs font-medium text-white hover:bg-indigo-500"
+                        >
+                          Open Ship Yard
+                        </Link>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            resetCreateForm()
+                            setShowCreateForm(true)
+                          }}
+                          className="mt-4 rounded-lg bg-blue-600 px-4 py-2 text-xs font-medium text-white hover:bg-blue-500"
+                        >
+                          Deploy First Application
+                        </button>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      <AlertCircle className="mx-auto mb-2 h-8 w-8 text-amber-600 dark:text-amber-300" />
+                      <p className="text-sm font-medium text-slate-700 dark:text-slate-200">No applications match filters</p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSearch("")
+                          setStatusFilter("all")
+                          setAppTypeFilter("all")
+                          setNodeTypeFilter("all")
+                        }}
+                        className="mt-2 text-xs text-cyan-700 hover:underline dark:text-cyan-300"
+                      >
+                        Reset filters
+                      </button>
+                    </>
+                  )}
+                </div>
+              ) : (
+                filteredApplications.map((application) => {
+                  const statusInfo = statusConfig[application.status]
+                  const StatusIcon = statusInfo.icon
+                  const appTypeInfo = appTypeConfig[application.applicationType]
+                  const AppTypeIcon = appTypeInfo.icon
+                  const selected = application.id === selectedApplicationId
+                  const capability = getApplicationActionCapability(asApplicationListItem(application))
+
+                  return (
+                    <button
+                      key={application.id}
+                      type="button"
+                      onClick={() => setSelectedApplicationId(application.id)}
+                      className={`group relative w-full rounded-xl border text-left transition-all ${
+                        selected
+                          ? "glass-elevated border-cyan-500/35 surface-glow-cyan"
+                          : "glass border-transparent hover:border-slate-300/70 dark:hover:border-white/15"
+                      }`}
+                    >
+                      <div className="flex items-center gap-3 px-4 py-3">
+                        <div className={`rounded-lg border p-1.5 ${appTypeInfo.bg} ${statusInfo.border}`}>
+                          <AppTypeIcon className={`h-4 w-4 ${appTypeInfo.color}`} />
+                        </div>
+
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className="truncate text-sm font-semibold text-slate-800 dark:text-white">{application.name}</span>
+                            {capability.isForwarded && (
+                              <span className="rounded-full border border-cyan-500/35 bg-cyan-500/10 px-1.5 py-0.5 text-[10px] font-medium text-cyan-700 dark:text-cyan-200">
+                                Forwarded
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-slate-500 dark:text-gray-500">
+                            <span className="font-tactical truncate">{application.nodeId}</span>
+                            {application.ship?.name && (
+                              <>
+                                <span className="text-slate-300 dark:text-white/20">&middot;</span>
+                                <span className="truncate">{application.ship.name}</span>
+                              </>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 ${statusInfo.bg} ${statusInfo.border}`}>
+                          <StatusIcon className={`h-3 w-3 ${statusInfo.color} ${statusInfo.pulse ? "animate-pulse" : ""}`} />
+                          <span className={`readout ${statusInfo.color}`}>{statusInfo.label}</span>
+                        </div>
+                      </div>
+                    </button>
+                  )
+                })
+              )}
+            </div>
+          </aside>
+
+          <main className="min-w-0 flex-1">
+            {selectedApplication ? (
+              <ApplicationDetailPanel
+                application={selectedApplication}
+                pendingAction={pendingAction}
+                onCopyNodeId={handleCopyNodeId}
+                onDelete={handleDelete}
+                onStatusUpdate={handleStatusUpdate}
+              />
+            ) : (
+              <div className="glass flex min-h-[420px] flex-col items-center justify-center rounded-2xl text-center">
+                <Package className="mb-3 h-10 w-10 text-slate-400 dark:text-slate-500" />
+                <p className="text-sm font-medium text-slate-700 dark:text-slate-300">
+                  {summary.total === 0 ? "Deploy an application to begin" : "Select an application to view details"}
+                </p>
+                <p className="mt-1 readout text-slate-500 dark:text-gray-500">
+                  {summary.total === 0 ? "NO DEPLOYMENTS" : `${summary.total} DEPLOYMENT${summary.total === 1 ? "" : "S"}`}
+                </p>
+              </div>
+            )}
+          </main>
+        </div>
+      </div>
+
+      {showCreateForm && (
+        <div
+          className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 pt-[5vh] pb-12 backdrop-blur-sm"
+          onClick={() => {
+            if (!isCreating) {
+              setShowCreateForm(false)
+            }
+          }}
+        >
+          <div
+            className="relative w-full max-w-3xl rounded-2xl border border-slate-200/80 bg-white/95 p-6 shadow-2xl dark:border-white/15 dark:bg-slate-950/95"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="mb-5 flex items-center justify-between">
+              <div>
+                <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Deploy New Application</h2>
+                <p className="readout mt-1 text-slate-500 dark:text-gray-500">CONFIGURE DEPLOYMENT TARGET</p>
+              </div>
+
+              <button
+                type="button"
+                disabled={isCreating}
+                onClick={() => setShowCreateForm(false)}
+                className="rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-white/[0.08]"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
             <form onSubmit={handleCreate} className="space-y-4">
               {ships.length === 0 && (
-                <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+                <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
                   No ships available. Launch a ship in{" "}
                   <Link href="/ship-yard" className="underline underline-offset-2">
                     Ship Yard
@@ -714,24 +1247,31 @@ export default function ApplicationsPage() {
                   before deploying applications.
                 </div>
               )}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div>
-                  <label className="block text-sm font-medium mb-2">Application Name</label>
+                  <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">APPLICATION NAME</label>
                   <input
                     type="text"
                     value={formData.name}
-                    onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                    onChange={(event) => setFormData({ ...formData, name: event.target.value })}
                     required
-                    className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
+                    className={inputCls}
                     placeholder="my-app"
                   />
                 </div>
+
                 <div>
-                  <label className="block text-sm font-medium mb-2">Application Type</label>
+                  <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">APPLICATION TYPE</label>
                   <select
                     value={formData.applicationType}
-                    onChange={(e) => setFormData({ ...formData, applicationType: e.target.value as any })}
-                    className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
+                    onChange={(event) =>
+                      setFormData({
+                        ...formData,
+                        applicationType: event.target.value as Application["applicationType"],
+                      })
+                    }
+                    className={`${selectCls} w-full`}
                   >
                     <option value="docker">Docker</option>
                     <option value="nodejs">Node.js</option>
@@ -740,22 +1280,15 @@ export default function ApplicationsPage() {
                     <option value="custom">Custom</option>
                   </select>
                 </div>
-                <div className="md:col-span-2">
-                  <label className="block text-sm font-medium mb-2">Target Ship</label>
+
+                <div className="sm:col-span-2">
+                  <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">TARGET SHIP</label>
                   <select
                     value={formData.shipDeploymentId}
-                    onChange={(e) => {
-                      const selectedId = e.target.value
-                      const ship = ships.find((entry) => entry.id === selectedId)
-                      if (!ship) {
-                        setFormData({ ...formData, shipDeploymentId: selectedId })
-                        return
-                      }
-                      setFormData((current) => applyShipToForm(ship, { ...current, shipDeploymentId: selectedId }))
-                    }}
+                    onChange={(event) => handleShipSelect(event.target.value)}
                     required
                     disabled={ships.length === 0}
-                    className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20 disabled:opacity-60"
+                    className={`${selectCls} w-full disabled:opacity-60`}
                   >
                     {ships.length === 0 ? (
                       <option value="">No ships available</option>
@@ -768,678 +1301,431 @@ export default function ApplicationsPage() {
                     )}
                   </select>
                   {selectedShip && (
-                    <p className="mt-1 text-xs text-cyan-300">
-                      Deploying to {selectedShip.nodeType} node `{selectedShip.nodeId}` via {deploymentProfileLabels[selectedShip.deploymentProfile]}.
+                    <p className="mt-1 text-xs text-cyan-700 dark:text-cyan-300">
+                      Deploying to {selectedShip.nodeType} node `{selectedShip.nodeId}` via{" "}
+                      {deploymentProfileLabels[selectedShip.deploymentProfile]}.
                     </p>
                   )}
                 </div>
+
                 <div>
-                  <label className="block text-sm font-medium mb-2">Node ID</label>
+                  <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">NODE ID</label>
                   <input
                     type="text"
                     value={formData.nodeId}
-                    onChange={(e) => setFormData({ ...formData, nodeId: e.target.value })}
-                    required
                     readOnly
                     disabled
-                    className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
-                    placeholder="node-001"
+                    className={`${inputCls} disabled:opacity-70`}
                   />
                 </div>
+
                 <div>
-                  <label className="block text-sm font-medium mb-2">Deployment Profile</label>
-                  <select
-                    value={formData.deploymentProfile}
-                    onChange={(e) => {
-                      const deploymentProfile = e.target.value as DeploymentProfile
-                      const nodeType =
-                        deploymentProfile === "local_starship_build"
-                          ? "local"
-                          : formData.nodeType === "hybrid"
-                            ? "hybrid"
-                            : "cloud"
-                      setFormData({
-                        ...formData,
-                        deploymentProfile,
-                        advancedNodeTypeOverride:
-                          deploymentProfile === "cloud_shipyard" ? formData.advancedNodeTypeOverride : false,
-                        nodeType,
-                        infrastructure: defaultInfrastructure(deploymentProfile),
-                      })
-                    }}
-                    disabled
-                    className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
-                  >
-                    <option value="local_starship_build">Local Starship Build</option>
-                    <option value="cloud_shipyard">Cloud Shipyard</option>
-                  </select>
-                </div>
-                <div className="md:col-span-2">
-                  <label className="block text-sm font-medium mb-2">Provisioning Mode</label>
-                  <select
-                    value={formData.provisioningMode}
-                    onChange={(e) =>
-                      setFormData({ ...formData, provisioningMode: e.target.value as ProvisioningMode })
-                    }
-                    disabled
-                    className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
-                  >
-                    <option value="terraform_ansible">Terraform + Ansible</option>
-                    <option value="terraform_only" disabled>
-                      Terraform only (coming soon)
-                    </option>
-                    <option value="ansible_only" disabled>
-                      Ansible only (coming soon)
-                    </option>
-                  </select>
-                  <p className="mt-1 text-xs text-gray-500">
-                    {provisioningModeLabels[formData.provisioningMode]}
-                  </p>
-                </div>
-                <div className="md:col-span-2">
-                  <label className="block text-sm font-medium mb-2">Derived Node Type</label>
-                  <div className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20 text-sm">
-                    {deploymentProfileLabels[formData.deploymentProfile]}
-                    {" -> "}
-                    {nodeTypeConfig[derivedNodeType].label}
+                  <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">DERIVED NODE TYPE</label>
+                  <div className="rounded-lg border border-slate-300/70 bg-white/60 px-3 py-2 text-sm text-slate-700 dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-200">
+                    {deploymentProfileLabels[formData.deploymentProfile]} &rarr; {nodeTypeConfig[derivedNodeType].label}
                   </div>
-                  {formData.deploymentProfile === "cloud_shipyard" && (
-                    <div className="mt-2 space-y-2">
-                      <label className="inline-flex items-center gap-2 text-sm text-gray-300">
-                        <input
-                          type="checkbox"
-                          checked={formData.advancedNodeTypeOverride}
-                          onChange={(e) =>
-                            setFormData({
-                              ...formData,
-                              advancedNodeTypeOverride: e.target.checked,
-                              nodeType: e.target.checked ? formData.nodeType : "cloud",
-                            })
-                          }
-                          disabled
-                        />
-                        Advanced override (allow hybrid)
-                      </label>
-                      {formData.advancedNodeTypeOverride && (
-                        <select
-                          value={formData.nodeType}
-                          onChange={(e) => setFormData({ ...formData, nodeType: e.target.value as NodeType })}
-                          disabled
-                          className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
-                        >
-                          <option value="cloud">Cloud</option>
-                          <option value="hybrid">Hybrid</option>
-                        </select>
-                      )}
-                    </div>
-                  )}
                 </div>
+
                 {formData.applicationType === "docker" && (
-                  <div className="md:col-span-2">
-                    <label className="block text-sm font-medium mb-2">Docker Image</label>
+                  <div className="sm:col-span-2">
+                    <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">DOCKER IMAGE</label>
                     <input
                       type="text"
                       value={formData.image}
-                      onChange={(e) => setFormData({ ...formData, image: e.target.value })}
-                      className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
+                      onChange={(event) => setFormData({ ...formData, image: event.target.value })}
+                      className={inputCls}
                       placeholder="nginx:latest or myregistry/myapp:v1.0"
                     />
                   </div>
                 )}
-                {(formData.applicationType === "nodejs" || formData.applicationType === "python" || formData.applicationType === "static") && (
+
+                {(formData.applicationType === "nodejs" ||
+                  formData.applicationType === "python" ||
+                  formData.applicationType === "static") && (
                   <>
-                    <div className="md:col-span-2">
-                      <label className="block text-sm font-medium mb-2">Repository URL</label>
+                    <div className="sm:col-span-2">
+                      <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">REPOSITORY URL</label>
                       <input
                         type="url"
                         value={formData.repository}
-                        onChange={(e) => setFormData({ ...formData, repository: e.target.value })}
-                        className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
+                        onChange={(event) => setFormData({ ...formData, repository: event.target.value })}
+                        className={inputCls}
                         placeholder="https://github.com/user/repo"
                       />
                     </div>
                     <div>
-                      <label className="block text-sm font-medium mb-2">Branch</label>
+                      <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">BRANCH</label>
                       <input
                         type="text"
                         value={formData.branch}
-                        onChange={(e) => setFormData({ ...formData, branch: e.target.value })}
-                        className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
+                        onChange={(event) => setFormData({ ...formData, branch: event.target.value })}
+                        className={inputCls}
                         placeholder="main"
                       />
                     </div>
                     <div>
-                      <label className="block text-sm font-medium mb-2">Port</label>
+                      <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">PORT</label>
                       <input
                         type="number"
                         value={formData.port}
-                        onChange={(e) => setFormData({ ...formData, port: parseInt(e.target.value) || 3000 })}
-                        className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
+                        onChange={(event) =>
+                          setFormData({ ...formData, port: parseInt(event.target.value, 10) || 3000 })
+                        }
+                        className={inputCls}
                         placeholder="3000"
                       />
                     </div>
-                    <div className="md:col-span-2">
-                      <label className="block text-sm font-medium mb-2">Build Command (optional)</label>
+                    <div className="sm:col-span-2">
+                      <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">BUILD COMMAND (OPTIONAL)</label>
                       <input
                         type="text"
                         value={formData.buildCommand}
-                        onChange={(e) => setFormData({ ...formData, buildCommand: e.target.value })}
-                        className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
+                        onChange={(event) => setFormData({ ...formData, buildCommand: event.target.value })}
+                        className={inputCls}
                         placeholder="npm install && npm run build"
                       />
                     </div>
-                    <div className="md:col-span-2">
-                      <label className="block text-sm font-medium mb-2">Start Command</label>
+                    <div className="sm:col-span-2">
+                      <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">START COMMAND</label>
                       <input
                         type="text"
                         value={formData.startCommand}
-                        onChange={(e) => setFormData({ ...formData, startCommand: e.target.value })}
-                        className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
+                        onChange={(event) => setFormData({ ...formData, startCommand: event.target.value })}
+                        className={inputCls}
                         placeholder="npm start or python app.py"
                       />
                     </div>
                   </>
                 )}
-                <div className="md:col-span-2">
-                  <label className="block text-sm font-medium mb-2">Node URL (optional)</label>
-                  <input
-                    type="url"
-                    value={formData.nodeUrl}
-                    onChange={(e) => setFormData({ ...formData, nodeUrl: e.target.value })}
-                    readOnly
-                    disabled
-                    className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
-                    placeholder="https://node.example.com"
-                  />
-                </div>
-                <div className="md:col-span-2">
-                  <label className="block text-sm font-medium mb-2">Infrastructure (config.infrastructure)</label>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 opacity-70 pointer-events-none">
-                    <select
-                      value={formData.infrastructure.kind}
-                      onChange={(e) => {
-                        const selectedKind = e.target.value as InfrastructureKind
-                        const infrastructureKind =
-                          formData.deploymentProfile === "cloud_shipyard" ? "existing_k8s" : selectedKind
-                        setFormData({
-                          ...formData,
-                          infrastructure: {
-                            ...formData.infrastructure,
-                            kind: infrastructureKind,
-                            kubeContext: kubeContextForKind(infrastructureKind),
-                          },
-                        })
-                      }}
-                      disabled={formData.deploymentProfile === "cloud_shipyard"}
-                      className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
-                    >
-                      {formData.deploymentProfile === "cloud_shipyard" ? (
-                        <option value="existing_k8s">
-                          {infrastructureKindLabels.existing_k8s}
-                        </option>
-                      ) : (
-                        <>
-                          <option value="kind">{infrastructureKindLabels.kind}</option>
-                          <option value="minikube">{infrastructureKindLabels.minikube}</option>
-                        </>
-                      )}
-                    </select>
-                    <input
-                      type="text"
-                      value={formData.infrastructure.kubeContext}
-                      onChange={(e) =>
-                        setFormData({
-                          ...formData,
-                          infrastructure: { ...formData.infrastructure, kubeContext: e.target.value },
-                        })
-                      }
-                      className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
-                      placeholder="kube context"
-                    />
-                    <input
-                      type="text"
-                      value={formData.infrastructure.namespace}
-                      onChange={(e) =>
-                        setFormData({
-                          ...formData,
-                          infrastructure: { ...formData.infrastructure, namespace: e.target.value },
-                        })
-                      }
-                      className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
-                      placeholder="namespace"
-                    />
-                    <input
-                      type="text"
-                      value={formData.infrastructure.terraformWorkspace}
-                      onChange={(e) =>
-                        setFormData({
-                          ...formData,
-                          infrastructure: { ...formData.infrastructure, terraformWorkspace: e.target.value },
-                        })
-                      }
-                      className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
-                      placeholder="terraform workspace"
-                    />
-                    <input
-                      type="text"
-                      value={formData.infrastructure.terraformEnvDir}
-                      onChange={(e) =>
-                        setFormData({
-                          ...formData,
-                          infrastructure: { ...formData.infrastructure, terraformEnvDir: e.target.value },
-                        })
-                      }
-                      className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
-                      placeholder="terraform environment directory"
-                    />
-                    <input
-                      type="text"
-                      value={formData.infrastructure.ansibleInventory}
-                      onChange={(e) =>
-                        setFormData({
-                          ...formData,
-                          infrastructure: { ...formData.infrastructure, ansibleInventory: e.target.value },
-                        })
-                      }
-                      className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
-                      placeholder="ansible inventory path"
-                    />
-                    <input
-                      type="text"
-                      value={formData.infrastructure.ansiblePlaybook}
-                      onChange={(e) =>
-                        setFormData({
-                          ...formData,
-                          infrastructure: { ...formData.infrastructure, ansiblePlaybook: e.target.value },
-                        })
-                      }
-                      className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
-                      placeholder="ansible playbook path"
-                    />
-                  </div>
-                </div>
+
                 <div>
-                  <label className="block text-sm font-medium mb-2">Version (optional)</label>
+                  <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">VERSION (OPTIONAL)</label>
                   <input
                     type="text"
                     value={formData.version}
-                    onChange={(e) => setFormData({ ...formData, version: e.target.value })}
-                    className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
+                    onChange={(event) => setFormData({ ...formData, version: event.target.value })}
+                    className={inputCls}
                     placeholder="v1.0.0"
                   />
                 </div>
-                <div className="md:col-span-2">
-                  <label className="block text-sm font-medium mb-2">Description</label>
+
+                <div>
+                  <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">PROVISIONING MODE</label>
+                  <div className="rounded-lg border border-slate-300/70 bg-white/60 px-3 py-2 text-sm text-slate-700 dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-200">
+                    {provisioningModeLabels[formData.provisioningMode]}
+                  </div>
+                </div>
+
+                <div className="sm:col-span-2">
+                  <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">DESCRIPTION</label>
                   <textarea
                     value={formData.description}
-                    onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                    onChange={(event) => setFormData({ ...formData, description: event.target.value })}
                     rows={3}
-                    className="w-full px-4 py-2 glass dark:glass-dark rounded-lg border border-white/20"
+                    className={inputCls}
                     placeholder="Application description..."
                   />
                 </div>
               </div>
-              <div className="flex gap-3">
-                <button
-                  type="submit"
-                  disabled={isCreating || ships.length === 0 || !formData.shipDeploymentId}
-                  className="px-6 py-3 bg-gradient-to-r from-blue-600 to-cyan-600 text-white rounded-xl hover:from-blue-700 hover:to-cyan-700 transition-all duration-300 disabled:opacity-50 stack-2"
-                >
-                  {isCreating ? "Deploying..." : "Deploy"}
-                </button>
+
+              <div className="rounded-lg border border-slate-300/70 bg-white/70 p-3 dark:border-white/15 dark:bg-white/[0.03]">
                 <button
                   type="button"
+                  onClick={() => setShowAdvancedDeployConfig((open) => !open)}
+                  className="inline-flex items-center gap-1.5 text-sm font-medium text-slate-700 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white"
+                >
+                  {showAdvancedDeployConfig ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                  Advanced deployment config (read-only defaults)
+                </button>
+
+                {showAdvancedDeployConfig && (
+                  <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    <div className="rounded border border-slate-300/70 bg-white/70 px-3 py-2 text-xs text-slate-600 dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-300">
+                      Kind: {infrastructureKindLabels[formData.infrastructure.kind]}
+                    </div>
+                    <div className="rounded border border-slate-300/70 bg-white/70 px-3 py-2 text-xs text-slate-600 dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-300">
+                      Kube Context: {formData.infrastructure.kubeContext}
+                    </div>
+                    <div className="rounded border border-slate-300/70 bg-white/70 px-3 py-2 text-xs text-slate-600 dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-300">
+                      Namespace: {formData.infrastructure.namespace}
+                    </div>
+                    <div className="rounded border border-slate-300/70 bg-white/70 px-3 py-2 text-xs text-slate-600 dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-300">
+                      Terraform Workspace: {formData.infrastructure.terraformWorkspace}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex justify-end gap-3">
+                <button
+                  type="button"
+                  disabled={isCreating}
                   onClick={() => setShowCreateForm(false)}
-                  className="px-6 py-3 glass dark:glass-dark rounded-xl border border-white/20 hover:bg-white/10 transition-all"
+                  className="rounded-lg border border-slate-300/70 px-4 py-2 text-sm text-slate-700 transition-colors hover:bg-slate-100 dark:border-white/15 dark:text-slate-300 dark:hover:bg-white/[0.1]"
                 >
                   Cancel
                 </button>
+                <button
+                  type="submit"
+                  disabled={isCreating || ships.length === 0 || !formData.shipDeploymentId}
+                  className="rounded-lg bg-gradient-to-r from-blue-600 to-cyan-600 px-5 py-2 text-sm font-medium text-white transition-all hover:brightness-110 disabled:opacity-60"
+                >
+                  {isCreating ? "Deploying..." : "Deploy"}
+                </button>
               </div>
             </form>
-          </OrchestrationSurface>
-        )}
-
-        {isLoading ? (
-          <div className="text-center py-12">
-            <RefreshCw className="w-8 h-8 text-blue-400 mx-auto mb-4 animate-spin" />
-            <p className="text-gray-500 dark:text-gray-400">Loading applications...</p>
           </div>
-        ) : applications.length === 0 ? (
-          <OrchestrationSurface level={3} className="text-center py-12">
-            <Package className="w-16 h-16 text-blue-400 mx-auto mb-4 opacity-50" />
-            <h3 className="text-xl font-semibold mb-2">No Applications Yet</h3>
-            <p className="text-gray-500 dark:text-gray-400 mb-4">
-              Deploy your first application to get started with Orchwiz.
-            </p>
-            <div className="flex flex-wrap justify-center gap-2 mb-6">
-              {Object.entries(appTypeConfig).map(([type, config]) => (
-                <UseCaseBadge
-                  key={type}
-                  label={config.label}
-                  variant={type === "docker" ? "blue" : type === "nodejs" ? "green" : type === "python" ? "orange" : "purple"}
-                />
-              ))}
-            </div>
-            {ships.length === 0 ? (
-              <Link
-                href="/ship-yard"
-                className="inline-flex px-6 py-3 bg-gradient-to-r from-indigo-600 to-violet-600 text-white rounded-xl hover:from-indigo-700 hover:to-violet-700 transition-all"
-              >
-                Open Ship Yard
-              </Link>
-            ) : (
-              <button
-                onClick={() => setShowCreateForm(true)}
-                className="px-6 py-3 bg-gradient-to-r from-blue-600 to-cyan-600 text-white rounded-xl hover:from-blue-700 hover:to-cyan-700 transition-all"
-              >
-                Deploy First Application
-              </button>
-            )}
-          </OrchestrationSurface>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {applications.map((application, index) => {
-              const StatusIcon = statusConfig[application.status].icon
-              const AppTypeIcon = appTypeConfig[application.applicationType].icon
-              const appTypeInfo = appTypeConfig[application.applicationType]
-              const statusInfo = statusConfig[application.status]
-              const stackLevel = ((index % 5) + 1) as 1 | 2 | 3 | 4 | 5
-              const isSelected = application.id === selectedApplicationId
+        </div>
+      )}
+    </div>
+  )
+}
 
-              const frontContent = (
-                <div className="h-full flex flex-col">
-                  {/* Header with Status */}
-                  <div className="flex items-start justify-between mb-4">
-                    <div className="flex items-center gap-3">
-                      <div className={`p-2 rounded-xl ${appTypeInfo.bg}`}>
-                        <AppTypeIcon className={`w-5 h-5 ${appTypeInfo.color}`} />
-                      </div>
-                      <div>
-                        <h3 className="text-lg font-semibold leading-tight">{application.name}</h3>
-                        <span className={`text-xs ${appTypeInfo.color}`}>{appTypeInfo.label}</span>
-                        {application.ship?.name && (
-                          <span className="ml-2 text-xs text-cyan-300">on {application.ship.name}</span>
-                        )}
-                      </div>
-                    </div>
-                    <div
-                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border ${statusInfo.bg} ${statusInfo.border}`}
-                    >
-                      <StatusIcon
-                        className={`w-3.5 h-3.5 ${statusInfo.color} ${statusInfo.pulse ? "animate-pulse" : ""}`}
-                      />
-                      <span className={`text-xs font-medium ${statusInfo.color}`}>
-                        {statusInfo.label}
-                      </span>
-                    </div>
-                  </div>
+function ApplicationDetailPanel({
+  application,
+  pendingAction,
+  onCopyNodeId,
+  onDelete,
+  onStatusUpdate,
+}: {
+  application: Application
+  pendingAction: { id: string; type: "status" | "delete" } | null
+  onCopyNodeId: (nodeId: string) => void
+  onDelete: (application: Application) => void
+  onStatusUpdate: (application: Application, status: Application["status"]) => void
+}) {
+  const statusInfo = statusConfig[application.status]
+  const appTypeInfo = appTypeConfig[application.applicationType]
+  const StatusIcon = statusInfo.icon
+  const AppTypeIcon = appTypeInfo.icon
 
-                  {/* Description */}
-                  {application.description && (
-                    <p className="text-sm text-gray-400 mb-4 line-clamp-2">
-                      {application.description}
-                    </p>
+  const capability = getApplicationActionCapability(asApplicationListItem(application))
+  const isStatusPending = pendingAction?.id === application.id && pendingAction.type === "status"
+  const isDeletePending = pendingAction?.id === application.id && pendingAction.type === "delete"
+
+  return (
+    <div className="glass-elevated overflow-hidden rounded-2xl">
+      <div className="border-b border-slate-200/60 px-6 py-5 dark:border-white/10">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-3">
+              <div className={`rounded-xl border p-2.5 ${appTypeInfo.bg} ${statusInfo.border}`}>
+                <AppTypeIcon className={`h-5 w-5 ${appTypeInfo.color}`} />
+              </div>
+              <div className="min-w-0">
+                <h2 className="truncate text-xl font-bold tracking-tight text-slate-900 dark:text-white">{application.name}</h2>
+                <div className="mt-0.5 flex items-center gap-2">
+                  <span className="font-tactical text-xs text-slate-500 dark:text-gray-500">{application.nodeId}</span>
+                  {application.ship?.name && (
+                    <>
+                      <span className="text-slate-300 dark:text-white/20">&middot;</span>
+                      <span className="text-xs text-cyan-700 dark:text-cyan-300">{application.ship.name}</span>
+                    </>
                   )}
-
-                  {/* Application Info */}
-                  <div className="flex-1 space-y-2">
-                    {/* Docker Image or Repository */}
-                    {application.image && (
-                      <div className="flex items-center gap-2 text-xs">
-                        <Container className="w-3.5 h-3.5 text-blue-400" />
-                        <code className="bg-black/30 px-1.5 py-0.5 rounded font-mono text-gray-300 truncate max-w-[200px]">
-                          {application.image}
-                        </code>
-                      </div>
-                    )}
-                    {application.repository && (
-                      <div className="flex items-center gap-2 text-xs">
-                        <GitBranch className="w-3.5 h-3.5 text-purple-400" />
-                        <span className="text-gray-400 truncate max-w-[180px]">
-                          {application.repository.replace('https://github.com/', '')}
-                        </span>
-                        {application.branch && (
-                          <code className="bg-purple-500/20 text-purple-300 px-1.5 py-0.5 rounded text-[10px]">
-                            {application.branch}
-                          </code>
-                        )}
-                      </div>
-                    )}
-
-                    {/* Port & Version */}
-                    <div className="flex items-center gap-3 text-xs">
-                      {application.port && (
-                        <div className="flex items-center gap-1.5 text-cyan-400">
-                          <Hash className="w-3 h-3" />
-                          <span>:{application.port}</span>
-                        </div>
-                      )}
-                      {application.version && (
-                        <div className="flex items-center gap-1.5 text-gray-400">
-                          <Layers className="w-3 h-3" />
-                          <span>{application.version}</span>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Node Info Summary */}
-                    <div className="pt-2 mt-2 border-t border-white/5">
-                      <NodeInfoCard
-                        nodeType={application.nodeType}
-                        nodeId={application.nodeId}
-                        nodeUrl={application.nodeUrl}
-                        healthStatus={application.healthStatus}
-                        deploymentProfile={application.deploymentProfile}
-                        provisioningMode={application.provisioningMode}
-                        infrastructure={extractInfrastructureConfig(
-                          application.config,
-                          application.deploymentProfile,
-                        )}
-                        showCapabilities={false}
-                        showConfig={false}
-                        showSecurity={false}
-                        showUseCases={false}
-                        compact={true}
-                      />
-                    </div>
-                  </div>
-
-                  {/* Quick Status */}
-                  <div className="flex items-center justify-between mt-4 pt-3 border-t border-white/10">
-                    <div className="flex items-center gap-2">
-                      {application.healthStatus && (
-                        <div
-                          className={`flex items-center gap-1 px-2 py-1 rounded-md text-xs ${
-                            application.healthStatus === "healthy"
-                              ? "bg-green-500/10 text-green-400"
-                              : "bg-red-500/10 text-red-400"
-                          }`}
-                        >
-                          <Activity className="w-3 h-3" />
-                          <span className="capitalize">{application.healthStatus}</span>
-                        </div>
-                      )}
-                    </div>
-                    <span className="text-[10px] text-gray-500">Hover to see details</span>
-                  </div>
                 </div>
-              )
+              </div>
+            </div>
+          </div>
 
-              const backContent = (
-                <div className="h-full flex flex-col">
-                  {/* Header */}
-                  <div className="flex items-center justify-between mb-4">
-                    <div className="flex items-center gap-2">
-                      <Settings className="w-4 h-4 text-gray-400" />
-                      <h3 className="text-sm font-medium text-gray-300">Application Details</h3>
-                    </div>
-                    <div
-                      className={`flex items-center gap-1.5 px-2 py-0.5 rounded-md ${statusInfo.bg}`}
-                    >
-                      <StatusIcon className={`w-3 h-3 ${statusInfo.color}`} />
-                      <span className={`text-[10px] font-medium ${statusInfo.color}`}>
-                        {statusInfo.label}
-                      </span>
-                    </div>
-                  </div>
+          <div className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 ${statusInfo.bg} ${statusInfo.border}`}>
+            <StatusIcon className={`h-3.5 w-3.5 ${statusInfo.color} ${statusInfo.pulse ? "animate-pulse" : ""}`} />
+            <span className={`readout ${statusInfo.color}`}>{statusInfo.label}</span>
+          </div>
+        </div>
 
-                  {/* Application Details */}
-                  <div className="flex-1 space-y-3 overflow-hidden">
-                    {/* Type Info */}
-                    <div className="flex items-center gap-2">
-                      <div className={`p-1.5 rounded-lg ${appTypeInfo.bg}`}>
-                        <AppTypeIcon className={`w-3.5 h-3.5 ${appTypeInfo.color}`} />
-                      </div>
-                      <div>
-                        <div className={`text-xs font-medium ${appTypeInfo.color}`}>
-                          {appTypeInfo.label}
-                        </div>
-                        <div className="text-[10px] text-gray-500">{appTypeInfo.description}</div>
-                      </div>
-                    </div>
+        <div className="mt-4 flex flex-wrap items-center gap-1.5">
+          <span className={`rounded-full border px-2.5 py-0.5 readout ${appTypeInfo.bg} ${appTypeInfo.color}`}>
+            {appTypeInfo.label}
+          </span>
+          <span className="rounded-full border border-slate-300/70 bg-slate-100/70 px-2.5 py-0.5 readout text-slate-600 dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-300">
+            {nodeTypeConfig[application.nodeType].label}
+          </span>
+          <span className="rounded-full border border-slate-300/70 bg-slate-100/70 px-2.5 py-0.5 readout text-slate-600 dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-300">
+            {deploymentProfileLabels[application.deploymentProfile]}
+          </span>
+          {capability.isForwarded && (
+            <span className="rounded-full border border-cyan-500/35 bg-cyan-500/12 px-2.5 py-0.5 readout text-cyan-700 dark:text-cyan-200">
+              Forwarded
+            </span>
+          )}
+          {application.healthStatus && (
+            <span
+              className={`rounded-full border px-2.5 py-0.5 readout ${
+                application.healthStatus === "healthy"
+                  ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+                  : "border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-300"
+              }`}
+            >
+              {application.healthStatus}
+            </span>
+          )}
+        </div>
 
-                    {/* Build & Run Commands */}
-                    {(application.buildCommand || application.startCommand) && (
-                      <div className="space-y-1.5">
-                        {application.buildCommand && (
-                          <div className="flex items-start gap-2">
-                            <Terminal className="w-3 h-3 text-orange-400 mt-0.5" />
-                            <div>
-                              <div className="text-[10px] text-gray-500">Build</div>
-                              <code className="text-[10px] text-orange-300 font-mono">
-                                {application.buildCommand}
-                              </code>
-                            </div>
-                          </div>
-                        )}
-                        {application.startCommand && (
-                          <div className="flex items-start gap-2">
-                            <Play className="w-3 h-3 text-green-400 mt-0.5" />
-                            <div>
-                              <div className="text-[10px] text-gray-500">Start</div>
-                              <code className="text-[10px] text-green-300 font-mono">
-                                {application.startCommand}
-                              </code>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    {/* Node Info */}
-                    <div className="pt-2 border-t border-white/10">
-                      <NodeInfoCard
-                        nodeType={application.nodeType}
-                        nodeId={application.nodeId}
-                        nodeUrl={application.nodeUrl}
-                        healthStatus={application.healthStatus}
-                        deployedAt={application.deployedAt}
-                        deploymentProfile={application.deploymentProfile}
-                        provisioningMode={application.provisioningMode}
-                        infrastructure={extractInfrastructureConfig(
-                          application.config,
-                          application.deploymentProfile,
-                        )}
-                        showCapabilities={true}
-                        showConfig={false}
-                        showSecurity={true}
-                        showUseCases={false}
-                        metrics={
-                          application.status === "active"
-                            ? {
-                                uptime: application.deployedAt
-                                  ? formatUptime(new Date(application.deployedAt))
-                                  : undefined,
-                              }
-                            : undefined
-                        }
-                        compact={false}
-                      />
-                    </div>
-                  </div>
-
-                  {/* Actions */}
-                  <div className="mt-auto pt-3 space-y-2">
-                    <div className="grid grid-cols-2 gap-2">
-                      {application.status === "active" ? (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            handleStatusUpdate(application.id, "inactive")
-                          }}
-                          className="flex items-center justify-center gap-1.5 px-3 py-2 glass dark:glass-dark rounded-lg border border-orange-500/20 text-orange-400 hover:bg-orange-500/10 transition-all text-xs"
-                        >
-                          <Square className="w-3.5 h-3.5" />
-                          Stop
-                        </button>
-                      ) : (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            handleStatusUpdate(application.id, "active")
-                          }}
-                          className="flex items-center justify-center gap-1.5 px-3 py-2 bg-gradient-to-r from-green-600 to-emerald-600 text-white rounded-lg hover:from-green-700 hover:to-emerald-700 transition-all text-xs"
-                        >
-                          <Play className="w-3.5 h-3.5" />
-                          Start
-                        </button>
-                      )}
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          navigator.clipboard.writeText(application.nodeId)
-                        }}
-                        className="flex items-center justify-center gap-1.5 px-3 py-2 glass dark:glass-dark rounded-lg border border-white/20 hover:bg-white/10 transition-all text-xs"
-                        title="Copy Node ID"
-                      >
-                        <Copy className="w-3.5 h-3.5" />
-                        Copy ID
-                      </button>
-                    </div>
-                    <div className="grid grid-cols-2 gap-2">
-                      {application.nodeUrl && (
-                        <a
-                          href={application.nodeUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          onClick={(e) => e.stopPropagation()}
-                          className="flex items-center justify-center gap-1.5 px-3 py-2 glass dark:glass-dark rounded-lg border border-blue-500/20 text-blue-400 hover:bg-blue-500/10 transition-all text-xs"
-                        >
-                          <ExternalLink className="w-3.5 h-3.5" />
-                          Open
-                        </a>
-                      )}
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          handleDelete(application.id)
-                        }}
-                        className={`flex items-center justify-center gap-1.5 px-3 py-2 glass dark:glass-dark rounded-lg border border-red-500/20 text-red-400 hover:bg-red-500/10 transition-all text-xs ${
-                          !application.nodeUrl ? "col-span-2" : ""
-                        }`}
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                        Delete
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              )
-
-              return (
-                <FlipCard
-                  key={application.id}
-                  front={frontContent}
-                  back={backContent}
-                  level={stackLevel}
-                  className={`h-full min-h-[380px] ${
-                    isSelected ? "ring-2 ring-cyan-400/60 shadow-[0_0_20px_rgba(34,211,238,0.25)]" : ""
-                  }`}
-                />
-              )
-            })}
+        {!capability.canMutate && capability.reason && (
+          <div className="mt-3 rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 text-xs text-cyan-700 dark:text-cyan-200">
+            {capability.reason}
           </div>
         )}
+
+        <div className="mt-4 flex flex-wrap gap-2">
+          {application.status === "active" ? (
+            <button
+              type="button"
+              onClick={() => onStatusUpdate(application, "inactive")}
+              disabled={isStatusPending || !capability.canMutate}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-orange-500/30 bg-orange-500/10 px-3 py-1.5 text-xs font-medium text-orange-700 transition-colors hover:bg-orange-500/20 disabled:opacity-60 dark:text-orange-300"
+            >
+              <Square className="h-3.5 w-3.5" />
+              {isStatusPending ? "Stopping..." : "Stop"}
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => onStatusUpdate(application, "active")}
+              disabled={isStatusPending || !capability.canMutate}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-emerald-600 to-green-600 px-3 py-1.5 text-xs font-medium text-white transition-all hover:brightness-110 disabled:opacity-60"
+            >
+              <Play className="h-3.5 w-3.5" />
+              {isStatusPending ? "Starting..." : "Start"}
+            </button>
+          )}
+
+          <button
+            type="button"
+            onClick={() => onCopyNodeId(application.nodeId)}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300/70 bg-white/70 px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-100 dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-300 dark:hover:bg-white/[0.12]"
+          >
+            <Copy className="h-3.5 w-3.5" />
+            Copy ID
+          </button>
+
+          {application.nodeUrl && (
+            <a
+              href={application.nodeUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-blue-500/30 bg-blue-500/10 px-3 py-1.5 text-xs font-medium text-blue-700 transition-colors hover:bg-blue-500/20 dark:text-blue-300"
+            >
+              <ExternalLink className="h-3.5 w-3.5" />
+              Open
+            </a>
+          )}
+
+          <button
+            type="button"
+            onClick={() => onDelete(application)}
+            disabled={isDeletePending || !capability.canMutate}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-1.5 text-xs font-medium text-rose-700 transition-colors hover:bg-rose-500/20 disabled:opacity-60 dark:text-rose-300"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            {isDeletePending ? "Deleting..." : "Delete"}
+          </button>
+        </div>
+      </div>
+
+      <div className="space-y-5 p-6">
+        {application.description && (
+          <p className="text-sm leading-relaxed text-slate-600 dark:text-slate-300">{application.description}</p>
+        )}
+
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+          {application.image && (
+            <div className="glass rounded-lg px-3 py-2 text-xs text-slate-600 dark:text-slate-300">
+              <div className="mb-1 flex items-center gap-1.5 text-slate-500 dark:text-gray-500">
+                <Container className="h-3.5 w-3.5" />
+                Image
+              </div>
+              <code className="break-all font-tactical text-[11px]">{application.image}</code>
+            </div>
+          )}
+
+          {application.repository && (
+            <div className="glass rounded-lg px-3 py-2 text-xs text-slate-600 dark:text-slate-300">
+              <div className="mb-1 flex items-center gap-1.5 text-slate-500 dark:text-gray-500">
+                <GitBranch className="h-3.5 w-3.5" />
+                Repository
+              </div>
+              <div className="break-all font-tactical text-[11px]">{application.repository}</div>
+              {application.branch && (
+                <span className="mt-1 inline-flex rounded bg-violet-500/12 px-1.5 py-0.5 text-[10px] text-violet-700 dark:text-violet-300">
+                  {application.branch}
+                </span>
+              )}
+            </div>
+          )}
+
+          {application.port && (
+            <div className="glass rounded-lg px-3 py-2 text-xs text-slate-600 dark:text-slate-300">
+              <div className="mb-1 flex items-center gap-1.5 text-slate-500 dark:text-gray-500">
+                <Hash className="h-3.5 w-3.5" />
+                Port
+              </div>
+              <div className="font-tactical text-[11px]">:{application.port}</div>
+            </div>
+          )}
+
+          {application.version && (
+            <div className="glass rounded-lg px-3 py-2 text-xs text-slate-600 dark:text-slate-300">
+              <div className="mb-1 flex items-center gap-1.5 text-slate-500 dark:text-gray-500">
+                <Layers className="h-3.5 w-3.5" />
+                Version
+              </div>
+              <div className="font-tactical text-[11px]">{application.version}</div>
+            </div>
+          )}
+
+          {application.deployedAt && application.status === "active" && (
+            <div className="glass rounded-lg px-3 py-2 text-xs text-slate-600 dark:text-slate-300">
+              <div className="mb-1 flex items-center gap-1.5 text-slate-500 dark:text-gray-500">
+                <CheckCircle2 className="h-3.5 w-3.5" />
+                Uptime
+              </div>
+              <div className="font-tactical text-[11px]">{formatUptime(new Date(application.deployedAt))}</div>
+            </div>
+          )}
+        </div>
+
+        {(application.buildCommand || application.startCommand) && (
+          <div className="rounded-xl border border-slate-300/70 bg-white/70 p-3 dark:border-white/12 dark:bg-white/[0.03]">
+            <h3 className="mb-2 text-sm font-semibold text-slate-700 dark:text-slate-200">Build & Runtime Commands</h3>
+            <div className="space-y-2 text-xs">
+              {application.buildCommand && (
+                <div>
+                  <div className="readout text-slate-500 dark:text-gray-500">BUILD</div>
+                  <code className="font-tactical text-orange-700 dark:text-orange-300">{application.buildCommand}</code>
+                </div>
+              )}
+              {application.startCommand && (
+                <div>
+                  <div className="readout text-slate-500 dark:text-gray-500">START</div>
+                  <code className="font-tactical text-emerald-700 dark:text-emerald-300">{application.startCommand}</code>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        <NodeInfoCard
+          nodeType={application.nodeType}
+          nodeId={application.nodeId}
+          nodeUrl={application.nodeUrl}
+          healthStatus={application.healthStatus}
+          deployedAt={application.deployedAt}
+          deploymentProfile={application.deploymentProfile}
+          provisioningMode={application.provisioningMode}
+          infrastructure={extractInfrastructureConfig(application.config, application.deploymentProfile)}
+          showCapabilities
+          showConfig
+          showSecurity
+          showUseCases={false}
+          metrics={
+            application.status === "active"
+              ? {
+                  uptime: application.deployedAt ? formatUptime(new Date(application.deployedAt)) : undefined,
+                }
+              : undefined
+          }
+        />
       </div>
     </div>
   )

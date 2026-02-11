@@ -18,6 +18,7 @@ import {
   resolveShipyardBillingReturnUrls,
   ShipyardBillingProviderError,
 } from "@/lib/shipyard/billing/stripe"
+import { requireShipyardRequestActor } from "@/lib/shipyard/request-actor"
 
 export const dynamic = "force-dynamic"
 
@@ -258,5 +259,8 @@ export async function handlePostTopup(
 }
 
 export async function POST(request: NextRequest) {
-  return handlePostTopup(request)
+  return handlePostTopup(request, {
+    ...defaultDeps,
+    requireActor: async () => requireShipyardRequestActor(request),
+  })
 }

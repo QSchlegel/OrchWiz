@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import type { Prisma } from "@prisma/client"
-import { auth } from "@/lib/auth"
 import { prisma } from "@/lib/prisma"
-import { headers } from "next/headers"
+import { AccessControlError } from "@/lib/security/access-control"
 import {
   runDeploymentAdapter,
   type DeploymentAdapterResult,
@@ -27,7 +26,6 @@ import {
   hasCompleteBridgeCrewCoverage,
 } from "@/lib/shipyard/deployment-overview"
 import { buildOpenClawBridgeCrewContextBundle } from "@/lib/deployment/openclaw-context"
-import { resolveShipyardApiActorFromRequest } from "@/lib/shipyard/api-auth"
 import { ensureShipQuartermaster } from "@/lib/quartermaster/service"
 import { getCloudProviderHandler } from "@/lib/shipyard/cloud/providers/registry"
 import { readCloudProviderConfig } from "@/lib/shipyard/cloud/types"
@@ -47,6 +45,7 @@ import {
   refundLaunchDebit,
   ShipyardInsufficientCreditsError,
 } from "@/lib/shipyard/billing/wallet"
+import { requireShipyardRequestActor } from "@/lib/shipyard/request-actor"
 
 export const dynamic = "force-dynamic"
 
@@ -117,29 +116,11 @@ function parseCrewOverrides(input: unknown): CrewOverrides {
 export async function POST(request: NextRequest) {
   try {
     const body = asRecord(await request.json())
-    const actorResolution = await resolveShipyardApiActorFromRequest(request, {
-      shipyardApiToken: process.env.SHIPYARD_API_TOKEN,
+    const actor = await requireShipyardRequestActor(request, {
+      allowLegacyTokenAuth: true,
       body,
-      getSessionUserId: async () => {
-        const session = await auth.api.getSession({ headers: await headers() })
-        return asString(session?.user?.id)
-      },
-      userExists: async (userId) => {
-        const user = await prisma.user.findUnique({
-          where: {
-            id: userId,
-          },
-          select: {
-            id: true,
-          },
-        })
-        return Boolean(user)
-      },
     })
-    if (!actorResolution.ok) {
-      return NextResponse.json({ error: actorResolution.error }, { status: actorResolution.status })
-    }
-    const ownerUserId = actorResolution.actor.userId
+    const ownerUserId = actor.userId
 
     const name = asString(body?.name)
     const nodeId = asString(body?.nodeId)
@@ -240,15 +221,9 @@ export async function POST(request: NextRequest) {
             deploymentOverview:
               deploymentOverview as unknown as Prisma.InputJsonValue,
             apiActor: {
-              type: actorResolution.actor.type,
-              requestedUserId:
-                actorResolution.actor.type === "token"
-                  ? actorResolution.actor.requestedUserId
-                  : actorResolution.actor.userId,
-              impersonated:
-                actorResolution.actor.type === "token"
-                  ? actorResolution.actor.impersonated
-                  : false,
+              type: actor.authType,
+              requestedUserId: actor.requestedUserId || actor.userId,
+              impersonated: actor.impersonated === true,
             },
             ...(normalizedProfile.deploymentProfile === "local_starship_build"
               ? { saneBootstrap }
@@ -684,6 +659,9 @@ export async function POST(request: NextRequest) {
       deploymentOverview,
     })
   } catch (error) {
+    if (error instanceof AccessControlError) {
+      return NextResponse.json({ error: error.message, code: error.code }, { status: error.status })
+    }
     console.error("Error launching ship yard deployment:", error)
     return NextResponse.json({ error: "Internal server error" }, { status: 500 })
   }

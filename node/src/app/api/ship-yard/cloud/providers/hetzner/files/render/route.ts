@@ -1,18 +1,19 @@
 import { NextRequest, NextResponse } from "next/server"
 import { prisma } from "@/lib/prisma"
-import { AccessControlError, requireAccessActor } from "@/lib/security/access-control"
+import { AccessControlError } from "@/lib/security/access-control"
 import { readJsonBody, asNonEmptyString } from "@/lib/shipyard/cloud/http"
 import {
   renderHetznerFileBundle,
   SHIPYARD_CLOUD_FILE_ALLOWLIST,
 } from "@/lib/shipyard/cloud/files"
 import { normalizeCloudProviderConfig } from "@/lib/shipyard/cloud/types"
+import { requireShipyardRequestActor } from "@/lib/shipyard/request-actor"
 
 export const dynamic = "force-dynamic"
 
 export async function POST(request: NextRequest) {
   try {
-    const actor = await requireAccessActor()
+    const actor = await requireShipyardRequestActor(request)
     const body = await readJsonBody(request)
 
     const cloudProvider = normalizeCloudProviderConfig(body.cloudProvider || body)

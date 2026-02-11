@@ -47,8 +47,9 @@ Copy `node/.env.example`. Key groups:
 - Bridge TTS (optional Kugelaudio sidecar): `BRIDGE_TTS_ENABLED`, `KUGELAUDIO_TTS_BASE_URL`, `KUGELAUDIO_TTS_TIMEOUT_MS`, `KUGELAUDIO_TTS_BEARER_TOKEN`, `KUGELAUDIO_TTS_CFG_SCALE`, `KUGELAUDIO_TTS_MAX_TOKENS`, `KUGELAUDIO_TTS_VOICE_DEFAULT`, `KUGELAUDIO_TTS_VOICE_XO`, `KUGELAUDIO_TTS_VOICE_OPS`, `KUGELAUDIO_TTS_VOICE_ENG`, `KUGELAUDIO_TTS_VOICE_SEC`, `KUGELAUDIO_TTS_VOICE_MED`, `KUGELAUDIO_TTS_VOICE_COU`
 - Skills catalog/import: `ORCHWIZ_CODEX_HOME_ROOT`, `ORCHWIZ_SKILL_IMPORT_TIMEOUT_MS`, `ORCHWIZ_SKILL_CATALOG_STALE_MS`
 - Bridge chat compatibility auth: `BRIDGE_ADMIN_TOKEN`
-- Ship Yard machine auth: `SHIPYARD_API_TOKEN`
+- Ship Yard legacy machine auth (launch/status only): `SHIPYARD_API_TOKEN`
 - Ship Yard token scope controls: `SHIPYARD_API_ALLOWED_USER_IDS`, `SHIPYARD_API_TOKEN_USER_ID`, `SHIPYARD_API_ALLOW_IMPERSONATION`, `SHIPYARD_API_DEFAULT_USER_ID`
+- Ship Yard user API key management: `GET/POST /api/ship-yard/api-keys`, `DELETE /api/ship-yard/api-keys/:id` (session auth only)
 - Landing XO teaser controls: `LANDING_XO_ENABLED` (default `true`), `LANDING_XO_STAGE` (default `public-preview`)
 - Wallet enclave: `WALLET_ENCLAVE_ENABLED`, `WALLET_ENCLAVE_URL`, `WALLET_ENCLAVE_TIMEOUT_MS`, `WALLET_ENCLAVE_REQUIRE_BRIDGE_SIGNATURES`, `WALLET_ENCLAVE_REQUIRE_PRIVATE_MEMORY_ENCRYPTION`, `WALLET_ENCLAVE_SHARED_SECRET`
 - Encrypted Langfuse traces: `TRACE_ENCRYPT_ENABLED`, `TRACE_ENCRYPT_REQUIRED`, `TRACE_ENCRYPT_FIELDS`, `LANGFUSE_BASE_URL`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `OBSERVABILITY_DECRYPT_ADMIN_TOKEN`
@@ -112,13 +113,24 @@ Create flows for both agent and application deployments support profile-aware fi
 - Local flow validates kube context presence but does not auto-create/start clusters
 - Failures return structured non-2xx responses with `error`, `code`, and optional `details.suggestedCommands`
 
-Machine-auth for Ship Yard can use `Authorization: Bearer ${SHIPYARD_API_TOKEN}`.
+Ship Yard supports user API keys and legacy machine token auth.
 
-- If bearer auth is used, `userId` is required (`body.userId`, `?userId=...`, or `x-orchwiz-user-id` header).
-- If no bearer header is provided, the route falls back to session auth.
-- Optional scope controls can restrict token-auth targeting (`SHIPYARD_API_ALLOWED_USER_IDS`, `SHIPYARD_API_TOKEN_USER_ID`, and impersonation flags).
+- User API key auth: `Authorization: Bearer <shipyard-user-api-key>`
+  - User is inferred from the key owner (no `userId` required).
+  - Works across user-authenticated `/api/ship-yard/*` routes.
+- Legacy machine token auth: `Authorization: Bearer ${SHIPYARD_API_TOKEN}`
+  - Supported on `POST /api/ship-yard/launch` and `GET /api/ship-yard/status/:id` only.
+  - `userId` is required (`body.userId`, `?userId=...`, or `x-orchwiz-user-id` header).
+  - Optional scope controls can restrict token-auth targeting (`SHIPYARD_API_ALLOWED_USER_IDS`, `SHIPYARD_API_TOKEN_USER_ID`, and impersonation flags).
+- If no bearer header is provided, routes fall back to session auth.
 
 `GET /api/ship-yard/status/:id` returns deployment + bridge crew state with the same auth behavior.
+
+### Ship Yard User API Keys
+
+- `GET /api/ship-yard/api-keys` lists existing user keys (metadata only, no plaintext secret).
+- `POST /api/ship-yard/api-keys` creates a new key and returns plaintext key once.
+- `DELETE /api/ship-yard/api-keys/:id` revokes a key (idempotent when already revoked).
 
 ### Ship Yard Secret Vault Templates
 
@@ -281,7 +293,7 @@ Bridge Call and Bridge Chat can synthesize spoken replies through an optional se
 - Bridge chat compatibility: `/api/threads`, `/api/threads/:threadId/messages`
 - Ship-scoped cross-agent chat: `/api/ships/:id/agent-chat/rooms`, `/api/ships/:id/agent-chat/rooms/:roomId/messages`
 - Deployments: `/api/deployments`, `/api/applications`
-- Ship Yard: `/api/ship-yard/launch`, `/api/ship-yard/status/:id`, `/api/ship-yard/secrets`
+- Ship Yard: `/api/ship-yard/launch`, `/api/ship-yard/status/:id`, `/api/ship-yard/secrets`, `/api/ship-yard/api-keys`, `/api/ship-yard/api-keys/:id`
 - Ship Yard self-healing (beta): `/api/ship-yard/self-heal/preferences`, `/api/ship-yard/self-heal/run`, `/api/ship-yard/self-heal/runs`, `/api/ship-yard/self-heal/cron`
 - Ship Quartermaster: `/api/ships/:id/quartermaster` (GET/POST), `/api/ships/:id/quartermaster/provision` (POST)
 - Ship Knowledge Base:

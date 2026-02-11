@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import type { Prisma } from "@prisma/client"
 import { prisma } from "@/lib/prisma"
-import { AccessControlError, requireAccessActor } from "@/lib/security/access-control"
+import { AccessControlError } from "@/lib/security/access-control"
 import { asNonEmptyString, readJsonBody } from "@/lib/shipyard/cloud/http"
 import {
   buildHetznerSshKeySubmissionSnippet,
@@ -11,6 +11,7 @@ import {
   ShipyardCloudVaultError,
   storeCloudSshPrivateKeyEnvelope,
 } from "@/lib/shipyard/cloud/vault"
+import { requireShipyardRequestActor } from "@/lib/shipyard/request-actor"
 
 export const dynamic = "force-dynamic"
 
@@ -24,9 +25,9 @@ function fallbackKeyName(): string {
   return `orchwiz-hetzner-${isoCompact}`
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    const actor = await requireAccessActor()
+    const actor = await requireShipyardRequestActor(request)
 
     const keys = await prisma.shipyardCloudSshKey.findMany({
       where: {
@@ -67,7 +68,7 @@ export async function GET() {
 
 export async function POST(request: NextRequest) {
   try {
-    const actor = await requireAccessActor()
+    const actor = await requireShipyardRequestActor(request)
     const body = await readJsonBody(request)
     const keyName = asNonEmptyString(body.name) || fallbackKeyName()
 

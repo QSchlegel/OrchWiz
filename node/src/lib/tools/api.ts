@@ -178,15 +178,25 @@ export async function handlePostToolImport(
         }
       }
 
-      const outcome = await deps.importCuratedToolForUser({
-        ownerUserId: actor.userId,
-        toolSlug,
-        ...(githubTokenOverride
-          ? {
-              githubTokenOverride,
-            }
-          : {}),
-      })
+      let outcome
+      try {
+        outcome = await deps.importCuratedToolForUser({
+          ownerUserId: actor.userId,
+          toolSlug,
+          ...(githubTokenOverride
+            ? {
+                githubTokenOverride,
+              }
+            : {}),
+        })
+      } catch (error) {
+        return {
+          status: 400,
+          body: {
+            error: error instanceof Error ? error.message : "Unable to import curated tool.",
+          },
+        }
+      }
 
       if (outcome.run.status === "failed") {
         return {
@@ -219,15 +229,25 @@ export async function handlePostToolImport(
         }
       }
 
-      const outcome = await deps.importGithubUrlToolForUser({
-        ownerUserId: actor.userId,
-        githubUrl,
-        ...(githubTokenOverride
-          ? {
-              githubTokenOverride,
-            }
-          : {}),
-      })
+      let outcome
+      try {
+        outcome = await deps.importGithubUrlToolForUser({
+          ownerUserId: actor.userId,
+          githubUrl,
+          ...(githubTokenOverride
+            ? {
+                githubTokenOverride,
+              }
+            : {}),
+        })
+      } catch (error) {
+        return {
+          status: 400,
+          body: {
+            error: error instanceof Error ? error.message : "Unable to import GitHub tool.",
+          },
+        }
+      }
 
       if (outcome.run.status === "failed") {
         return {

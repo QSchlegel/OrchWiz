@@ -5,6 +5,7 @@ import {
   shipyardSelfHealErrorJson,
   shipyardSelfHealJson,
 } from "@/lib/shipyard/self-heal/http"
+import { requireShipyardRequestActor } from "@/lib/shipyard/request-actor"
 
 export const dynamic = "force-dynamic"
 
@@ -189,10 +190,16 @@ export async function handlePostRun(
   }
 }
 
-export async function GET() {
-  return handleGetRun()
+export async function GET(request: NextRequest) {
+  return handleGetRun({
+    ...defaultDeps,
+    requireActor: async () => requireShipyardRequestActor(request),
+  })
 }
 
 export async function POST(request: NextRequest) {
-  return handlePostRun(request)
+  return handlePostRun(request, {
+    ...defaultDeps,
+    requireActor: async () => requireShipyardRequestActor(request),
+  })
 }

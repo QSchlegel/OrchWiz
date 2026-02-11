@@ -151,6 +151,53 @@ test("appendExocompCapabilityInstructions fails open for unknown subagent", asyn
   }
 })
 
+test("appendExocompCapabilityInstructions resolves bridge.subagentId", async () => {
+  const globalAny = globalThis as any
+  const previousPrisma = globalAny.prisma
+
+  let capturedWhere: unknown = null
+  globalAny.prisma = {
+    subagent: {
+      findFirst: async (args: any) => {
+        capturedWhere = args.where
+        return {
+          subagentType: "exocomp",
+          settings: {
+            capabilities: {
+              preset: "core_maintenance",
+              diagnostics: true,
+              microRepairPlanning: true,
+              hazardChecks: true,
+              safeShutdownGuidance: true,
+              statusRelay: true,
+            },
+          },
+        }
+      },
+    },
+  }
+
+  try {
+    const result = await appendExocompCapabilityInstructions({
+      userId: "user-1",
+      metadata: {
+        bridge: {
+          subagentId: "sub-bridge-1",
+        },
+      },
+      runtimePrompt: "Bridge prompt",
+    })
+
+    assert.deepEqual(capturedWhere, {
+      id: "sub-bridge-1",
+      OR: [{ ownerUserId: "user-1" }, { isShared: true }],
+    })
+    assert.match(result, /^Bridge prompt\n\nExocomp abilities \(system constraints\):/u)
+  } finally {
+    globalAny.prisma = previousPrisma
+  }
+})
+
 test("appendShipToolInstructions injects tool block for quartermaster channel", async () => {
   const result = await appendShipToolInstructions(
     {

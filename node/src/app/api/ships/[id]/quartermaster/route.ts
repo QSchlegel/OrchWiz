@@ -351,6 +351,7 @@ export async function POST(
       responseInteraction: result.responseInteraction,
       provider: result.provider,
       fallbackUsed: result.fallbackUsed,
+      ...(result.warnings && result.warnings.length > 0 ? { warnings: result.warnings } : {}),
       sessionId: state.session.id,
       interactions,
       knowledge: knowledgeBlock,

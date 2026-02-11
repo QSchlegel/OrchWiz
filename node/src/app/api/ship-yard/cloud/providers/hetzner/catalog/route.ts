@@ -1,17 +1,18 @@
 import { NextRequest, NextResponse } from "next/server"
 import { prisma } from "@/lib/prisma"
-import { AccessControlError, requireAccessActor } from "@/lib/security/access-control"
+import { AccessControlError } from "@/lib/security/access-control"
 import { getCloudProviderHandler } from "@/lib/shipyard/cloud/providers/registry"
 import {
   resolveCloudCredentialToken,
   ShipyardCloudVaultError,
 } from "@/lib/shipyard/cloud/vault"
+import { requireShipyardRequestActor } from "@/lib/shipyard/request-actor"
 
 export const dynamic = "force-dynamic"
 
 export async function GET(request: NextRequest) {
   try {
-    const actor = await requireAccessActor()
+    const actor = await requireShipyardRequestActor(request)
 
     const credentials = await prisma.shipyardCloudCredential.findUnique({
       where: {

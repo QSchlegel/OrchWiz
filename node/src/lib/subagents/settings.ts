@@ -1,6 +1,9 @@
 import { z } from "zod"
 import { DEFAULT_EXOCOMP_CAPABILITIES } from "./capabilities"
 
+export const HARNESS_RUNTIME_PROFILES = ["default", "quartermaster"] as const
+export type HarnessRuntimeProfile = (typeof HARNESS_RUNTIME_PROFILES)[number]
+
 const OrchestrationSettingsSchema = z.object({
   handoffEnabled: z.boolean().default(true),
   handoffMode: z.enum(["manual", "assisted", "auto"]).default("assisted"),
@@ -34,6 +37,23 @@ const CapabilitiesSettingsSchema = z.object({
   statusRelay: z.boolean().default(DEFAULT_EXOCOMP_CAPABILITIES.statusRelay),
 })
 
+const HarnessAutoloadSchema = z.object({
+  context: z.boolean().default(true),
+  tools: z.boolean().default(true),
+  skills: z.boolean().default(true),
+})
+
+const HarnessSettingsSchema = z.object({
+  runtimeProfile: z.enum(HARNESS_RUNTIME_PROFILES).default("default"),
+  autoload: HarnessAutoloadSchema.default({
+    context: true,
+    tools: true,
+    skills: true,
+  }),
+  applyWhenSubagentPresent: z.boolean().default(true),
+  failureMode: z.literal("fail-open").default("fail-open"),
+})
+
 export const SubagentSettingsSchema = z.object({
   orchestration: OrchestrationSettingsSchema.default({
     handoffEnabled: true,
@@ -56,6 +76,16 @@ export const SubagentSettingsSchema = z.object({
     notes: "",
   }),
   capabilities: CapabilitiesSettingsSchema.default(DEFAULT_EXOCOMP_CAPABILITIES),
+  harness: HarnessSettingsSchema.default({
+    runtimeProfile: "default",
+    autoload: {
+      context: true,
+      tools: true,
+      skills: true,
+    },
+    applyWhenSubagentPresent: true,
+    failureMode: "fail-open",
+  }),
 })
 
 export const PartialSubagentSettingsSchema = z.object({
@@ -64,10 +94,17 @@ export const PartialSubagentSettingsSchema = z.object({
   memory: MemorySettingsSchema.partial().optional(),
   guidelines: GuidelinesSettingsSchema.partial().optional(),
   capabilities: CapabilitiesSettingsSchema.partial().optional(),
+  harness: z.object({
+    runtimeProfile: z.enum(HARNESS_RUNTIME_PROFILES).optional(),
+    autoload: HarnessAutoloadSchema.partial().optional(),
+    applyWhenSubagentPresent: z.boolean().optional(),
+    failureMode: z.literal("fail-open").optional(),
+  }).optional(),
 })
 
 export type SubagentSettings = z.infer<typeof SubagentSettingsSchema>
 export type PartialSubagentSettings = z.infer<typeof PartialSubagentSettingsSchema>
+export type SubagentHarnessSettings = z.infer<typeof HarnessSettingsSchema>
 
 export const DEFAULT_SUBAGENT_SETTINGS: SubagentSettings = SubagentSettingsSchema.parse({})
 

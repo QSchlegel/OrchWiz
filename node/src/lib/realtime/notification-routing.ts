@@ -47,7 +47,7 @@ export function permissionChannelFromScope(args: {
 }
 
 export function settingsSectionDetailKey(
-  section: "orchestration" | "workspace" | "memory" | "guidelines" | "capabilities",
+  section: "orchestration" | "workspace" | "memory" | "guidelines" | "capabilities" | "harness",
 ): PersonalDetailKey {
   return section
 }

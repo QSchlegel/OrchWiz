@@ -51,11 +51,11 @@ test("sidebar route channel aggregation resolves canonical channels", () => {
 })
 
 test("sidebar nav items receive channel mappings", () => {
-  const permissionsItem = sidebarNav
+  const hooksItem = sidebarNav
     .flatMap((group) => group.items)
-    .find((item) => item.href === "/permissions")
-  assert.ok(permissionsItem)
-  assert.deepEqual(permissionsItem?.channels, Object.values(PERMISSIONS_TAB_NOTIFICATION_CHANNEL))
+    .find((item) => item.href === "/hooks")
+  assert.ok(hooksItem)
+  assert.deepEqual(hooksItem?.channels, ["hooks"])
 
   const personalItem = sidebarNav
     .flatMap((group) => group.items)
@@ -76,23 +76,47 @@ test("sidebar nav items receive channel mappings", () => {
     true,
   )
   assert.equal(
+    personalItem?.channels.includes(PERSONAL_DETAIL_NOTIFICATION_CHANNEL.personal.harness),
+    true,
+  )
+  assert.equal(
+    personalItem?.channels.includes(PERSONAL_DETAIL_NOTIFICATION_CHANNEL.personal.tools),
+    true,
+  )
+  assert.equal(
     personalItem?.channels.includes(PERSONAL_DETAIL_NOTIFICATION_CHANNEL.shared.capabilities),
+    true,
+  )
+  assert.equal(
+    personalItem?.channels.includes(PERSONAL_DETAIL_NOTIFICATION_CHANNEL.shared.harness),
+    true,
+  )
+  assert.equal(
+    personalItem?.channels.includes(PERSONAL_DETAIL_NOTIFICATION_CHANNEL.shared.tools),
     true,
   )
 })
 
 test("sidebar group channel aggregation can be derived from child items", () => {
-  const arsenal = sidebarNav.find((group) => group.key === "arsenal")
-  assert.ok(arsenal)
+  const readyRoom = sidebarNav.find((group) => group.key === "intel")
+  assert.ok(readyRoom)
 
-  const channels = asSortedSet(arsenal!.items.flatMap((item) => item.channels))
+  const channels = asSortedSet(readyRoom!.items.flatMap((item) => item.channels))
   const expected = asSortedSet([
-    "commands",
+    "docs",
+    "github-prs",
     "hooks",
-    ...Object.values(PERMISSIONS_TAB_NOTIFICATION_CHANNEL),
+    "security",
+    "verification",
   ])
 
   assert.deepEqual(channels, expected)
+})
+
+test("sidebar nav removes commands and permissions entries", () => {
+  const hrefs = sidebarNav.flatMap((group) => group.items).map((item) => item.href)
+  assert.equal(hrefs.includes("/commands"), false)
+  assert.equal(hrefs.includes("/permissions"), false)
 })
 
 test("channel registries include full permissions, vault, and personal contracts", () => {
@@ -120,6 +144,18 @@ test("channel registries include full permissions, vault, and personal contracts
   assert.equal(
     SIDEBAR_NOTIFICATION_CHANNELS_BY_HREF["/personal"]?.includes(
       PERSONAL_DETAIL_NOTIFICATION_CHANNEL.shared.permissions,
+    ),
+    true,
+  )
+  assert.equal(
+    SIDEBAR_NOTIFICATION_CHANNELS_BY_HREF["/personal"]?.includes(
+      PERSONAL_DETAIL_NOTIFICATION_CHANNEL.personal.harness,
+    ),
+    true,
+  )
+  assert.equal(
+    SIDEBAR_NOTIFICATION_CHANNELS_BY_HREF["/personal"]?.includes(
+      PERSONAL_DETAIL_NOTIFICATION_CHANNEL.personal.tools,
     ),
     true,
   )

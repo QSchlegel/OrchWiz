@@ -1,14 +1,16 @@
-import { AccessControlError, requireAccessActor } from "@/lib/security/access-control"
+import { NextRequest } from "next/server"
+import { AccessControlError } from "@/lib/security/access-control"
 import {
   shipyardSelfHealErrorJson,
   shipyardSelfHealJson,
 } from "@/lib/shipyard/self-heal/http"
+import { requireShipyardRequestActor } from "@/lib/shipyard/request-actor"
 
 export const dynamic = "force-dynamic"
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    await requireAccessActor()
+    await requireShipyardRequestActor(request)
 
     return shipyardSelfHealJson({
       runs: [],

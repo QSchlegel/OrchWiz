@@ -4,6 +4,7 @@ import {
   shipyardSelfHealErrorJson,
   shipyardSelfHealJson,
 } from "@/lib/shipyard/self-heal/http"
+import { requireShipyardRequestActor } from "@/lib/shipyard/request-actor"
 
 export const dynamic = "force-dynamic"
 
@@ -137,10 +138,16 @@ export async function handlePutPreferences(
   }
 }
 
-export async function GET() {
-  return handleGetPreferences()
+export async function GET(request: NextRequest) {
+  return handleGetPreferences({
+    ...defaultDeps,
+    requireActor: async () => requireShipyardRequestActor(request),
+  })
 }
 
 export async function PUT(request: NextRequest) {
-  return handlePutPreferences(request)
+  return handlePutPreferences(request, {
+    ...defaultDeps,
+    requireActor: async () => requireShipyardRequestActor(request),
+  })
 }

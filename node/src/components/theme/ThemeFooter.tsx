@@ -1,13 +1,14 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { usePathname } from "next/navigation"
 import type { ElementType } from "react"
-import { LayoutGrid, Monitor, MoonStar, Sun, Wrench } from "lucide-react"
+import { LayoutGrid, Monitor, MoonStar, Ship, Sun, Wrench } from "lucide-react"
 import { type ThemeMode } from "@/components/theme/ThemeProvider"
 import { ShipQuartermasterPanel } from "@/components/quartermaster/ShipQuartermasterPanel"
 import { useTheme } from "@/components/theme/useTheme"
-import { SHIP_SELECTION_CHANGED_EVENT } from "@/lib/shipyard/useShipSelection"
+import { useEventStream } from "@/lib/realtime/useEventStream"
+import { useShipSelection } from "@/lib/shipyard/useShipSelection"
 import {
   dispatchDockRestore,
   readDockWindows,
@@ -16,36 +17,54 @@ import {
   type DockWindowItem,
 } from "@/lib/window-dock"
 
-const SHIP_DEPLOYMENT_QUERY_KEY = "shipDeploymentId"
-const SHIP_DEPLOYMENT_STORAGE_KEY = "orchwiz:selected-ship-deployment"
-
 const options: { mode: ThemeMode; label: string; icon: ElementType }[] = [
   { mode: "light", label: "Light", icon: Sun },
   { mode: "dark", label: "Dark", icon: MoonStar },
   { mode: "system", label: "System", icon: Monitor },
 ]
 
-function sanitizeId(value: string | null): string | null {
-  if (!value) return null
-  const trimmed = value.trim()
-  return trimmed.length > 0 ? trimmed : null
+const SHIP_SELECTOR_PATH_PREFIXES = [
+  "/ship-yard",
+  "/ships",
+  "/applications",
+  "/bridge",
+  "/bridge-call",
+  "/bridge-connections",
+  "/uss-k8s",
+]
+
+interface ShipFooterItem {
+  id: string
+  name: string
+  status: "pending" | "deploying" | "active" | "inactive" | "failed" | "updating"
+}
+
+function routeMatchesPrefix(pathname: string | null, prefix: string): boolean {
+  if (!pathname) return false
+  return pathname === prefix || pathname.startsWith(`${prefix}/`)
 }
 
 export function ThemeFooter() {
   const { mode, resolvedTheme, setMode } = useTheme()
   const pathname = usePathname()
-  const hiddenForPath =
-    pathname === "/bridge-chat" ||
-    pathname?.startsWith("/bridge-chat/") ||
-    pathname === "/bridge-call" ||
-    pathname?.startsWith("/bridge-call/")
+  const { selectedShipDeploymentId, setSelectedShipDeploymentId } = useShipSelection()
+
+  const hiddenForPath = pathname === "/bridge-chat" || pathname?.startsWith("/bridge-chat/")
   const quartermasterAvailable =
     pathname?.startsWith("/ship-yard") ||
     pathname?.startsWith("/ships") ||
     pathname?.startsWith("/uss-k8s")
+
+  const shipSelectorAvailable = useMemo(
+    () => SHIP_SELECTOR_PATH_PREFIXES.some((prefix) => routeMatchesPrefix(pathname, prefix)),
+    [pathname],
+  )
+
   const [dockItems, setDockItems] = useState<DockWindowItem[]>([])
   const [quartermasterOpen, setQuartermasterOpen] = useState(false)
-  const [selectedShipDeploymentId, setSelectedShipDeploymentId] = useState<string | null>(null)
+  const [ships, setShips] = useState<ShipFooterItem[]>([])
+  const [isLoadingShips, setIsLoadingShips] = useState(false)
+
   const dockScope = useMemo<DockScope | null>(() => {
     return pathname?.startsWith("/uss-k8s") ? "uss-k8s" : null
   }, [pathname])
@@ -73,28 +92,56 @@ export function ThemeFooter() {
     }
   }, [quartermasterAvailable])
 
-  useEffect(() => {
-    const syncSelectedShip = () => {
-      const query = new URLSearchParams(window.location.search)
-      const queryId = sanitizeId(query.get(SHIP_DEPLOYMENT_QUERY_KEY))
-      if (queryId) {
-        setSelectedShipDeploymentId(queryId)
+  const loadShips = useCallback(async () => {
+    if (!shipSelectorAvailable) {
+      setShips([])
+      return
+    }
+
+    setIsLoadingShips(true)
+
+    try {
+      const response = await fetch("/api/ships")
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`)
+      }
+
+      const payload = (await response.json()) as unknown
+      const nextShips = Array.isArray(payload)
+        ? (payload as ShipFooterItem[])
+        : []
+
+      setShips(nextShips)
+
+      if (nextShips.length === 0) {
+        if (selectedShipDeploymentId) {
+          setSelectedShipDeploymentId(null)
+        }
         return
       }
 
-      const storedId = sanitizeId(window.localStorage.getItem(SHIP_DEPLOYMENT_STORAGE_KEY))
-      setSelectedShipDeploymentId(storedId)
+      if (!selectedShipDeploymentId || !nextShips.some((ship) => ship.id === selectedShipDeploymentId)) {
+        setSelectedShipDeploymentId(nextShips[0].id)
+      }
+    } catch (error) {
+      console.error("Failed to load footer ship selector options:", error)
+      setShips([])
+    } finally {
+      setIsLoadingShips(false)
     }
+  }, [selectedShipDeploymentId, setSelectedShipDeploymentId, shipSelectorAvailable])
 
-    syncSelectedShip()
-    window.addEventListener(SHIP_SELECTION_CHANGED_EVENT, syncSelectedShip as EventListener)
-    window.addEventListener("popstate", syncSelectedShip)
+  useEffect(() => {
+    void loadShips()
+  }, [loadShips])
 
-    return () => {
-      window.removeEventListener(SHIP_SELECTION_CHANGED_EVENT, syncSelectedShip as EventListener)
-      window.removeEventListener("popstate", syncSelectedShip)
-    }
-  }, [pathname])
+  useEventStream({
+    enabled: shipSelectorAvailable,
+    types: ["ship.updated", "deployment.updated"],
+    onEvent: () => {
+      void loadShips()
+    },
+  })
 
   if (hiddenForPath) {
     return null
@@ -118,6 +165,31 @@ export function ThemeFooter() {
 
       <footer className="theme-footer fixed inset-x-0 bottom-0 z-[60] border-t border-slate-300/70 bg-white/92 backdrop-blur dark:border-white/12 dark:bg-slate-950/86">
         <div className="mx-auto flex w-full max-w-7xl items-center gap-3 px-4 py-2 sm:px-6 lg:px-8">
+          {shipSelectorAvailable && (
+            <label className="inline-flex min-w-[220px] max-w-[320px] flex-1 items-center gap-2 rounded-lg border border-slate-300/70 bg-white/75 px-2.5 py-1.5 dark:border-white/15 dark:bg-white/[0.05] sm:flex-none">
+              <Ship className="h-3.5 w-3.5 text-cyan-700 dark:text-cyan-300" />
+              <span className="readout text-slate-600 dark:text-slate-300">Ship</span>
+              <select
+                value={selectedShipDeploymentId || ""}
+                onChange={(event) => setSelectedShipDeploymentId(event.target.value || null)}
+                disabled={isLoadingShips || ships.length === 0}
+                className="min-w-0 flex-1 bg-transparent text-xs font-medium text-slate-800 outline-none disabled:opacity-60 dark:text-slate-100"
+              >
+                {isLoadingShips ? (
+                  <option value="">Loading ships...</option>
+                ) : ships.length === 0 ? (
+                  <option value="">No ships</option>
+                ) : (
+                  ships.map((ship) => (
+                    <option key={ship.id} value={ship.id}>
+                      {ship.name} ({ship.status})
+                    </option>
+                  ))
+                )}
+              </select>
+            </label>
+          )}
+
           <div className="hidden text-xs font-medium uppercase tracking-[0.16em] text-slate-600 dark:text-slate-300 sm:block">
             Appearance
           </div>

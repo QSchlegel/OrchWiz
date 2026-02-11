@@ -72,12 +72,13 @@ import { EmptyState, InlineNotice, SurfaceCard } from "@/components/dashboard/Pa
 import { ShipQuartermasterPanel } from "@/components/quartermaster/ShipQuartermasterPanel"
 import { CloudUtilityPanel } from "@/components/shipyard/CloudUtilityPanel"
 import { ShipToolsPanel } from "@/components/shipyard/ShipToolsPanel"
+import { ShipyardApiKeysPanel } from "@/components/shipyard/ShipyardApiKeysPanel"
 
 type InfrastructureKind = InfrastructureConfig["kind"]
 
 type WizardStepId = "mission" | "environment" | "secrets" | "crew" | "review"
 
-type MainTab = "build" | "fleet" | "ops"
+type MainTab = "build" | "fleet" | "apiKeys" | "ops"
 
 interface CrewOverrideInput {
   name: string
@@ -2036,6 +2037,7 @@ export default function ShipYardPage() {
             {([
               { key: "build" as MainTab, label: "Build", icon: Rocket },
               { key: "fleet" as MainTab, label: "Fleet", icon: Compass },
+              { key: "apiKeys" as MainTab, label: "Ship Yard API Keys", icon: KeyRound },
               ...(selectedShipDeploymentId ? [{ key: "ops" as MainTab, label: selectedShip?.name || "Ship Ops", icon: Settings2 }] : []),
             ] as { key: MainTab; label: string; icon: typeof Rocket }[]).map((t) => (
               <button
@@ -3274,6 +3276,10 @@ export default function ShipYardPage() {
           </div>
             </>
         </SurfaceCard>)}
+
+        {mainTab === "apiKeys" && (
+          <ShipyardApiKeysPanel />
+        )}
 
         {mainTab === "fleet" && (<SurfaceCard>
           <div className="flex flex-wrap items-center justify-between gap-2">

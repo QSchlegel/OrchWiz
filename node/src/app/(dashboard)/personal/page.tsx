@@ -2,9 +2,25 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
-import { ContextOrchestrationBoard } from "@/components/subagents/ContextOrchestrationBoard"
 import { EmptyState, InlineNotice, PageLayout, SurfaceCard } from "@/components/dashboard/PageLayout"
 import { useNotifications } from "@/components/notifications"
+import { AgentCardStrip } from "@/components/subagents/personal/AgentCardStrip"
+import { AgentEditorDrawer } from "@/components/subagents/personal/AgentEditorDrawer"
+import { AgentSyncPanel } from "@/components/subagents/personal/AgentSyncPanel"
+import { AdvancedSettingsDrawer } from "@/components/subagents/personal/AdvancedSettingsDrawer"
+import { ContextPanel } from "@/components/subagents/personal/ContextPanel"
+import { CoreDetailTabs } from "@/components/subagents/personal/CoreDetailTabs"
+import { HarnessPanel } from "@/components/subagents/personal/HarnessPanel"
+import { OrchestrationPanel } from "@/components/subagents/personal/OrchestrationPanel"
+import { PersonalToolsPanel } from "@/components/subagents/personal/PersonalToolsPanel"
+import { PermissionsPanel } from "@/components/subagents/personal/PermissionsPanel"
+import { SelectedAgentHeader } from "@/components/subagents/personal/SelectedAgentHeader"
+import { WorkspaceInspectorDrawer } from "@/components/subagents/personal/WorkspaceInspectorDrawer"
+import type {
+  SubagentToolBindingView,
+  ToolCatalogEntryView,
+  ToolImportRunView,
+} from "@/components/subagents/personal/types"
 import { formatUnreadBadgeCount } from "@/lib/notifications/store"
 import {
   PERSONAL_DETAIL_NOTIFICATION_CHANNEL,
@@ -12,43 +28,30 @@ import {
 } from "@/lib/notifications/channels"
 import { useEventStream } from "@/lib/realtime/useEventStream"
 import { buildInitialBridgeCrewSubagents } from "@/lib/subagents/bridge-crew-bootstrap"
-import { DEFAULT_EXOCOMP_CAPABILITIES } from "@/lib/subagents/capabilities"
+import {
+  aggregateAdvancedUnreadCount,
+  CORE_DETAIL_TABS,
+  coreTabsForMode,
+  enforceCoreTabForMode,
+  formatAgentCardStatusLine,
+  isAdvancedSectionVisible,
+  nextVisibleAdvancedSection,
+  type AdvancedSection,
+  type AgentTypeFilter,
+  type CoreDetailView,
+} from "@/lib/subagents/personal-view"
+import {
+  DEFAULT_SUBAGENT_SETTINGS,
+  HARNESS_RUNTIME_PROFILES,
+  normalizeSubagentSettings,
+  type HarnessRuntimeProfile,
+  type SubagentSettings,
+} from "@/lib/subagents/settings"
 import { normalizeSubagentType, type SubagentTypeValue } from "@/lib/subagents/types"
 
 type PersonalTab = "personal" | "shared"
-type AgentDetailTab = "context" | "orchestration" | "permissions" | "agentsync" | "workspace" | "memory" | "guidelines" | "capabilities"
-type EditableSettingsSection = "orchestration" | "workspace" | "memory" | "guidelines" | "capabilities"
-
-interface SubagentSettings {
-  orchestration: {
-    handoffEnabled: boolean
-    handoffMode: "manual" | "assisted" | "auto"
-    riskChecksEnabled: boolean
-    outputContractStrict: boolean
-  }
-  workspace: {
-    workingDirectory: string
-    includePaths: string[]
-    excludePaths: string[]
-  }
-  memory: {
-    mode: "session" | "rolling" | "ephemeral"
-    maxEntries: number
-    summaryStyle: "concise" | "detailed"
-  }
-  guidelines: {
-    references: string[]
-    notes: string
-  }
-  capabilities: {
-    preset: "core_maintenance"
-    diagnostics: boolean
-    microRepairPlanning: boolean
-    hazardChecks: boolean
-    safeShutdownGuidance: boolean
-    statusRelay: boolean
-  }
-}
+type MobileSection = "agents" | "detail"
+type EditableSettingsSection = "orchestration" | "workspace" | "memory" | "guidelines" | "capabilities" | "harness"
 
 interface Subagent {
   id: string
@@ -158,17 +161,6 @@ interface AgentSyncRun {
   suggestions: AgentSyncSuggestion[]
 }
 
-const DETAIL_TABS: Array<{ id: AgentDetailTab; label: string }> = [
-  { id: "context", label: "Context" },
-  { id: "orchestration", label: "Orchestration" },
-  { id: "permissions", label: "Permissions" },
-  { id: "agentsync", label: "AgentSync" },
-  { id: "workspace", label: "Workspace" },
-  { id: "memory", label: "Memory" },
-  { id: "guidelines", label: "Guidelines" },
-  { id: "capabilities", label: "Capabilities" },
-]
-
 const BRIDGE_AGENT_ORDER = ["XO-CB01", "OPS-ARX", "ENG-GEO", "SEC-KOR", "MED-BEV", "COU-DEA"]
 
 const EMPTY_FORM: SubagentFormState = {
@@ -186,32 +178,6 @@ const DEFAULT_AGENTSYNC_PREFERENCE: AgentSyncPreference = {
   nightlyEnabled: true,
   nightlyHour: 2,
   lastNightlyRunAt: null,
-}
-
-const DEFAULT_SUBAGENT_SETTINGS: SubagentSettings = {
-  orchestration: {
-    handoffEnabled: true,
-    handoffMode: "assisted",
-    riskChecksEnabled: true,
-    outputContractStrict: true,
-  },
-  workspace: {
-    workingDirectory: "",
-    includePaths: [],
-    excludePaths: [],
-  },
-  memory: {
-    mode: "session",
-    maxEntries: 50,
-    summaryStyle: "concise",
-  },
-  guidelines: {
-    references: [],
-    notes: "",
-  },
-  capabilities: {
-    ...DEFAULT_EXOCOMP_CAPABILITIES,
-  },
 }
 
 function parseTab(raw: string | null): PersonalTab {
@@ -248,113 +214,8 @@ function toTotalContextSize(files: Array<{ content: string }>): ContextSize {
   }
 }
 
-function splitLines(value: string): string[] {
-  return value
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-}
-
-function joinLines(values: string[]): string {
-  return values.join("\n")
-}
-
 function normalizeSettings(value: unknown): SubagentSettings {
-  if (!value || typeof value !== "object") {
-    return DEFAULT_SUBAGENT_SETTINGS
-  }
-
-  const raw = value as Record<string, unknown>
-  const rawOrchestration = raw.orchestration as Record<string, unknown> | undefined
-  const rawWorkspace = raw.workspace as Record<string, unknown> | undefined
-  const rawMemory = raw.memory as Record<string, unknown> | undefined
-  const rawGuidelines = raw.guidelines as Record<string, unknown> | undefined
-  const rawCapabilities = raw.capabilities as Record<string, unknown> | undefined
-
-  const includePaths = Array.isArray(rawWorkspace?.includePaths)
-    ? rawWorkspace.includePaths.filter((entry): entry is string => typeof entry === "string")
-    : []
-  const excludePaths = Array.isArray(rawWorkspace?.excludePaths)
-    ? rawWorkspace.excludePaths.filter((entry): entry is string => typeof entry === "string")
-    : []
-  const references = Array.isArray(rawGuidelines?.references)
-    ? rawGuidelines.references.filter((entry): entry is string => typeof entry === "string")
-    : []
-
-  const handoffMode = rawOrchestration?.handoffMode
-  const memoryMode = rawMemory?.mode
-  const summaryStyle = rawMemory?.summaryStyle
-  const capabilityPreset = rawCapabilities?.preset
-
-  return {
-    orchestration: {
-      handoffEnabled:
-        typeof rawOrchestration?.handoffEnabled === "boolean"
-          ? rawOrchestration.handoffEnabled
-          : DEFAULT_SUBAGENT_SETTINGS.orchestration.handoffEnabled,
-      handoffMode:
-        handoffMode === "manual" || handoffMode === "assisted" || handoffMode === "auto"
-          ? handoffMode
-          : DEFAULT_SUBAGENT_SETTINGS.orchestration.handoffMode,
-      riskChecksEnabled:
-        typeof rawOrchestration?.riskChecksEnabled === "boolean"
-          ? rawOrchestration.riskChecksEnabled
-          : DEFAULT_SUBAGENT_SETTINGS.orchestration.riskChecksEnabled,
-      outputContractStrict:
-        typeof rawOrchestration?.outputContractStrict === "boolean"
-          ? rawOrchestration.outputContractStrict
-          : DEFAULT_SUBAGENT_SETTINGS.orchestration.outputContractStrict,
-    },
-    workspace: {
-      workingDirectory:
-        typeof rawWorkspace?.workingDirectory === "string"
-          ? rawWorkspace.workingDirectory
-          : DEFAULT_SUBAGENT_SETTINGS.workspace.workingDirectory,
-      includePaths,
-      excludePaths,
-    },
-    memory: {
-      mode:
-        memoryMode === "session" || memoryMode === "rolling" || memoryMode === "ephemeral"
-          ? memoryMode
-          : DEFAULT_SUBAGENT_SETTINGS.memory.mode,
-      maxEntries:
-        typeof rawMemory?.maxEntries === "number" && Number.isFinite(rawMemory.maxEntries)
-          ? Math.max(1, Math.min(1000, Math.round(rawMemory.maxEntries)))
-          : DEFAULT_SUBAGENT_SETTINGS.memory.maxEntries,
-      summaryStyle:
-        summaryStyle === "concise" || summaryStyle === "detailed"
-          ? summaryStyle
-          : DEFAULT_SUBAGENT_SETTINGS.memory.summaryStyle,
-    },
-    guidelines: {
-      references,
-      notes: typeof rawGuidelines?.notes === "string" ? rawGuidelines.notes : "",
-    },
-    capabilities: {
-      preset: capabilityPreset === "core_maintenance" ? capabilityPreset : "core_maintenance",
-      diagnostics:
-        typeof rawCapabilities?.diagnostics === "boolean"
-          ? rawCapabilities.diagnostics
-          : DEFAULT_SUBAGENT_SETTINGS.capabilities.diagnostics,
-      microRepairPlanning:
-        typeof rawCapabilities?.microRepairPlanning === "boolean"
-          ? rawCapabilities.microRepairPlanning
-          : DEFAULT_SUBAGENT_SETTINGS.capabilities.microRepairPlanning,
-      hazardChecks:
-        typeof rawCapabilities?.hazardChecks === "boolean"
-          ? rawCapabilities.hazardChecks
-          : DEFAULT_SUBAGENT_SETTINGS.capabilities.hazardChecks,
-      safeShutdownGuidance:
-        typeof rawCapabilities?.safeShutdownGuidance === "boolean"
-          ? rawCapabilities.safeShutdownGuidance
-          : DEFAULT_SUBAGENT_SETTINGS.capabilities.safeShutdownGuidance,
-      statusRelay:
-        typeof rawCapabilities?.statusRelay === "boolean"
-          ? rawCapabilities.statusRelay
-          : DEFAULT_SUBAGENT_SETTINGS.capabilities.statusRelay,
-    },
-  }
+  return normalizeSubagentSettings(value)
 }
 
 function normalizeSubagent(raw: any): Subagent {
@@ -504,6 +365,88 @@ function serializePolicyAssignments(assignments: PolicyAssignment[]): string {
   )
 }
 
+function normalizeToolCatalogEntry(value: any): ToolCatalogEntryView | null {
+  if (!value || typeof value !== "object" || typeof value.id !== "string") {
+    return null
+  }
+
+  const source = value.source
+  if (source !== "curated" && source !== "custom_github" && source !== "local" && source !== "system") {
+    return null
+  }
+
+  return {
+    id: value.id,
+    slug: typeof value.slug === "string" ? value.slug : "",
+    name: typeof value.name === "string" ? value.name : "",
+    description: typeof value.description === "string" ? value.description : null,
+    source,
+    isInstalled: Boolean(value.isInstalled),
+    isSystem: Boolean(value.isSystem),
+    sourceUrl: typeof value.sourceUrl === "string" ? value.sourceUrl : null,
+    metadata: value.metadata && typeof value.metadata === "object" && !Array.isArray(value.metadata)
+      ? (value.metadata as Record<string, unknown>)
+      : null,
+  }
+}
+
+function normalizeToolImportRun(value: any): ToolImportRunView | null {
+  if (!value || typeof value !== "object" || typeof value.id !== "string") {
+    return null
+  }
+
+  const status = value.status
+  if (status !== "running" && status !== "succeeded" && status !== "failed") {
+    return null
+  }
+
+  return {
+    id: value.id,
+    mode: typeof value.mode === "string" ? value.mode : "",
+    toolSlug: typeof value.toolSlug === "string" ? value.toolSlug : null,
+    sourceUrl: typeof value.sourceUrl === "string" ? value.sourceUrl : null,
+    status,
+    errorMessage: typeof value.errorMessage === "string" ? value.errorMessage : null,
+    createdAt: typeof value.createdAt === "string" ? value.createdAt : new Date(0).toISOString(),
+  }
+}
+
+function normalizeSubagentToolBinding(value: any): SubagentToolBindingView | null {
+  if (!value || typeof value !== "object" || typeof value.id !== "string") {
+    return null
+  }
+
+  return {
+    id: value.id,
+    subagentId: typeof value.subagentId === "string" ? value.subagentId : "",
+    toolCatalogEntryId: typeof value.toolCatalogEntryId === "string" ? value.toolCatalogEntryId : "",
+    enabled: value.enabled !== false,
+    createdAt: typeof value.createdAt === "string" ? value.createdAt : new Date(0).toISOString(),
+    updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : new Date(0).toISOString(),
+  }
+}
+
+function serializeToolBindingDraft(draft: Record<string, boolean>): string {
+  return JSON.stringify(
+    Object.keys(draft)
+      .sort((left, right) => left.localeCompare(right))
+      .map((key) => ({
+        toolCatalogEntryId: key,
+        enabled: draft[key] === true,
+      })),
+  )
+}
+
+function draftFromBindings(bindings: SubagentToolBindingView[]): Record<string, boolean> {
+  const draft: Record<string, boolean> = {}
+  for (const binding of bindings) {
+    if (binding.toolCatalogEntryId.trim()) {
+      draft[binding.toolCatalogEntryId] = binding.enabled
+    }
+  }
+  return draft
+}
+
 function emptyPolicyEditorState(): PolicyEditorState {
   return {
     id: null,
@@ -548,7 +491,14 @@ export default function PersonalPage() {
   const [isBootstrappingCrew, setIsBootstrappingCrew] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
-  const [detailTab, setDetailTab] = useState<AgentDetailTab>("context")
+  const [isMobileLayout, setIsMobileLayout] = useState(false)
+  const [mobileSection, setMobileSection] = useState<MobileSection>("agents")
+  const [detailTab, setDetailTab] = useState<CoreDetailView>("context")
+  const [isAdvancedOpen, setIsAdvancedOpen] = useState(false)
+  const [isWorkspaceInspectorOpen, setIsWorkspaceInspectorOpen] = useState(false)
+  const [advancedSection, setAdvancedSection] = useState<AdvancedSection>("workspace")
+  const [agentSearchQuery, setAgentSearchQuery] = useState("")
+  const [agentTypeFilter, setAgentTypeFilter] = useState<AgentTypeFilter>("all")
   const [message, setMessage] = useState<{ type: "error" | "success" | "info"; text: string } | null>(null)
   const [formData, setFormData] = useState<SubagentFormState>(EMPTY_FORM)
   const [contextSource, setContextSource] = useState<"filesystem" | "content-fallback">("content-fallback")
@@ -565,6 +515,7 @@ export default function PersonalPage() {
     memory: false,
     guidelines: false,
     capabilities: false,
+    harness: false,
   })
   const [isSavingSettings, setIsSavingSettings] = useState<Record<EditableSettingsSection, boolean>>({
     orchestration: false,
@@ -572,6 +523,7 @@ export default function PersonalPage() {
     memory: false,
     guidelines: false,
     capabilities: false,
+    harness: false,
   })
   const [agentPermissions, setAgentPermissions] = useState<AgentPermission[]>([])
   const [isPermissionsLoading, setIsPermissionsLoading] = useState(false)
@@ -601,11 +553,25 @@ export default function PersonalPage() {
   const [isAgentSyncRunningSelected, setIsAgentSyncRunningSelected] = useState(false)
   const [isAgentSyncRunningCrew, setIsAgentSyncRunningCrew] = useState(false)
   const [actingSuggestionId, setActingSuggestionId] = useState<string | null>(null)
+  const [toolCatalog, setToolCatalog] = useState<ToolCatalogEntryView[]>([])
+  const [isToolCatalogLoading, setIsToolCatalogLoading] = useState(false)
+  const [isToolCatalogRefreshing, setIsToolCatalogRefreshing] = useState(false)
+  const [toolImportRuns, setToolImportRuns] = useState<ToolImportRunView[]>([])
+  const [isToolImportRunsLoading, setIsToolImportRunsLoading] = useState(false)
+  const [importingCuratedSlug, setImportingCuratedSlug] = useState<string | null>(null)
+  const [isImportingGithubUrl, setIsImportingGithubUrl] = useState(false)
+  const [githubToolUrlDraft, setGithubToolUrlDraft] = useState("")
+  const [agentToolBindings, setAgentToolBindings] = useState<SubagentToolBindingView[]>([])
+  const [isAgentToolBindingsLoading, setIsAgentToolBindingsLoading] = useState(false)
+  const [isAgentToolBindingsSaving, setIsAgentToolBindingsSaving] = useState(false)
+  const [agentToolBindingsDraft, setAgentToolBindingsDraft] = useState<Record<string, boolean>>({})
+  const [agentToolBindingsSnapshot, setAgentToolBindingsSnapshot] = useState("[]")
   const autoBootstrapAttemptedRef = useRef(false)
 
   const activeTab = parseTab(searchParams.get("tab"))
+  const effectiveDetailTab = enforceCoreTabForMode(activeTab, detailTab)
   const activeTopChannel = PERSONAL_TAB_NOTIFICATION_CHANNEL[activeTab]
-  const activeDetailChannel = PERSONAL_DETAIL_NOTIFICATION_CHANNEL[activeTab][detailTab]
+  const activeDetailChannel = PERSONAL_DETAIL_NOTIFICATION_CHANNEL[activeTab][effectiveDetailTab]
   const initialBridgeCrew = useMemo(() => buildInitialBridgeCrewSubagents(), [])
 
   const personalSubagents = useMemo(
@@ -625,13 +591,25 @@ export default function PersonalPage() {
     [activeSubagents, selectedAgentId],
   )
 
-  const visibleDetailTabs = useMemo(() => {
-    if (!selectedSubagent || selectedSubagent.subagentType !== "exocomp") {
-      return DETAIL_TABS.filter((tab) => tab.id !== "capabilities")
-    }
+  const visibleCoreTabs = useMemo(
+    () => CORE_DETAIL_TABS.filter((tab) => coreTabsForMode(activeTab).includes(tab.id)),
+    [activeTab],
+  )
 
-    return DETAIL_TABS
-  }, [selectedSubagent])
+  const filteredAgents = useMemo(() => {
+    const normalizedQuery = agentSearchQuery.trim().toLowerCase()
+    return activeSubagents.filter((subagent) => {
+      if (agentTypeFilter !== "all" && subagent.subagentType !== agentTypeFilter) {
+        return false
+      }
+
+      if (!normalizedQuery) {
+        return true
+      }
+
+      return `${subagent.name} ${subagent.description || ""} ${subagent.path || ""}`.toLowerCase().includes(normalizedQuery)
+    })
+  }, [activeSubagents, agentSearchQuery, agentTypeFilter])
 
   const missingInitialBridgeCrew = useMemo(() => {
     const existingNames = new Set(personalSubagents.map((subagent) => subagent.name.toLowerCase()))
@@ -797,6 +775,98 @@ export default function PersonalPage() {
     } catch (error) {
       console.error("Failed to load policy assignments:", error)
       setMessage({ type: "error", text: "Unable to load policy assignments" })
+    }
+  }, [])
+
+  const loadToolCatalog = useCallback(async (options?: { refreshMode?: "auto" | "force"; manual?: boolean }) => {
+    const refreshMode = options?.refreshMode || "auto"
+    const manual = options?.manual === true
+
+    if (manual) {
+      setIsToolCatalogRefreshing(true)
+    } else {
+      setIsToolCatalogLoading(true)
+    }
+
+    try {
+      const params = new URLSearchParams()
+      params.set("refresh", refreshMode)
+      const response = await fetch(`/api/tools/catalog?${params.toString()}`)
+      if (!response.ok) {
+        setMessage({ type: "error", text: await readApiError(response) })
+        return
+      }
+
+      const payload = await response.json()
+      const entries = Array.isArray(payload?.entries)
+        ? payload.entries
+            .map((entry: any) => normalizeToolCatalogEntry(entry))
+            .filter((entry: ToolCatalogEntryView | null): entry is ToolCatalogEntryView => Boolean(entry))
+        : []
+
+      setToolCatalog(entries)
+    } catch (error) {
+      console.error("Failed to load tool catalog:", error)
+      setMessage({ type: "error", text: "Unable to load tool catalog" })
+    } finally {
+      if (manual) {
+        setIsToolCatalogRefreshing(false)
+      } else {
+        setIsToolCatalogLoading(false)
+      }
+    }
+  }, [])
+
+  const loadToolImportRuns = useCallback(async () => {
+    setIsToolImportRunsLoading(true)
+    try {
+      const response = await fetch("/api/tools/import-runs?limit=20")
+      if (!response.ok) {
+        setMessage({ type: "error", text: await readApiError(response) })
+        return
+      }
+
+      const payload = await response.json()
+      const runs = Array.isArray(payload?.runs)
+        ? payload.runs
+            .map((entry: any) => normalizeToolImportRun(entry))
+            .filter((entry: ToolImportRunView | null): entry is ToolImportRunView => Boolean(entry))
+        : []
+
+      setToolImportRuns(runs)
+    } catch (error) {
+      console.error("Failed to load tool import runs:", error)
+      setMessage({ type: "error", text: "Unable to load tool import runs" })
+    } finally {
+      setIsToolImportRunsLoading(false)
+    }
+  }, [])
+
+  const loadAgentToolBindings = useCallback(async (subagentId: string) => {
+    setIsAgentToolBindingsLoading(true)
+    try {
+      const response = await fetch(`/api/subagents/${subagentId}/tool-bindings`)
+      if (!response.ok) {
+        setMessage({ type: "error", text: await readApiError(response) })
+        return
+      }
+
+      const payload = await response.json()
+      const bindings = Array.isArray(payload?.bindings)
+        ? payload.bindings
+            .map((entry: any) => normalizeSubagentToolBinding(entry))
+            .filter((entry: SubagentToolBindingView | null): entry is SubagentToolBindingView => Boolean(entry))
+        : []
+
+      const draft = draftFromBindings(bindings)
+      setAgentToolBindings(bindings)
+      setAgentToolBindingsDraft(draft)
+      setAgentToolBindingsSnapshot(serializeToolBindingDraft(draft))
+    } catch (error) {
+      console.error("Failed to load subagent tool bindings:", error)
+      setMessage({ type: "error", text: "Unable to load tool bindings" })
+    } finally {
+      setIsAgentToolBindingsLoading(false)
     }
   }, [])
 
@@ -975,8 +1045,21 @@ export default function PersonalPage() {
   }, [fetchSubagents])
 
   useEffect(() => {
+    const mediaQuery = window.matchMedia("(max-width: 1023px)")
+    const sync = () => setIsMobileLayout(mediaQuery.matches)
+    sync()
+    mediaQuery.addEventListener("change", sync)
+    return () => mediaQuery.removeEventListener("change", sync)
+  }, [])
+
+  useEffect(() => {
     void loadPolicyLibrary()
   }, [loadPolicyLibrary])
+
+  useEffect(() => {
+    void loadToolCatalog({ refreshMode: "auto" })
+    void loadToolImportRuns()
+  }, [loadToolCatalog, loadToolImportRuns])
 
   useEffect(() => {
     void loadAgentSyncPreference()
@@ -987,7 +1070,10 @@ export default function PersonalPage() {
       setShowCreateForm(false)
       setEditingId(null)
       setFormData(EMPTY_FORM)
+      setIsAdvancedOpen(false)
+      setIsWorkspaceInspectorOpen(false)
     }
+    setMobileSection("agents")
   }, [activeTab])
 
   useEffect(() => {
@@ -1000,6 +1086,15 @@ export default function PersonalPage() {
     }
     return registerActiveChannels([activeDetailChannel])
   }, [activeDetailChannel, registerActiveChannels, selectedSubagent])
+
+  useEffect(() => {
+    if (!selectedSubagent || !isAdvancedOpen) {
+      return
+    }
+
+    const channel = PERSONAL_DETAIL_NOTIFICATION_CHANNEL[activeTab][advancedSection]
+    return registerActiveChannels([channel])
+  }, [activeTab, advancedSection, isAdvancedOpen, registerActiveChannels, selectedSubagent])
 
   useEffect(() => {
     if (activeSubagents.length === 0) {
@@ -1015,10 +1110,17 @@ export default function PersonalPage() {
   }, [activeSubagents, selectedAgentId])
 
   useEffect(() => {
-    if (!visibleDetailTabs.some((tab) => tab.id === detailTab)) {
-      setDetailTab("context")
+    if (!selectedSubagent) {
+      setMobileSection("agents")
     }
-  }, [detailTab, visibleDetailTabs])
+  }, [selectedSubagent])
+
+  useEffect(() => {
+    const enforced = enforceCoreTabForMode(activeTab, detailTab)
+    if (enforced !== detailTab) {
+      setDetailTab(enforced)
+    }
+  }, [activeTab, detailTab])
 
   useEffect(() => {
     if (!selectedSubagent) {
@@ -1038,10 +1140,14 @@ export default function PersonalPage() {
       setPolicyAssignments([])
       setPolicyAssignmentsSnapshot("[]")
       setPolicyToAttachId("")
+      setAgentToolBindings([])
+      setAgentToolBindingsDraft({})
+      setAgentToolBindingsSnapshot("[]")
       return
     }
 
     setSettingsDraft(normalizeSettings(selectedSubagent.settings))
+    setAdvancedSection(nextVisibleAdvancedSection("workspace", selectedSubagent.subagentType))
     setPolicyEditor(emptyPolicyEditorState())
     setDirtySettingsSections({
       orchestration: false,
@@ -1049,12 +1155,14 @@ export default function PersonalPage() {
       memory: false,
       guidelines: false,
       capabilities: false,
+      harness: false,
     })
 
     void loadContextFiles(selectedSubagent.id)
     void loadPermissions(selectedSubagent.id)
     void loadPolicyAssignments(selectedSubagent.id)
-  }, [selectedSubagent, loadContextFiles, loadPermissions, loadPolicyAssignments])
+    void loadAgentToolBindings(selectedSubagent.id)
+  }, [selectedSubagent, loadContextFiles, loadPermissions, loadPolicyAssignments, loadAgentToolBindings])
 
   const handleAgentSyncRealtimeUpdate = useCallback(() => {
     void loadAgentSyncPreference()
@@ -1398,6 +1506,137 @@ export default function PersonalPage() {
       setMessage({ type: "error", text: "Unable to save settings" })
     } finally {
       setIsSavingSettings((current) => ({ ...current, [section]: false }))
+    }
+  }
+
+  const refreshTools = async () => {
+    await Promise.all([
+      loadToolCatalog({ refreshMode: "force", manual: true }),
+      loadToolImportRuns(),
+    ])
+  }
+
+  const importCuratedTool = async (toolSlug: string) => {
+    setImportingCuratedSlug(toolSlug)
+    setMessage(null)
+
+    try {
+      const response = await fetch("/api/tools/import", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          mode: "curated",
+          toolSlug,
+        }),
+      })
+
+      if (!response.ok) {
+        setMessage({ type: "error", text: await readApiError(response) })
+      } else {
+        setMessage({ type: "success", text: `Imported ${toolSlug}` })
+      }
+    } catch (error) {
+      console.error("Failed to import curated tool:", error)
+      setMessage({ type: "error", text: "Unable to import curated tool" })
+    } finally {
+      setImportingCuratedSlug(null)
+      await refreshTools()
+    }
+  }
+
+  const importToolFromGithubUrl = async () => {
+    const githubUrl = githubToolUrlDraft.trim()
+    if (!githubUrl) {
+      return
+    }
+
+    setIsImportingGithubUrl(true)
+    setMessage(null)
+
+    try {
+      const response = await fetch("/api/tools/import", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          mode: "github_url",
+          githubUrl,
+        }),
+      })
+
+      if (!response.ok) {
+        setMessage({ type: "error", text: await readApiError(response) })
+      } else {
+        setGithubToolUrlDraft("")
+        setMessage({ type: "success", text: "Imported tool from GitHub URL" })
+      }
+    } catch (error) {
+      console.error("Failed to import tool from GitHub URL:", error)
+      setMessage({ type: "error", text: "Unable to import tool from GitHub URL" })
+    } finally {
+      setIsImportingGithubUrl(false)
+      await refreshTools()
+    }
+  }
+
+  const toggleAgentToolBinding = (toolCatalogEntryId: string, enabled: boolean) => {
+    setAgentToolBindingsDraft((current) => ({
+      ...current,
+      [toolCatalogEntryId]: enabled,
+    }))
+  }
+
+  const saveAgentToolBindings = async () => {
+    if (!selectedSubagent) return
+    if (selectedSubagent.isShared || activeTab !== "personal") {
+      setMessage({ type: "error", text: "Shared agents are read-only on this page." })
+      return
+    }
+
+    setIsAgentToolBindingsSaving(true)
+    setMessage(null)
+
+    try {
+      const payloadBindings = Object.keys(agentToolBindingsDraft).map((toolCatalogEntryId) => ({
+        toolCatalogEntryId,
+        enabled: agentToolBindingsDraft[toolCatalogEntryId] === true,
+      }))
+
+      const response = await fetch(`/api/subagents/${selectedSubagent.id}/tool-bindings`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          bindings: payloadBindings,
+        }),
+      })
+
+      if (!response.ok) {
+        setMessage({ type: "error", text: await readApiError(response) })
+        return
+      }
+
+      const responsePayload = await response.json()
+      const bindings = Array.isArray(responsePayload?.bindings)
+        ? responsePayload.bindings
+            .map((entry: any) => normalizeSubagentToolBinding(entry))
+            .filter((entry: SubagentToolBindingView | null): entry is SubagentToolBindingView => Boolean(entry))
+        : []
+
+      const draft = draftFromBindings(bindings)
+      setAgentToolBindings(bindings)
+      setAgentToolBindingsDraft(draft)
+      setAgentToolBindingsSnapshot(serializeToolBindingDraft(draft))
+      setMessage({ type: "success", text: "Agent tool bindings saved." })
+    } catch (error) {
+      console.error("Failed to save agent tool bindings:", error)
+      setMessage({ type: "error", text: "Unable to save tool bindings" })
+    } finally {
+      setIsAgentToolBindingsSaving(false)
     }
   }
 
@@ -1761,1447 +2000,572 @@ export default function PersonalPage() {
       ),
     [agentSyncRuns],
   )
-  const activeDetailTabLabel = visibleDetailTabs.find((tab) => tab.id === detailTab)?.label || "Context"
+  const selectedHighRiskPendingCount = useMemo(() => {
+    if (!selectedSubagent) {
+      return 0
+    }
+
+    return agentSyncRuns
+      .filter((run) => run.subagentId === selectedSubagent.id || run.scope === "bridge_crew")
+      .reduce(
+        (count, run) =>
+          count + run.suggestions.filter((suggestion) => suggestion.risk === "high" && suggestion.status === "proposed").length,
+        0,
+      )
+  }, [agentSyncRuns, selectedSubagent])
+  const advancedUnreadCount = aggregateAdvancedUnreadCount(activeTab, getUnread)
+  const coreTabsWithBadges = useMemo(
+    () =>
+      visibleCoreTabs.map((tab) => ({
+        ...tab,
+        badgeLabel: formatUnreadBadgeCount(getUnread([PERSONAL_DETAIL_NOTIFICATION_CHANNEL[activeTab][tab.id]])),
+      })),
+    [activeTab, getUnread, visibleCoreTabs],
+  )
+  const advancedBadgeLabel = formatUnreadBadgeCount(advancedUnreadCount)
+  const selectedPolicyCoverageLabel = `${policyAssignments.filter((assignment) => assignment.enabled).length} profiles · ${agentPermissions.length} overrides`
+  const personalTopBadgeLabel = formatUnreadBadgeCount(getUnread([PERSONAL_TAB_NOTIFICATION_CHANNEL.personal]))
+  const sharedTopBadgeLabel = formatUnreadBadgeCount(getUnread([PERSONAL_TAB_NOTIFICATION_CHANNEL.shared]))
+  const harnessSettingsDirty = dirtySettingsSections.harness
+  const harnessSettingsSaving = isSavingSettings.harness
+  const agentToolBindingsDirty = useMemo(
+    () => serializeToolBindingDraft(agentToolBindingsDraft) !== agentToolBindingsSnapshot,
+    [agentToolBindingsDraft, agentToolBindingsSnapshot],
+  )
+  const isSelectedMutable = Boolean(selectedSubagent && activeTab === "personal" && !selectedSubagent.isShared)
+  const advancedDirtySections: Record<AdvancedSection, boolean> = {
+    workspace: dirtySettingsSections.workspace,
+    memory: dirtySettingsSections.memory,
+    guidelines: dirtySettingsSections.guidelines,
+    capabilities: dirtySettingsSections.capabilities,
+  }
+  const advancedSavingSections: Record<AdvancedSection, boolean> = {
+    workspace: isSavingSettings.workspace,
+    memory: isSavingSettings.memory,
+    guidelines: isSavingSettings.guidelines,
+    capabilities: isSavingSettings.capabilities,
+  }
+  const publicMemoryHref = "/vault?tab=explorer&vault=agent-public"
+  const privateMemoryHref = "/vault?tab=explorer&vault=agent-private"
+  const showAgentListPanel = !isMobileLayout || mobileSection === "agents"
+  const showAgentDetailPanel = !isMobileLayout || mobileSection === "detail"
+
+  const handleSelectAgent = (nextAgentId: string | null) => {
+    setSelectedAgentId(nextAgentId)
+    if (isMobileLayout && nextAgentId) {
+      setMobileSection("detail")
+    }
+  }
+
+  useEffect(() => {
+    if (!selectedSubagent) {
+      return
+    }
+
+    if (isAdvancedSectionVisible(advancedSection, selectedSubagent.subagentType)) {
+      return
+    }
+
+    setAdvancedSection(nextVisibleAdvancedSection(advancedSection, selectedSubagent.subagentType))
+  }, [advancedSection, selectedSubagent])
+
+  useEffect(() => {
+    if (!isSelectedMutable) {
+      setIsWorkspaceInspectorOpen(false)
+    }
+  }, [isSelectedMutable])
 
   return (
-    <PageLayout
-      title="Personal"
-      description="Manage personal agents with focused context, permissions, and runtime controls."
-      actions={
-        activeTab === "personal" ? (
-          <div className="flex flex-wrap items-center gap-2">
+    <>
+      <PageLayout
+        title="Personal"
+        description="Manage personal agents with focused context, permissions, and runtime controls."
+        actions={
+          activeTab === "personal" ? (
+            <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center sm:justify-end">
+              <button
+                onClick={() => {
+                  setEditingId(null)
+                  setFormData(EMPTY_FORM)
+                  setShowCreateForm(true)
+                }}
+                className="w-full rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-black sm:w-auto dark:bg-white dark:text-slate-900"
+              >
+                New Personal Agent
+              </button>
+              {missingInitialBridgeCrew.length > 0 ? (
+                <button
+                  onClick={() => {
+                    void handleBootstrapBridgeCrew(false)
+                  }}
+                  disabled={isBootstrappingCrew}
+                  className="w-full rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50 sm:w-auto dark:border-white/15 dark:text-slate-200 dark:hover:bg-white/[0.08]"
+                >
+                  {isBootstrappingCrew ? "Initializing..." : `Initialize Bridge Crew (${missingInitialBridgeCrew.length})`}
+                </button>
+              ) : null}
+            </div>
+          ) : null
+        }
+      >
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-2 rounded-lg border border-slate-200/80 bg-white/80 p-1 dark:border-white/10 dark:bg-white/[0.03]">
             <button
-              onClick={() => {
-                void handleBootstrapBridgeCrew(false)
-              }}
-              disabled={isBootstrappingCrew || missingInitialBridgeCrew.length === 0}
-              className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50 dark:border-white/15 dark:text-slate-200 dark:hover:bg-white/[0.08]"
+              type="button"
+              onClick={() => setActiveTab("personal")}
+              className={`inline-flex min-h-[38px] items-center justify-center rounded-md px-3 py-1.5 text-sm font-medium ${
+                activeTab === "personal"
+                  ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900"
+                  : "text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-white/[0.08]"
+              }`}
+              aria-pressed={activeTab === "personal"}
             >
-              {isBootstrappingCrew
-                ? "Initializing..."
-                : missingInitialBridgeCrew.length === 0
-                  ? "Bridge Crew Ready"
-                  : `Initialize Bridge Crew (${missingInitialBridgeCrew.length})`}
+              <span>Personal</span>
+              {personalTopBadgeLabel ? (
+                <span className="ml-2 inline-flex min-w-5 items-center justify-center rounded-full bg-rose-500 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white">
+                  {personalTopBadgeLabel}
+                </span>
+              ) : null}
             </button>
             <button
-              onClick={() => {
-                setEditingId(null)
-                setFormData(EMPTY_FORM)
-                setShowCreateForm(true)
-              }}
-              className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-black dark:bg-white dark:text-slate-900"
+              type="button"
+              onClick={() => setActiveTab("shared")}
+              className={`inline-flex min-h-[38px] items-center justify-center rounded-md px-3 py-1.5 text-sm font-medium ${
+                activeTab === "shared"
+                  ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900"
+                  : "text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-white/[0.08]"
+              }`}
+              aria-pressed={activeTab === "shared"}
             >
-              New Personal Agent
+              <span>Shared</span>
+              {sharedTopBadgeLabel ? (
+                <span className="ml-2 inline-flex min-w-5 items-center justify-center rounded-full bg-rose-500 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white">
+                  {sharedTopBadgeLabel}
+                </span>
+              ) : null}
             </button>
           </div>
-        ) : null
-      }
-    >
-      <div className="space-y-4">
-        <div className="inline-flex rounded-lg border border-slate-200/80 bg-white/80 p-1 dark:border-white/10 dark:bg-white/[0.03]">
-          <button
-            type="button"
-            onClick={() => setActiveTab("personal")}
-            className={`inline-flex items-center rounded-md px-3 py-1.5 text-sm font-medium ${
-              activeTab === "personal"
-                ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900"
-                : "text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-white/[0.08]"
-            }`}
-          >
-            <span>Personal</span>
-            {(() => {
-              const badgeLabel = formatUnreadBadgeCount(getUnread([PERSONAL_TAB_NOTIFICATION_CHANNEL.personal]))
-              if (!badgeLabel) return null
-              return (
-                <span className="ml-2 inline-flex min-w-5 items-center justify-center rounded-full bg-rose-500 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white">
-                  {badgeLabel}
-                </span>
-              )
-            })()}
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab("shared")}
-            className={`inline-flex items-center rounded-md px-3 py-1.5 text-sm font-medium ${
-              activeTab === "shared"
-                ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900"
-                : "text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-white/[0.08]"
-            }`}
-          >
-            <span>Shared</span>
-            {(() => {
-              const badgeLabel = formatUnreadBadgeCount(getUnread([PERSONAL_TAB_NOTIFICATION_CHANNEL.shared]))
-              if (!badgeLabel) return null
-              return (
-                <span className="ml-2 inline-flex min-w-5 items-center justify-center rounded-full bg-rose-500 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white">
-                  {badgeLabel}
-                </span>
-              )
-            })()}
-          </button>
-        </div>
 
-        {message && <InlineNotice variant={message.type}>{message.text}</InlineNotice>}
+          {message ? <InlineNotice variant={message.type}>{message.text}</InlineNotice> : null}
 
-        {activeTab === "shared" && <InlineNotice variant="info">Shared agents are visible in read-only mode.</InlineNotice>}
+          {activeTab === "shared" ? (
+            <InlineNotice variant="info">Shared agents are visible in compact read-only mode.</InlineNotice>
+          ) : null}
 
-        {isLoading ? (
-          <SurfaceCard>Loading agents...</SurfaceCard>
-        ) : activeSubagents.length === 0 ? (
-          activeTab === "personal" ? (
-            <SurfaceCard>
-              <div className="space-y-3">
-                <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">No personal agents found</h3>
-                <p className="text-sm text-slate-600 dark:text-slate-400">
-                  Initialize the standard bridge crew or create an agent manually.
-                </p>
-                <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    onClick={() => {
-                      void handleBootstrapBridgeCrew(false)
-                    }}
-                    disabled={isBootstrappingCrew}
-                    className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-black disabled:opacity-50 dark:bg-white dark:text-slate-900"
-                  >
-                    {isBootstrappingCrew ? "Initializing..." : "Initialize Bridge Crew"}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setShowCreateForm(true)}
-                    className="rounded-lg border border-slate-300 px-4 py-2 text-sm text-slate-700 hover:bg-slate-100 dark:border-white/15 dark:text-slate-300 dark:hover:bg-white/[0.08]"
-                  >
-                    Create manually
-                  </button>
+          {isLoading ? (
+            <SurfaceCard>Loading agents...</SurfaceCard>
+          ) : activeSubagents.length === 0 ? (
+            activeTab === "personal" ? (
+              <SurfaceCard>
+                <div className="space-y-3">
+                  <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">No personal agents found</h3>
+                  <p className="text-sm text-slate-600 dark:text-slate-400">
+                    Initialize the standard bridge crew or create an agent manually.
+                  </p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      onClick={() => {
+                        void handleBootstrapBridgeCrew(false)
+                      }}
+                      disabled={isBootstrappingCrew}
+                      className="w-full rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-black disabled:opacity-50 sm:w-auto dark:bg-white dark:text-slate-900"
+                    >
+                      {isBootstrappingCrew ? "Initializing..." : "Initialize Bridge Crew"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingId(null)
+                        setFormData(EMPTY_FORM)
+                        setShowCreateForm(true)
+                      }}
+                      className="w-full rounded-lg border border-slate-300 px-4 py-2 text-sm text-slate-700 hover:bg-slate-100 sm:w-auto dark:border-white/15 dark:text-slate-300 dark:hover:bg-white/[0.08]"
+                    >
+                      Create manually
+                    </button>
+                  </div>
                 </div>
-              </div>
-            </SurfaceCard>
+              </SurfaceCard>
+            ) : (
+              <EmptyState title="No shared agents found" description="Shared agents will appear here automatically." />
+            )
           ) : (
-            <EmptyState title="No shared agents found" description="Shared agents will appear here automatically." />
-          )
-        ) : (
-          <div className="space-y-4">
-            <SurfaceCard className="space-y-3">
-              <div className="flex items-center justify-between">
-                <h2 className="text-sm font-semibold uppercase tracking-[0.14em] text-slate-500">Available agents</h2>
-                <span className="text-xs text-slate-500 dark:text-slate-400">{activeSubagents.length}</span>
-              </div>
-
-              <div className="overflow-x-auto pb-1">
-                <div className="flex min-w-max gap-2">
-                  {activeSubagents.map((subagent) => {
-                    const isSelected = subagent.id === selectedAgentId
-                    const size = toContextSize(subagent.content)
-
-                    return (
+            <div className="space-y-4">
+              {isMobileLayout ? (
+                <SurfaceCard className="lg:hidden">
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-2 gap-2 rounded-lg border border-slate-200/80 bg-white/75 p-1 dark:border-white/10 dark:bg-white/[0.03]">
                       <button
-                        key={subagent.id}
                         type="button"
-                        onClick={() => setSelectedAgentId(subagent.id)}
-                        className={`min-w-[260px] max-w-[320px] rounded-xl border px-3 py-3 text-left transition ${
-                          isSelected
-                            ? "border-cyan-500/45 bg-cyan-500/10"
-                            : "border-slate-300/70 bg-white/80 hover:bg-slate-50 dark:border-white/10 dark:bg-white/[0.03] dark:hover:bg-white/[0.06]"
+                        onClick={() => setMobileSection("agents")}
+                        className={`inline-flex min-h-[38px] items-center justify-center rounded-md px-3 py-1.5 text-sm font-medium ${
+                          mobileSection === "agents"
+                            ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900"
+                            : "text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-white/[0.08]"
                         }`}
+                        aria-pressed={mobileSection === "agents"}
                       >
-                        <div className="flex items-start justify-between gap-2">
-                          <div>
-                            <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{subagent.name}</p>
-                            <p className="mt-1 text-[11px] uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">
-                              {subagent.subagentType.replace("_", " ")}
-                            </p>
-                            <p className="mt-1 line-clamp-2 text-xs text-slate-600 dark:text-slate-400">
-                              {subagent.description || "No description"}
-                            </p>
-                          </div>
-                          {subagent.isShared && (
-                            <span className="rounded-full border border-blue-500/30 bg-blue-500/10 px-2 py-0.5 text-[10px] font-medium text-blue-700 dark:text-blue-300">
-                              Shared
-                            </span>
-                          )}
-                        </div>
-                        <div className="mt-2 flex items-center gap-3 text-xs text-slate-600 dark:text-slate-400">
-                          <span>{size.wordCount} words</span>
-                          <span>~{size.estimatedTokens} tokens</span>
-                        </div>
+                        Agents
                       </button>
-                    )
-                  })}
-                </div>
-              </div>
-            </SurfaceCard>
-
-            <SurfaceCard>
-              {!selectedSubagent ? (
-                <EmptyState title="Select an agent" description="Pick an agent from the grid to inspect and manage its context." />
-              ) : (
-                <div className="space-y-4">
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div>
-                      <h2 className="text-xl font-semibold text-slate-900 dark:text-slate-100">{selectedSubagent.name}</h2>
-                      <p className="mt-1 text-[11px] uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">
-                        {selectedSubagent.subagentType.replace("_", " ")}
-                      </p>
-                      <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">{selectedSummary}</p>
-                      <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{selectedSubagent.path || "No path configured"}</p>
-                      <p className="mt-1 text-xs font-medium text-slate-500 dark:text-slate-400">
-                        Total context size: {selectedContextSize.wordCount} words (~{selectedContextSize.estimatedTokens} tokens)
-                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setMobileSection("detail")}
+                        disabled={!selectedSubagent}
+                        className={`inline-flex min-h-[38px] items-center justify-center rounded-md px-3 py-1.5 text-sm font-medium ${
+                          mobileSection === "detail"
+                            ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900"
+                            : "text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-300 dark:hover:bg-white/[0.08]"
+                        }`}
+                        aria-pressed={mobileSection === "detail"}
+                        aria-disabled={!selectedSubagent}
+                      >
+                        Detail
+                      </button>
                     </div>
-
-                    {activeTab === "personal" && !selectedSubagent.isShared && (
-                      <div className="flex gap-2">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setEditingId(selectedSubagent.id)
-                            setFormData(toFormState(selectedSubagent))
-                            setShowCreateForm(true)
-                          }}
-                          className="rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 hover:bg-slate-100 dark:border-white/15 dark:text-slate-300 dark:hover:bg-white/[0.08]"
-                        >
-                          Edit basics
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => void handleDelete(selectedSubagent.id)}
-                          className="rounded-lg border border-rose-500/35 px-3 py-2 text-sm text-rose-700 hover:bg-rose-500/10 dark:text-rose-300"
-                        >
-                          Delete
-                        </button>
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="flex flex-wrap gap-2">
-                    {visibleDetailTabs.map((tab) => {
-                      const channel = PERSONAL_DETAIL_NOTIFICATION_CHANNEL[activeTab][tab.id]
-                      const badgeLabel = formatUnreadBadgeCount(getUnread([channel]))
-                      return (
-                        <button
-                          key={tab.id}
-                          type="button"
-                          onClick={() => setDetailTab(tab.id)}
-                          className={`inline-flex items-center rounded-lg border px-3 py-1.5 text-sm ${
-                            detailTab === tab.id
-                              ? "border-cyan-500/45 bg-cyan-500/12 text-cyan-700 dark:text-cyan-200"
-                              : "border-slate-300/70 text-slate-600 hover:bg-slate-50 dark:border-white/10 dark:text-slate-300 dark:hover:bg-white/[0.06]"
-                          }`}
-                        >
-                          <span>{tab.label}</span>
-                          {badgeLabel && (
-                            <span className="ml-2 inline-flex min-w-5 items-center justify-center rounded-full bg-rose-500 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white">
-                              {badgeLabel}
-                            </span>
-                          )}
-                        </button>
-                      )
-                    })}
-                  </div>
-
-                  <div className="rounded-lg border border-slate-200/80 bg-slate-50/70 p-3 text-xs text-slate-600 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-300">
-                    <p className="uppercase tracking-[0.14em] text-[10px] text-slate-500">Editing Focus</p>
-                    <p className="mt-1 text-sm font-medium text-slate-800 dark:text-slate-200">
-                      {selectedSubagent.name} / {activeDetailTabLabel}
-                    </p>
-                    <p className="mt-1">
-                      Context source: {contextSource === "filesystem" ? "Filesystem" : "Content fallback"}
-                      {contextRootPath ? ` / ${contextRootPath}` : ""}
-                    </p>
-                    <p className="mt-1">
-                      Total context size: {selectedContextSize.wordCount} words (~{selectedContextSize.estimatedTokens} tokens)
-                    </p>
-                  </div>
-
-                  {detailTab === "context" && (
-                    <div className="space-y-3">
-                      <div className="rounded-lg border border-slate-200/80 bg-slate-50/70 p-3 text-xs text-slate-600 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-300">
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <span>
-                            Source: <span className="font-semibold">{contextSource === "filesystem" ? "Filesystem" : "Content fallback"}</span>
-                          </span>
-                          <span>
-                            Total: <span className="font-semibold">{contextTotals.wordCount} words</span> · <span className="font-semibold">~{contextTotals.estimatedTokens} tokens</span>
-                          </span>
-                        </div>
-                        {contextRootPath && <p className="mt-1">Root: {contextRootPath}</p>}
-                      </div>
-
-                      {isContextLoading ? (
-                        <SurfaceCard>Loading context files...</SurfaceCard>
-                      ) : contextFiles.length === 0 ? (
-                        <EmptyState title="No context files found" description="Add context files to compose this agent runtime prompt." />
+                    <p className="min-h-[1.25rem] text-xs text-slate-500 dark:text-slate-400">
+                      {selectedSubagent ? (
+                        <>
+                          Selected: <span className="font-semibold text-slate-700 dark:text-slate-200">{selectedSubagent.name}</span>
+                          {" · "}
+                          {selectedSubagent.subagentType.replace("_", " ")}
+                        </>
                       ) : (
-                        <div className="space-y-3">
-                          {contextFiles.map((file) => (
-                            <div
-                              key={file.fileName}
-                              className="rounded-lg border border-slate-200/80 bg-white/80 p-3 dark:border-white/10 dark:bg-white/[0.03]"
-                            >
-                              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                                <div>
-                                  <p className="font-mono text-sm font-semibold text-slate-900 dark:text-slate-100">{file.fileName}</p>
-                                  <p className="text-xs text-slate-500 dark:text-slate-400">{file.relativePath}</p>
-                                </div>
-                                <p className="text-xs text-slate-500 dark:text-slate-400">
-                                  {file.size.wordCount} words · ~{file.size.estimatedTokens} tokens
-                                </p>
-                              </div>
-                              <textarea
-                                value={file.content}
-                                onChange={(event) => updateContextFile(file.fileName, event.target.value)}
-                                rows={6}
-                                disabled={selectedSubagent.isShared}
-                                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-sm text-slate-900 disabled:opacity-60 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
-                              />
-                            </div>
-                          ))}
-                        </div>
+                        "Select an agent to open detail."
                       )}
+                    </p>
+                  </div>
+                </SurfaceCard>
+              ) : null}
 
-                      <div className="flex flex-wrap gap-2">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (selectedSubagent) {
-                              void loadContextFiles(selectedSubagent.id)
-                            }
-                          }}
-                          disabled={isContextLoading}
-                          className="rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 hover:bg-slate-100 disabled:opacity-50 dark:border-white/15 dark:text-slate-300 dark:hover:bg-white/[0.08]"
-                        >
-                          Reload
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => void saveContextFiles()}
-                          disabled={selectedSubagent.isShared || isContextSaving || !isContextDirty}
-                          className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-black disabled:opacity-50 dark:bg-white dark:text-slate-900"
-                        >
-                          {isContextSaving ? "Saving..." : "Save Context"}
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  {detailTab === "orchestration" && (
-                    <div className="space-y-4">
-                      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-                        <label className="flex items-center justify-between rounded-lg border border-slate-200/80 bg-white/80 px-3 py-2 text-sm dark:border-white/10 dark:bg-white/[0.03]">
-                          Handoff enabled
-                          <input
-                            type="checkbox"
-                            checked={settingsDraft.orchestration.handoffEnabled}
-                            disabled={selectedSubagent.isShared}
-                            onChange={(event) => {
-                              setSettingsDraft((current) => ({
-                                ...current,
-                                orchestration: {
-                                  ...current.orchestration,
-                                  handoffEnabled: event.target.checked,
-                                },
-                              }))
-                              markSettingsDirty("orchestration")
-                            }}
-                          />
-                        </label>
-
-                        <label className="flex items-center justify-between rounded-lg border border-slate-200/80 bg-white/80 px-3 py-2 text-sm dark:border-white/10 dark:bg-white/[0.03]">
-                          Risk checks enabled
-                          <input
-                            type="checkbox"
-                            checked={settingsDraft.orchestration.riskChecksEnabled}
-                            disabled={selectedSubagent.isShared}
-                            onChange={(event) => {
-                              setSettingsDraft((current) => ({
-                                ...current,
-                                orchestration: {
-                                  ...current.orchestration,
-                                  riskChecksEnabled: event.target.checked,
-                                },
-                              }))
-                              markSettingsDirty("orchestration")
-                            }}
-                          />
-                        </label>
-
-                        <label className="flex items-center justify-between rounded-lg border border-slate-200/80 bg-white/80 px-3 py-2 text-sm dark:border-white/10 dark:bg-white/[0.03]">
-                          Output contract strict
-                          <input
-                            type="checkbox"
-                            checked={settingsDraft.orchestration.outputContractStrict}
-                            disabled={selectedSubagent.isShared}
-                            onChange={(event) => {
-                              setSettingsDraft((current) => ({
-                                ...current,
-                                orchestration: {
-                                  ...current.orchestration,
-                                  outputContractStrict: event.target.checked,
-                                },
-                              }))
-                              markSettingsDirty("orchestration")
-                            }}
-                          />
-                        </label>
-
-                        <label className="rounded-lg border border-slate-200/80 bg-white/80 px-3 py-2 text-sm dark:border-white/10 dark:bg-white/[0.03]">
-                          Handoff mode
-                          <select
-                            value={settingsDraft.orchestration.handoffMode}
-                            disabled={selectedSubagent.isShared}
-                            onChange={(event) => {
-                              setSettingsDraft((current) => ({
-                                ...current,
-                                orchestration: {
-                                  ...current.orchestration,
-                                  handoffMode: event.target.value as "manual" | "assisted" | "auto",
-                                },
-                              }))
-                              markSettingsDirty("orchestration")
-                            }}
-                            className="mt-2 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
-                          >
-                            <option value="manual">manual</option>
-                            <option value="assisted">assisted</option>
-                            <option value="auto">auto</option>
-                          </select>
-                        </label>
-                      </div>
-
-                      <button
-                        type="button"
-                        onClick={() => void saveSettingsSection("orchestration")}
-                        disabled={selectedSubagent.isShared || isSavingSettings.orchestration || !dirtySettingsSections.orchestration}
-                        className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-black disabled:opacity-50 dark:bg-white dark:text-slate-900"
-                      >
-                        {isSavingSettings.orchestration ? "Saving..." : "Save Orchestration"}
-                      </button>
-                    </div>
-                  )}
-
-                  {detailTab === "permissions" && (
-                    <div className="space-y-4">
-                      <div className="rounded-lg border border-slate-200/80 bg-white/80 p-3 dark:border-white/10 dark:bg-white/[0.03]">
-                        <div className="flex flex-wrap items-start justify-between gap-3">
-                          <div>
-                            <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Assigned Profiles</h4>
-                            <p className="text-xs text-slate-500 dark:text-slate-400">
-                              Assign reusable policy profiles to this agent. Direct overrides still take precedence.
-                            </p>
-                          </div>
-                          {selectedSubagent.isShared && (
-                            <span className="rounded-full border border-slate-300 px-2 py-0.5 text-xs text-slate-500 dark:border-white/15 dark:text-slate-400">
-                              Read-only (shared agent)
-                            </span>
-                          )}
-                        </div>
-
-                        <div className="mt-3 flex flex-wrap items-center gap-2">
-                          {quickPresetPolicies.map((preset) => (
-                            <button
-                              key={preset.id}
-                              type="button"
-                              onClick={() => void assignQuickPreset(preset.slug)}
-                              disabled={selectedSubagent.isShared || isPolicyAssignmentSaving}
-                              className="rounded-lg border border-cyan-500/35 px-3 py-1.5 text-xs text-cyan-700 hover:bg-cyan-500/10 disabled:opacity-50 dark:text-cyan-300"
-                            >
-                              Quick preset: {preset.name}
-                            </button>
-                          ))}
-                        </div>
-
-                        <div className="mt-3 flex flex-wrap items-center gap-2">
-                          <select
-                            value={policyToAttachId}
-                            onChange={(event) => setPolicyToAttachId(event.target.value)}
-                            disabled={selectedSubagent.isShared || attachablePolicies.length === 0}
-                            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
-                          >
-                            <option value="">Attach profile...</option>
-                            {attachablePolicies.map((policy) => (
-                              <option key={policy.id} value={policy.id}>
-                                {policy.name}
-                              </option>
-                            ))}
-                          </select>
-                          <button
-                            type="button"
-                            onClick={() => attachPolicyToAgent(policyToAttachId)}
-                            disabled={selectedSubagent.isShared || !policyToAttachId}
-                            className="rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 hover:bg-slate-100 disabled:opacity-50 dark:border-white/15 dark:text-slate-300 dark:hover:bg-white/[0.08]"
-                          >
-                            Attach
-                          </button>
-                        </div>
-
-                        {policyAssignments.length === 0 ? (
-                          <p className="mt-3 text-sm text-slate-500 dark:text-slate-400">No profiles assigned.</p>
-                        ) : (
-                          <div className="mt-3 space-y-2">
-                            {policyAssignments
-                              .slice()
-                              .sort((left, right) => left.priority - right.priority)
-                              .map((assignment) => {
-                                const policy = policyById.get(assignment.policyId)
-                                if (!policy) {
-                                  return null
-                                }
-
-                                return (
-                                  <div
-                                    key={assignment.policyId}
-                                    className="rounded-lg border border-slate-200/80 bg-white/80 p-3 dark:border-white/10 dark:bg-white/[0.03]"
-                                  >
-                                    <div className="flex flex-wrap items-center justify-between gap-2">
-                                      <div>
-                                        <p className="text-sm font-medium text-slate-900 dark:text-slate-100">{policy.name}</p>
-                                        <p className="text-xs text-slate-500 dark:text-slate-400">
-                                          {policy.slug} · {policy.rules.length} rule{policy.rules.length === 1 ? "" : "s"}
-                                        </p>
-                                      </div>
-                                      <button
-                                        type="button"
-                                        onClick={() => removePolicyAssignment(assignment.policyId)}
-                                        disabled={selectedSubagent.isShared}
-                                        className="rounded-lg border border-rose-500/35 px-2 py-1 text-xs text-rose-700 hover:bg-rose-500/10 disabled:opacity-50 dark:text-rose-300"
-                                      >
-                                        Remove
-                                      </button>
-                                    </div>
-
-                                    <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2">
-                                      <label className="text-xs text-slate-600 dark:text-slate-300">
-                                        Priority (lower runs first)
-                                        <input
-                                          type="number"
-                                          value={assignment.priority}
-                                          disabled={selectedSubagent.isShared}
-                                          onChange={(event) =>
-                                            updatePolicyAssignment(assignment.policyId, {
-                                              priority: Number(event.target.value) || 0,
-                                            })
-                                          }
-                                          className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
-                                        />
-                                      </label>
-                                      <label className="inline-flex items-center justify-between rounded-lg border border-slate-200/80 bg-white/80 px-3 py-2 text-sm text-slate-700 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-200">
-                                        Enabled
-                                        <input
-                                          type="checkbox"
-                                          checked={assignment.enabled}
-                                          disabled={selectedSubagent.isShared}
-                                          onChange={(event) =>
-                                            updatePolicyAssignment(assignment.policyId, {
-                                              enabled: event.target.checked,
-                                            })
-                                          }
-                                        />
-                                      </label>
-                                    </div>
-                                  </div>
-                                )
-                              })}
-                          </div>
-                        )}
-
-                        <div className="mt-3">
-                          <button
-                            type="button"
-                            onClick={() => void savePolicyAssignments(policyAssignments, "Policy assignments saved")}
-                            disabled={selectedSubagent.isShared || isPolicyAssignmentSaving || !policyAssignmentsDirty}
-                            className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-black disabled:opacity-50 dark:bg-white dark:text-slate-900"
-                          >
-                            {isPolicyAssignmentSaving ? "Saving..." : "Save Assigned Profiles"}
-                          </button>
-                        </div>
-                      </div>
-
-                      <div className="rounded-lg border border-slate-200/80 bg-white/80 p-3 dark:border-white/10 dark:bg-white/[0.03]">
-                        <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Policy Library</h4>
-                        <p className="text-xs text-slate-500 dark:text-slate-400">
-                          Create and maintain reusable profile bundles. System profiles are immutable.
-                        </p>
-
-                        <form onSubmit={savePolicyEditor} className="mt-3 space-y-2 rounded-lg border border-slate-200/80 bg-white/80 p-3 dark:border-white/10 dark:bg-white/[0.03]">
-                          <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
-                            <input
-                              type="text"
-                              value={policyEditor.name}
-                              onChange={(event) => setPolicyEditor((current) => ({ ...current, name: event.target.value }))}
-                              placeholder="Profile name"
-                              required
-                              className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
-                            />
-                            <input
-                              type="text"
-                              value={policyEditor.description}
-                              onChange={(event) => setPolicyEditor((current) => ({ ...current, description: event.target.value }))}
-                              placeholder="Description (optional)"
-                              className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
-                            />
-                          </div>
-
-                          <div className="space-y-2">
-                            {policyEditor.rules.map((rule, index) => (
-                              <div key={`${rule.id || "draft"}-${index}`} className="grid grid-cols-1 gap-2 md:grid-cols-12">
-                                <input
-                                  type="text"
-                                  value={rule.commandPattern}
-                                  onChange={(event) => updatePolicyEditorRule(index, { commandPattern: event.target.value })}
-                                  placeholder="command pattern"
-                                  className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 md:col-span-6 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
-                                />
-                                <select
-                                  value={rule.status}
-                                  onChange={(event) =>
-                                    updatePolicyEditorRule(index, { status: event.target.value as "allow" | "ask" | "deny" })
-                                  }
-                                  className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 md:col-span-2 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
-                                >
-                                  <option value="allow">allow</option>
-                                  <option value="ask">ask</option>
-                                  <option value="deny">deny</option>
-                                </select>
-                                <select
-                                  value={rule.type}
-                                  onChange={(event) =>
-                                    updatePolicyEditorRule(index, { type: event.target.value as "bash_command" | "tool_command" })
-                                  }
-                                  className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 md:col-span-2 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
-                                >
-                                  <option value="bash_command">bash_command</option>
-                                  <option value="tool_command">tool_command</option>
-                                </select>
-                                <div className="flex gap-2 md:col-span-2">
-                                  <input
-                                    type="number"
-                                    value={rule.sortOrder}
-                                    onChange={(event) =>
-                                      updatePolicyEditorRule(index, { sortOrder: Number(event.target.value) || 0 })
-                                    }
-                                    className="w-full rounded-lg border border-slate-300 bg-white px-2 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
-                                  />
-                                  <button
-                                    type="button"
-                                    onClick={() => removePolicyEditorRule(index)}
-                                    disabled={policyEditor.rules.length <= 1}
-                                    className="rounded-lg border border-rose-500/35 px-2 py-2 text-xs text-rose-700 hover:bg-rose-500/10 disabled:opacity-50 dark:text-rose-300"
-                                  >
-                                    X
-                                  </button>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-
-                          <div className="flex flex-wrap items-center gap-2">
-                            <button
-                              type="button"
-                              onClick={addPolicyEditorRule}
-                              className="rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 hover:bg-slate-100 dark:border-white/15 dark:text-slate-300 dark:hover:bg-white/[0.08]"
-                            >
-                              Add Rule
-                            </button>
-                            <button
-                              type="submit"
-                              disabled={isPolicyEditorSaving}
-                              className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-black disabled:opacity-50 dark:bg-white dark:text-slate-900"
-                            >
-                              {isPolicyEditorSaving ? "Saving..." : policyEditor.id ? "Update Profile" : "Create Profile"}
-                            </button>
-                            {policyEditor.id && (
-                              <button
-                                type="button"
-                                onClick={resetPolicyEditor}
-                                className="rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 hover:bg-slate-100 dark:border-white/15 dark:text-slate-300 dark:hover:bg-white/[0.08]"
-                              >
-                                Cancel Edit
-                              </button>
-                            )}
-                          </div>
-                        </form>
-
-                        {isPolicyLibraryLoading ? (
-                          <p className="mt-3 text-sm text-slate-500 dark:text-slate-400">Loading policy library...</p>
-                        ) : policyLibrary.length === 0 ? (
-                          <p className="mt-3 text-sm text-slate-500 dark:text-slate-400">No profiles available.</p>
-                        ) : (
-                          <div className="mt-3 space-y-2">
-                            {policyLibrary.map((policy) => (
-                              <div
-                                key={policy.id}
-                                className="rounded-lg border border-slate-200/80 bg-white/80 p-3 dark:border-white/10 dark:bg-white/[0.03]"
-                              >
-                                <div className="flex flex-wrap items-start justify-between gap-2">
-                                  <div>
-                                    <p className="text-sm font-medium text-slate-900 dark:text-slate-100">
-                                      {policy.name}
-                                      {policy.isSystem && (
-                                        <span className="ml-2 rounded-full border border-indigo-500/30 bg-indigo-500/10 px-2 py-0.5 text-[11px] text-indigo-700 dark:text-indigo-300">
-                                          system
-                                        </span>
-                                      )}
-                                    </p>
-                                    <p className="text-xs text-slate-500 dark:text-slate-400">
-                                      {policy.slug} · {policy._count?.assignments || 0} assignment{(policy._count?.assignments || 0) === 1 ? "" : "s"}
-                                    </p>
-                                    {policy.description && (
-                                      <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">{policy.description}</p>
-                                    )}
-                                  </div>
-                                  {!policy.isSystem && (
-                                    <div className="flex gap-2">
-                                      <button
-                                        type="button"
-                                        onClick={() => editPolicyFromLibrary(policy)}
-                                        className="rounded-lg border border-slate-300 px-2 py-1 text-xs text-slate-700 hover:bg-slate-100 dark:border-white/15 dark:text-slate-300 dark:hover:bg-white/[0.08]"
-                                      >
-                                        Edit
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={() => void deletePolicyProfile(policy.id)}
-                                        className="rounded-lg border border-rose-500/35 px-2 py-1 text-xs text-rose-700 hover:bg-rose-500/10 dark:text-rose-300"
-                                      >
-                                        Delete
-                                      </button>
-                                    </div>
-                                  )}
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-
-                      <div className="rounded-lg border border-slate-200/80 bg-white/80 p-3 dark:border-white/10 dark:bg-white/[0.03]">
-                        <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Agent Overrides</h4>
-                        <p className="text-xs text-slate-500 dark:text-slate-400">
-                          Direct rules that override assigned profiles for this agent.
-                        </p>
-
-                        <form onSubmit={createPermission} className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-4">
-                          <input
-                            type="text"
-                            value={permissionDraft.commandPattern}
-                            onChange={(event) => setPermissionDraft((current) => ({ ...current, commandPattern: event.target.value }))}
-                            placeholder="bun run build:*"
-                            required
-                            disabled={selectedSubagent.isShared}
-                            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 md:col-span-2 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
-                          />
-                          <select
-                            value={permissionDraft.status}
-                            onChange={(event) =>
-                              setPermissionDraft((current) => ({ ...current, status: event.target.value as "allow" | "ask" | "deny" }))
-                            }
-                            disabled={selectedSubagent.isShared}
-                            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
-                          >
-                            <option value="allow">allow</option>
-                            <option value="ask">ask</option>
-                            <option value="deny">deny</option>
-                          </select>
-                          <select
-                            value={permissionDraft.type}
-                            onChange={(event) =>
-                              setPermissionDraft((current) => ({ ...current, type: event.target.value as "bash_command" | "tool_command" }))
-                            }
-                            disabled={selectedSubagent.isShared}
-                            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
-                          >
-                            <option value="bash_command">bash_command</option>
-                            <option value="tool_command">tool_command</option>
-                          </select>
-                          <input
-                            type="text"
-                            value={permissionDraft.sourceFile}
-                            onChange={(event) => setPermissionDraft((current) => ({ ...current, sourceFile: event.target.value }))}
-                            placeholder="source file (optional)"
-                            disabled={selectedSubagent.isShared}
-                            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 md:col-span-3 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
-                          />
-                          <button
-                            type="submit"
-                            disabled={selectedSubagent.isShared || isCreatingPermission || !permissionDraft.commandPattern.trim()}
-                            className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-black disabled:opacity-50 dark:bg-white dark:text-slate-900"
-                          >
-                            {isCreatingPermission ? "Adding..." : "Add Override Rule"}
-                          </button>
-                        </form>
-
-                        {isPermissionsLoading ? (
-                          <SurfaceCard className="mt-3">Loading override rules...</SurfaceCard>
-                        ) : agentPermissions.length === 0 ? (
-                          <div className="mt-3">
-                            <EmptyState
-                              title="No agent overrides"
-                              description="Add allow/ask/deny command patterns for direct agent precedence."
-                            />
-                          </div>
-                        ) : (
-                          <div className="mt-3 space-y-2">
-                            {agentPermissions.map((permission) => (
-                              <div
-                                key={permission.id}
-                                className="rounded-lg border border-slate-200/80 bg-white/80 p-3 dark:border-white/10 dark:bg-white/[0.03]"
-                              >
-                                <div className="flex flex-wrap items-center justify-between gap-2">
-                                  <div>
-                                    <p className="font-mono text-sm text-slate-900 dark:text-slate-100">{permission.commandPattern}</p>
-                                    <p className="text-xs text-slate-500 dark:text-slate-400">
-                                      {permission.status} · {permission.type} · {permission.scope}
-                                    </p>
-                                  </div>
-                                  {!selectedSubagent.isShared && (
-                                    <button
-                                      type="button"
-                                      onClick={() => void deletePermission(permission.id)}
-                                      className="rounded-lg border border-rose-500/35 px-3 py-1.5 text-xs text-rose-700 hover:bg-rose-500/10 dark:text-rose-300"
-                                    >
-                                      Delete
-                                    </button>
-                                  )}
-                                </div>
-                                {permission.sourceFile && (
-                                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Source: {permission.sourceFile}</p>
-                                )}
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  )}
-
-                  {detailTab === "agentsync" && (
-                    <div className="space-y-4">
-                      <div className="rounded-lg border border-slate-200/80 bg-white/80 p-3 dark:border-white/10 dark:bg-white/[0.03]">
-                        <div className="flex flex-wrap items-start justify-between gap-3">
-                          <div>
-                            <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Run AgentSync</h4>
-                            <p className="text-xs text-slate-500 dark:text-slate-400">
-                              Heuristic reinforcement updates are auto-applied to low-risk files and proposed for high-risk files.
-                            </p>
-                          </div>
-                          <span className="rounded-full border border-cyan-500/35 bg-cyan-500/10 px-2 py-0.5 text-xs text-cyan-700 dark:text-cyan-200">
-                            {proposedHighRiskSuggestionCount} pending high-risk
-                          </span>
-                        </div>
-
-                        {!canRunSelectedAgentSync && (
-                          <p className="mt-2 text-xs text-amber-700 dark:text-amber-300">
-                            Select a personal agent to run selected-agent AgentSync.
-                          </p>
-                        )}
-
-                        <div className="mt-3 flex flex-wrap items-center gap-2">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              void runAgentSync("selected_agent")
-                            }}
-                            disabled={!canRunSelectedAgentSync || isAgentSyncRunningSelected || isAgentSyncRunningCrew}
-                            className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-black disabled:opacity-50 dark:bg-white dark:text-slate-900"
-                          >
-                            {isAgentSyncRunningSelected ? "Running Selected..." : "Run AgentSync (Selected Agent)"}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              void runAgentSync("bridge_crew")
-                            }}
-                            disabled={activeTab !== "personal" || isAgentSyncRunningCrew || isAgentSyncRunningSelected}
-                            className="rounded-lg border border-slate-300 px-4 py-2 text-sm text-slate-700 hover:bg-slate-100 disabled:opacity-50 dark:border-white/15 dark:text-slate-300 dark:hover:bg-white/[0.08]"
-                          >
-                            {isAgentSyncRunningCrew ? "Running Bridge Crew..." : "Run Full Bridge Crew"}
-                          </button>
-                        </div>
-                      </div>
-
-                      <div className="rounded-lg border border-slate-200/80 bg-white/80 p-3 dark:border-white/10 dark:bg-white/[0.03]">
-                        <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Nightly Preferences</h4>
-                        <p className="text-xs text-slate-500 dark:text-slate-400">
-                          Hourly cron should call `/api/agentsync/nightly`; due users run at local {agentSyncPreference.nightlyHour
-                            .toString()
-                            .padStart(2, "0")}
-                          :00.
-                        </p>
-
-                        <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
-                          <label className="text-sm font-medium text-slate-700 dark:text-slate-300">
-                            Timezone
-                            <input
-                              type="text"
-                              value={agentSyncPreference.timezone}
-                              onChange={(event) =>
-                                setAgentSyncPreference((current) => ({
-                                  ...current,
-                                  timezone: event.target.value,
-                                }))
-                              }
-                              disabled={isAgentSyncPreferenceLoading || isAgentSyncPreferenceSaving}
-                              className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
-                              placeholder="America/New_York"
-                            />
-                          </label>
-                          <label className="inline-flex items-center justify-between rounded-lg border border-slate-200/80 bg-white/80 px-3 py-2 text-sm text-slate-700 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-200">
-                            Nightly enabled
-                            <input
-                              type="checkbox"
-                              checked={agentSyncPreference.nightlyEnabled}
-                              onChange={(event) =>
-                                setAgentSyncPreference((current) => ({
-                                  ...current,
-                                  nightlyEnabled: event.target.checked,
-                                }))
-                              }
-                              disabled={isAgentSyncPreferenceLoading || isAgentSyncPreferenceSaving}
-                            />
-                          </label>
-                        </div>
-
-                        <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
-                          <p className="text-xs text-slate-500 dark:text-slate-400">
-                            Last nightly run: {agentSyncPreference.lastNightlyRunAt
-                              ? new Date(agentSyncPreference.lastNightlyRunAt).toLocaleString()
-                              : "never"}
-                          </p>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              void saveAgentSyncPreference()
-                            }}
-                            disabled={isAgentSyncPreferenceLoading || isAgentSyncPreferenceSaving}
-                            className="rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 hover:bg-slate-100 disabled:opacity-50 dark:border-white/15 dark:text-slate-300 dark:hover:bg-white/[0.08]"
-                          >
-                            {isAgentSyncPreferenceSaving ? "Saving..." : "Save Preferences"}
-                          </button>
-                        </div>
-                      </div>
-
-                      <div className="rounded-lg border border-slate-200/80 bg-white/80 p-3 dark:border-white/10 dark:bg-white/[0.03]">
-                        <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Run History</h4>
-                        <p className="text-xs text-slate-500 dark:text-slate-400">
-                          Recent selected-agent or bridge-crew runs with high-risk approval actions.
-                        </p>
-
-                        {isAgentSyncRunsLoading ? (
-                          <SurfaceCard className="mt-3">Loading AgentSync runs...</SurfaceCard>
-                        ) : agentSyncRuns.length === 0 ? (
-                          <div className="mt-3">
-                            <EmptyState title="No AgentSync runs yet" description="Trigger a run to generate reinforcement updates." />
-                          </div>
-                        ) : (
-                          <div className="mt-3 space-y-3">
-                            {agentSyncRuns.map((run) => {
-                              const highRiskSuggestions = run.suggestions.filter((suggestion) => suggestion.risk === "high")
-
-                              return (
-                                <div
-                                  key={run.id}
-                                  className="rounded-lg border border-slate-200/80 bg-white/80 p-3 dark:border-white/10 dark:bg-white/[0.03]"
-                                >
-                                  <div className="flex flex-wrap items-start justify-between gap-2">
-                                    <div>
-                                      <p className="text-sm font-medium text-slate-900 dark:text-slate-100">
-                                        {run.scope === "selected_agent" ? "Selected Agent Run" : "Bridge Crew Run"} · {run.status}
-                                      </p>
-                                      <p className="text-xs text-slate-500 dark:text-slate-400">
-                                        {run.trigger} · {new Date(run.createdAt).toLocaleString()}
-                                      </p>
-                                    </div>
-                                    <span className="rounded-full border border-slate-300 px-2 py-0.5 text-[11px] text-slate-600 dark:border-white/15 dark:text-slate-300">
-                                      {run.fileSyncStatus === "filesystem_sync_failed" ? "filesystem sync warning" : run.fileSyncStatus}
-                                    </span>
-                                  </div>
-
-                                  {run.summary && (
-                                    <p className="mt-2 text-xs text-slate-600 dark:text-slate-300">{run.summary}</p>
-                                  )}
-
-                                  {highRiskSuggestions.length > 0 && (
-                                    <div className="mt-3 space-y-2 border-t border-slate-200/80 pt-2 dark:border-white/10">
-                                      {highRiskSuggestions.map((suggestion) => (
-                                        <div
-                                          key={suggestion.id}
-                                          className="rounded-lg border border-slate-200/80 bg-slate-50/70 p-2 dark:border-white/10 dark:bg-white/[0.02]"
-                                        >
-                                          <div className="flex flex-wrap items-center justify-between gap-2">
-                                            <div>
-                                              <p className="font-mono text-xs font-medium text-slate-900 dark:text-slate-100">
-                                                {suggestion.fileName}
-                                              </p>
-                                              <p className="text-xs text-slate-500 dark:text-slate-400">
-                                                {suggestion.status}
-                                                {suggestion.reason ? ` · ${suggestion.reason}` : ""}
-                                              </p>
-                                            </div>
-                                            {suggestion.status === "proposed" && (
-                                              <div className="flex gap-2">
-                                                <button
-                                                  type="button"
-                                                  onClick={() => {
-                                                    void applyAgentSyncSuggestionAction(suggestion.id)
-                                                  }}
-                                                  disabled={actingSuggestionId === suggestion.id}
-                                                  className="rounded-lg border border-emerald-500/35 px-2 py-1 text-xs text-emerald-700 hover:bg-emerald-500/10 disabled:opacity-50 dark:text-emerald-300"
-                                                >
-                                                  {actingSuggestionId === suggestion.id ? "Applying..." : "Apply"}
-                                                </button>
-                                                <button
-                                                  type="button"
-                                                  onClick={() => {
-                                                    void rejectAgentSyncSuggestionAction(suggestion.id)
-                                                  }}
-                                                  disabled={actingSuggestionId === suggestion.id}
-                                                  className="rounded-lg border border-rose-500/35 px-2 py-1 text-xs text-rose-700 hover:bg-rose-500/10 disabled:opacity-50 dark:text-rose-300"
-                                                >
-                                                  {actingSuggestionId === suggestion.id ? "Saving..." : "Reject"}
-                                                </button>
-                                              </div>
-                                            )}
-                                          </div>
-                                        </div>
-                                      ))}
-                                    </div>
-                                  )}
-                                </div>
-                              )
-                            })}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  )}
-
-                  {detailTab === "workspace" && (
-                    <div className="space-y-3">
-                      <div>
-                        <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">Working directory</label>
-                        <input
-                          type="text"
-                          value={settingsDraft.workspace.workingDirectory}
-                          disabled={selectedSubagent.isShared}
-                          onChange={(event) => {
-                            setSettingsDraft((current) => ({
-                              ...current,
-                              workspace: {
-                                ...current.workspace,
-                                workingDirectory: event.target.value,
-                              },
-                            }))
-                            markSettingsDirty("workspace")
-                          }}
-                          className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
-                        />
-                      </div>
-                      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-                        <div>
-                          <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">Include paths (one per line)</label>
-                          <textarea
-                            rows={6}
-                            value={joinLines(settingsDraft.workspace.includePaths)}
-                            disabled={selectedSubagent.isShared}
-                            onChange={(event) => {
-                              setSettingsDraft((current) => ({
-                                ...current,
-                                workspace: {
-                                  ...current.workspace,
-                                  includePaths: splitLines(event.target.value),
-                                },
-                              }))
-                              markSettingsDirty("workspace")
-                            }}
-                            className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
-                          />
-                        </div>
-                        <div>
-                          <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">Exclude paths (one per line)</label>
-                          <textarea
-                            rows={6}
-                            value={joinLines(settingsDraft.workspace.excludePaths)}
-                            disabled={selectedSubagent.isShared}
-                            onChange={(event) => {
-                              setSettingsDraft((current) => ({
-                                ...current,
-                                workspace: {
-                                  ...current.workspace,
-                                  excludePaths: splitLines(event.target.value),
-                                },
-                              }))
-                              markSettingsDirty("workspace")
-                            }}
-                            className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
-                          />
-                        </div>
-                      </div>
-
-                      <button
-                        type="button"
-                        onClick={() => void saveSettingsSection("workspace")}
-                        disabled={selectedSubagent.isShared || isSavingSettings.workspace || !dirtySettingsSections.workspace}
-                        className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-black disabled:opacity-50 dark:bg-white dark:text-slate-900"
-                      >
-                        {isSavingSettings.workspace ? "Saving..." : "Save Workspace"}
-                      </button>
-                    </div>
-                  )}
-
-                  {detailTab === "memory" && (
-                    <div className="space-y-3">
-                      <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-                        <label className="text-sm font-medium text-slate-700 dark:text-slate-300">
-                          Mode
-                          <select
-                            value={settingsDraft.memory.mode}
-                            disabled={selectedSubagent.isShared}
-                            onChange={(event) => {
-                              setSettingsDraft((current) => ({
-                                ...current,
-                                memory: {
-                                  ...current.memory,
-                                  mode: event.target.value as "session" | "rolling" | "ephemeral",
-                                },
-                              }))
-                              markSettingsDirty("memory")
-                            }}
-                            className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
-                          >
-                            <option value="session">session</option>
-                            <option value="rolling">rolling</option>
-                            <option value="ephemeral">ephemeral</option>
-                          </select>
-                        </label>
-
-                        <label className="text-sm font-medium text-slate-700 dark:text-slate-300">
-                          Max entries
-                          <input
-                            type="number"
-                            min={1}
-                            max={1000}
-                            value={settingsDraft.memory.maxEntries}
-                            disabled={selectedSubagent.isShared}
-                            onChange={(event) => {
-                              const nextValue = Number(event.target.value)
-                              setSettingsDraft((current) => ({
-                                ...current,
-                                memory: {
-                                  ...current.memory,
-                                  maxEntries: Number.isFinite(nextValue)
-                                    ? Math.max(1, Math.min(1000, Math.round(nextValue)))
-                                    : current.memory.maxEntries,
-                                },
-                              }))
-                              markSettingsDirty("memory")
-                            }}
-                            className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
-                          />
-                        </label>
-
-                        <label className="text-sm font-medium text-slate-700 dark:text-slate-300">
-                          Summary style
-                          <select
-                            value={settingsDraft.memory.summaryStyle}
-                            disabled={selectedSubagent.isShared}
-                            onChange={(event) => {
-                              setSettingsDraft((current) => ({
-                                ...current,
-                                memory: {
-                                  ...current.memory,
-                                  summaryStyle: event.target.value as "concise" | "detailed",
-                                },
-                              }))
-                              markSettingsDirty("memory")
-                            }}
-                            className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
-                          >
-                            <option value="concise">concise</option>
-                            <option value="detailed">detailed</option>
-                          </select>
-                        </label>
-                      </div>
-
-                      <button
-                        type="button"
-                        onClick={() => void saveSettingsSection("memory")}
-                        disabled={selectedSubagent.isShared || isSavingSettings.memory || !dirtySettingsSections.memory}
-                        className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-black disabled:opacity-50 dark:bg-white dark:text-slate-900"
-                      >
-                        {isSavingSettings.memory ? "Saving..." : "Save Memory"}
-                      </button>
-                    </div>
-                  )}
-
-                  {detailTab === "guidelines" && (
-                    <div className="space-y-3">
-                      <div>
-                        <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">Guideline references (one per line)</label>
-                        <textarea
-                          rows={5}
-                          value={joinLines(settingsDraft.guidelines.references)}
-                          disabled={selectedSubagent.isShared}
-                          onChange={(event) => {
-                            setSettingsDraft((current) => ({
-                              ...current,
-                              guidelines: {
-                                ...current.guidelines,
-                                references: splitLines(event.target.value),
-                              },
-                            }))
-                            markSettingsDirty("guidelines")
-                          }}
-                          className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">Guideline notes</label>
-                        <textarea
-                          rows={7}
-                          value={settingsDraft.guidelines.notes}
-                          disabled={selectedSubagent.isShared}
-                          onChange={(event) => {
-                            setSettingsDraft((current) => ({
-                              ...current,
-                              guidelines: {
-                                ...current.guidelines,
-                                notes: event.target.value,
-                              },
-                            }))
-                            markSettingsDirty("guidelines")
-                          }}
-                          className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
-                        />
-                      </div>
-
-                      <button
-                        type="button"
-                        onClick={() => void saveSettingsSection("guidelines")}
-                        disabled={selectedSubagent.isShared || isSavingSettings.guidelines || !dirtySettingsSections.guidelines}
-                        className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-black disabled:opacity-50 dark:bg-white dark:text-slate-900"
-                      >
-                        {isSavingSettings.guidelines ? "Saving..." : "Save Guidelines"}
-                      </button>
-                    </div>
-                  )}
-
-                  {detailTab === "capabilities" && selectedSubagent.subagentType === "exocomp" && (
-                    <div className="space-y-3">
-                      <div className="rounded-lg border border-cyan-500/30 bg-cyan-500/10 p-3 text-xs text-cyan-900 dark:text-cyan-100">
-                        Exocomp capability preset: <span className="font-semibold">{settingsDraft.capabilities.preset}</span>
-                      </div>
-
-                      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-                        <label className="inline-flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-300">
-                          <input
-                            type="checkbox"
-                            checked={settingsDraft.capabilities.diagnostics}
-                            disabled={selectedSubagent.isShared}
-                            onChange={(event) => {
-                              setSettingsDraft((current) => ({
-                                ...current,
-                                capabilities: {
-                                  ...current.capabilities,
-                                  diagnostics: event.target.checked,
-                                },
-                              }))
-                              markSettingsDirty("capabilities")
-                            }}
-                          />
-                          Diagnostics
-                        </label>
-
-                        <label className="inline-flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-300">
-                          <input
-                            type="checkbox"
-                            checked={settingsDraft.capabilities.microRepairPlanning}
-                            disabled={selectedSubagent.isShared}
-                            onChange={(event) => {
-                              setSettingsDraft((current) => ({
-                                ...current,
-                                capabilities: {
-                                  ...current.capabilities,
-                                  microRepairPlanning: event.target.checked,
-                                },
-                              }))
-                              markSettingsDirty("capabilities")
-                            }}
-                          />
-                          Micro-repair planning
-                        </label>
-
-                        <label className="inline-flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-300">
-                          <input
-                            type="checkbox"
-                            checked={settingsDraft.capabilities.hazardChecks}
-                            disabled={selectedSubagent.isShared}
-                            onChange={(event) => {
-                              setSettingsDraft((current) => ({
-                                ...current,
-                                capabilities: {
-                                  ...current.capabilities,
-                                  hazardChecks: event.target.checked,
-                                },
-                              }))
-                              markSettingsDirty("capabilities")
-                            }}
-                          />
-                          Hazard checks
-                        </label>
-
-                        <label className="inline-flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-300">
-                          <input
-                            type="checkbox"
-                            checked={settingsDraft.capabilities.safeShutdownGuidance}
-                            disabled={selectedSubagent.isShared}
-                            onChange={(event) => {
-                              setSettingsDraft((current) => ({
-                                ...current,
-                                capabilities: {
-                                  ...current.capabilities,
-                                  safeShutdownGuidance: event.target.checked,
-                                },
-                              }))
-                              markSettingsDirty("capabilities")
-                            }}
-                          />
-                          Safe shutdown guidance
-                        </label>
-
-                        <label className="inline-flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-300 md:col-span-2">
-                          <input
-                            type="checkbox"
-                            checked={settingsDraft.capabilities.statusRelay}
-                            disabled={selectedSubagent.isShared}
-                            onChange={(event) => {
-                              setSettingsDraft((current) => ({
-                                ...current,
-                                capabilities: {
-                                  ...current.capabilities,
-                                  statusRelay: event.target.checked,
-                                },
-                              }))
-                              markSettingsDirty("capabilities")
-                            }}
-                          />
-                          Status relay
-                        </label>
-                      </div>
-
-                      <button
-                        type="button"
-                        onClick={() => void saveSettingsSection("capabilities")}
-                        disabled={selectedSubagent.isShared || isSavingSettings.capabilities || !dirtySettingsSections.capabilities}
-                        className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-black disabled:opacity-50 dark:bg-white dark:text-slate-900"
-                      >
-                        {isSavingSettings.capabilities ? "Saving..." : "Save Capabilities"}
-                      </button>
-                    </div>
-                  )}
-
-                  <div className="space-y-2 border-t border-slate-200/80 pt-3 dark:border-white/10">
-                    <div>
-                      <h3 className="text-sm font-semibold uppercase tracking-[0.14em] text-slate-500">Orchestration Graph</h3>
-                      <p className="text-xs text-slate-500 dark:text-slate-400">
-                        Showing {selectedSubagent.name} while editing {activeDetailTabLabel.toLowerCase()}.
-                      </p>
-                    </div>
-                    <ContextOrchestrationBoard
-                      subagents={activeSubagents}
-                      selectedAgentId={selectedSubagent.id}
-                      onSelectedAgentIdChange={setSelectedAgentId}
-                      hideAgentSelector
+              {showAgentListPanel ? (
+                <SurfaceCard>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <h2 className="text-sm font-semibold uppercase tracking-[0.14em] text-slate-500">Available agents</h2>
+                    <span className="text-xs text-slate-500 dark:text-slate-400">{filteredAgents.length}</span>
+                  </div>
+                  <div className="mt-3">
+                    <AgentCardStrip
+                      agents={activeSubagents}
+                      filteredAgents={filteredAgents}
+                      selectedAgentId={selectedAgentId}
+                      onSelectAgent={handleSelectAgent}
+                      searchQuery={agentSearchQuery}
+                      onSearchQueryChange={setAgentSearchQuery}
+                      typeFilter={agentTypeFilter}
+                      onTypeFilterChange={setAgentTypeFilter}
+                      statusLineForAgent={(agent) => formatAgentCardStatusLine({ estimatedTokens: toContextSize(agent.content).estimatedTokens, path: agent.path })}
                     />
                   </div>
-                </div>
-              )}
-            </SurfaceCard>
-          </div>
-        )}
+                </SurfaceCard>
+              ) : null}
 
-        {activeTab === "personal" && showCreateForm && (
-          <SurfaceCard>
-            <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">
-              {editingId ? "Edit Personal Agent" : "Create New Personal Agent"}
-            </h2>
-            <form onSubmit={editingId ? handleUpdate : handleCreate} className="mt-4 space-y-3">
-              <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-                <div>
-                  <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">Name</label>
-                  <input
-                    type="text"
-                    value={formData.name}
-                    onChange={(event) => setFormData((current) => ({ ...current, name: event.target.value }))}
-                    required
-                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
-                    placeholder="code-simplifier"
-                  />
-                </div>
-                <div>
-                  <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">Path</label>
-                  <input
-                    type="text"
-                    value={formData.path}
-                    onChange={(event) => setFormData((current) => ({ ...current, path: event.target.value }))}
-                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
-                    placeholder=".claude/agents/code-simplifier/SOUL.md"
-                  />
-                </div>
-                <div>
-                  <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">Type</label>
-                  <select
-                    value={formData.subagentType}
-                    onChange={(event) => setFormData((current) => ({ ...current, subagentType: event.target.value as SubagentTypeValue }))}
-                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
-                  >
-                    <option value="general">General</option>
-                    <option value="bridge_crew">Bridge Crew</option>
-                    <option value="exocomp">Exocomp</option>
-                  </select>
-                </div>
-              </div>
+              {showAgentDetailPanel ? (
+                <SurfaceCard>
+                  {!selectedSubagent ? (
+                    <EmptyState title="Select an agent" description="Pick an agent from the list to inspect and manage its runtime." />
+                  ) : (
+                    <div className="space-y-4">
+                      <SelectedAgentHeader
+                        subagent={selectedSubagent}
+                        summary={selectedSummary}
+                        isMutable={isSelectedMutable}
+                        contextWords={selectedContextSize.wordCount}
+                        contextTokens={selectedContextSize.estimatedTokens}
+                        policyCoverageLabel={selectedPolicyCoverageLabel}
+                        pendingHighRiskCount={selectedHighRiskPendingCount}
+                        onEditBasics={() => {
+                          setEditingId(selectedSubagent.id)
+                          setFormData(toFormState(selectedSubagent))
+                          setShowCreateForm(true)
+                        }}
+                        onDelete={() => {
+                          void handleDelete(selectedSubagent.id)
+                        }}
+                      />
 
-              <div>
-                <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">Description</label>
-                <input
-                  type="text"
-                  value={formData.description}
-                  onChange={(event) => setFormData((current) => ({ ...current, description: event.target.value }))}
-                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
-                />
-              </div>
+                      {activeTab === "personal" ? (
+                        <CoreDetailTabs
+                          tabs={coreTabsWithBadges}
+                          activeTab={effectiveDetailTab}
+                          onTabChange={setDetailTab}
+                          showAdvancedButton={!selectedSubagent.isShared}
+                          advancedBadgeLabel={advancedBadgeLabel}
+                          onOpenAdvanced={() => setIsAdvancedOpen(true)}
+                        />
+                      ) : null}
 
-              <div>
-                <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">Legacy content scaffold</label>
-                <textarea
-                  value={formData.content}
-                  onChange={(event) => setFormData((current) => ({ ...current, content: event.target.value }))}
-                  required
-                  rows={8}
-                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
-                />
-              </div>
+                      {effectiveDetailTab === "context" ? (
+                        <ContextPanel
+                          contextSource={contextSource}
+                          contextRootPath={contextRootPath}
+                          contextTotals={contextTotals}
+                          contextFiles={contextFiles}
+                          isContextLoading={isContextLoading}
+                          isContextSaving={isContextSaving}
+                          isContextDirty={isContextDirty}
+                          readOnly={selectedSubagent.isShared || activeTab === "shared"}
+                          onReload={() => {
+                            void loadContextFiles(selectedSubagent.id)
+                          }}
+                          onSave={() => {
+                            void saveContextFiles()
+                          }}
+                          onUpdateFile={updateContextFile}
+                        />
+                      ) : null}
 
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="submit"
-                  disabled={isCreating || isUpdating}
-                  className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-black disabled:opacity-50 dark:bg-white dark:text-slate-900"
-                >
-                  {isCreating || isUpdating ? (editingId ? "Updating..." : "Creating...") : editingId ? "Update" : "Create"}
-                </button>
-                <button
-                  type="button"
-                  onClick={closeForm}
-                  className="rounded-lg border border-slate-300 px-4 py-2 text-sm text-slate-700 hover:bg-slate-100 dark:border-white/15 dark:text-slate-300 dark:hover:bg-white/[0.08]"
-                >
-                  Cancel
-                </button>
-              </div>
-            </form>
-          </SurfaceCard>
-        )}
-      </div>
-    </PageLayout>
+                      {effectiveDetailTab === "permissions" ? (
+                        <PermissionsPanel
+                          readOnly={selectedSubagent.isShared}
+                          quickPresetPolicies={quickPresetPolicies}
+                          attachablePolicies={attachablePolicies}
+                          policyAssignments={policyAssignments}
+                          policyById={policyById}
+                          policyToAttachId={policyToAttachId}
+                          onPolicyToAttachChange={setPolicyToAttachId}
+                          onAssignQuickPreset={(slug) => {
+                            void assignQuickPreset(slug)
+                          }}
+                          onAttachPolicy={attachPolicyToAgent}
+                          onRemovePolicyAssignment={removePolicyAssignment}
+                          onUpdatePolicyAssignment={updatePolicyAssignment}
+                          onSavePolicyAssignments={() => {
+                            void savePolicyAssignments(policyAssignments, "Policy assignments saved")
+                          }}
+                          isPolicyAssignmentSaving={isPolicyAssignmentSaving}
+                          policyAssignmentsDirty={policyAssignmentsDirty}
+                          permissionDraft={permissionDraft}
+                          onPermissionDraftChange={(patch) =>
+                            setPermissionDraft((current) => ({
+                              ...current,
+                              ...patch,
+                            }))
+                          }
+                          onCreatePermission={createPermission}
+                          isCreatingPermission={isCreatingPermission}
+                          isPermissionsLoading={isPermissionsLoading}
+                          agentPermissions={agentPermissions}
+                          onDeletePermission={(permissionId) => {
+                            void deletePermission(permissionId)
+                          }}
+                        />
+                      ) : null}
+
+                      {effectiveDetailTab === "agentsync" ? (
+                        <AgentSyncPanel
+                          canRunSelectedAgentSync={canRunSelectedAgentSync}
+                          isAgentSyncRunningSelected={isAgentSyncRunningSelected}
+                          isAgentSyncRunningCrew={isAgentSyncRunningCrew}
+                          proposedHighRiskSuggestionCount={proposedHighRiskSuggestionCount}
+                          agentSyncPreference={agentSyncPreference}
+                          isAgentSyncPreferenceLoading={isAgentSyncPreferenceLoading}
+                          isAgentSyncPreferenceSaving={isAgentSyncPreferenceSaving}
+                          onPreferenceChange={(patch) =>
+                            setAgentSyncPreference((current) => ({
+                              ...current,
+                              ...patch,
+                            }))
+                          }
+                          onSavePreference={() => {
+                            void saveAgentSyncPreference()
+                          }}
+                          onRunAgentSync={(scope) => {
+                            void runAgentSync(scope)
+                          }}
+                          agentSyncRuns={agentSyncRuns}
+                          isAgentSyncRunsLoading={isAgentSyncRunsLoading}
+                          actingSuggestionId={actingSuggestionId}
+                          onApplySuggestion={(suggestionId) => {
+                            void applyAgentSyncSuggestionAction(suggestionId)
+                          }}
+                          onRejectSuggestion={(suggestionId) => {
+                            void rejectAgentSyncSuggestionAction(suggestionId)
+                          }}
+                        />
+                      ) : null}
+
+                      {effectiveDetailTab === "orchestration" ? (
+                        <OrchestrationPanel
+                          subagents={activeSubagents}
+                          selectedAgentId={selectedSubagent.id}
+                          onSelectedAgentIdChange={handleSelectAgent}
+                        />
+                      ) : null}
+
+                      {effectiveDetailTab === "harness" ? (
+                        <HarnessPanel
+                          harness={settingsDraft.harness}
+                          readOnly={selectedSubagent.isShared || activeTab !== "personal"}
+                          isDirty={harnessSettingsDirty}
+                          isSaving={harnessSettingsSaving}
+                          onRuntimeProfileChange={(profile) => {
+                            if (!HARNESS_RUNTIME_PROFILES.includes(profile)) {
+                              return
+                            }
+                            setSettingsDraft((current) => ({
+                              ...current,
+                              harness: {
+                                ...current.harness,
+                                runtimeProfile: profile as HarnessRuntimeProfile,
+                              },
+                            }))
+                            markSettingsDirty("harness")
+                          }}
+                          onAutoloadChange={(key, value) => {
+                            setSettingsDraft((current) => ({
+                              ...current,
+                              harness: {
+                                ...current.harness,
+                                autoload: {
+                                  ...current.harness.autoload,
+                                  [key]: value,
+                                },
+                              },
+                            }))
+                            markSettingsDirty("harness")
+                          }}
+                          onApplyWhenSubagentPresentChange={(value) => {
+                            setSettingsDraft((current) => ({
+                              ...current,
+                              harness: {
+                                ...current.harness,
+                                applyWhenSubagentPresent: value,
+                              },
+                            }))
+                            markSettingsDirty("harness")
+                          }}
+                          onSave={() => {
+                            void saveSettingsSection("harness")
+                          }}
+                        />
+                      ) : null}
+
+                      {effectiveDetailTab === "tools" ? (
+                        <PersonalToolsPanel
+                          readOnly={selectedSubagent.isShared || activeTab !== "personal"}
+                          selectedAgentName={selectedSubagent.name}
+                          toolCatalog={toolCatalog}
+                          toolImportRuns={toolImportRuns}
+                          isCatalogLoading={isToolCatalogLoading}
+                          isRefreshingCatalog={isToolCatalogRefreshing}
+                          importingCuratedSlug={importingCuratedSlug}
+                          isImportingGithubUrl={isImportingGithubUrl}
+                          githubUrlDraft={githubToolUrlDraft}
+                          bindings={agentToolBindings}
+                          bindingsDraft={agentToolBindingsDraft}
+                          isBindingsLoading={isAgentToolBindingsLoading || isToolImportRunsLoading}
+                          isBindingsSaving={isAgentToolBindingsSaving}
+                          bindingsDirty={agentToolBindingsDirty}
+                          onRefreshCatalog={() => {
+                            void loadToolCatalog({ refreshMode: "force", manual: true })
+                          }}
+                          onImportCurated={(slug) => {
+                            void importCuratedTool(slug)
+                          }}
+                          onGithubUrlDraftChange={setGithubToolUrlDraft}
+                          onImportGithubUrl={() => {
+                            void importToolFromGithubUrl()
+                          }}
+                          onToggleBinding={toggleAgentToolBinding}
+                          onSaveBindings={() => {
+                            void saveAgentToolBindings()
+                          }}
+                        />
+                      ) : null}
+                    </div>
+                  )}
+                </SurfaceCard>
+              ) : null}
+            </div>
+          )}
+        </div>
+      </PageLayout>
+
+      {activeTab === "personal" && selectedSubagent && !selectedSubagent.isShared ? (
+        <AdvancedSettingsDrawer
+          open={isAdvancedOpen}
+          onClose={() => setIsAdvancedOpen(false)}
+          activeSection={advancedSection}
+          onSectionChange={setAdvancedSection}
+          settingsDraft={settingsDraft}
+          readOnly={selectedSubagent.isShared}
+          visibleCapabilities={selectedSubagent.subagentType === "exocomp"}
+          dirtySections={advancedDirtySections}
+          savingSections={advancedSavingSections}
+          onUpdateOrchestration={(patch) => {
+            setSettingsDraft((current) => ({
+              ...current,
+              orchestration: {
+                ...current.orchestration,
+                ...patch,
+              },
+            }))
+            markSettingsDirty("orchestration")
+          }}
+          onUpdateWorkspace={(patch) => {
+            setSettingsDraft((current) => ({
+              ...current,
+              workspace: {
+                ...current.workspace,
+                ...patch,
+              },
+            }))
+            markSettingsDirty("workspace")
+          }}
+          onUpdateMemory={(patch) => {
+            setSettingsDraft((current) => ({
+              ...current,
+              memory: {
+                ...current.memory,
+                ...patch,
+              },
+            }))
+            markSettingsDirty("memory")
+          }}
+          onUpdateGuidelines={(patch) => {
+            setSettingsDraft((current) => ({
+              ...current,
+              guidelines: {
+                ...current.guidelines,
+                ...patch,
+              },
+            }))
+            markSettingsDirty("guidelines")
+          }}
+          onUpdateCapabilities={(patch) => {
+            setSettingsDraft((current) => ({
+              ...current,
+              capabilities: {
+                ...current.capabilities,
+                ...patch,
+              },
+            }))
+            markSettingsDirty("capabilities")
+          }}
+          onSaveSection={(section) => {
+            void saveSettingsSection(section)
+          }}
+          onOpenWorkspaceInspector={() => setIsWorkspaceInspectorOpen(true)}
+          publicMemoryHref={publicMemoryHref}
+          privateMemoryHref={privateMemoryHref}
+        />
+      ) : null}
+
+      <WorkspaceInspectorDrawer
+        open={isWorkspaceInspectorOpen}
+        onClose={() => setIsWorkspaceInspectorOpen(false)}
+        subagentId={isSelectedMutable ? selectedSubagent?.id || null : null}
+      />
+
+      <AgentEditorDrawer
+        open={activeTab === "personal" && showCreateForm}
+        isEditing={Boolean(editingId)}
+        isSubmitting={isCreating || isUpdating}
+        formData={formData}
+        onClose={closeForm}
+        onSubmit={editingId ? handleUpdate : handleCreate}
+        onChange={(patch) => setFormData((current) => ({ ...current, ...patch }))}
+      />
+    </>
   )
 }

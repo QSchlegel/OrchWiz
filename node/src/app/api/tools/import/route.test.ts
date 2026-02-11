@@ -34,6 +34,7 @@ test("/api/tools/import forwards parsed body", async () => {
           },
         }
       },
+      publishNotificationUpdated: () => null,
     },
   )
 
@@ -62,6 +63,7 @@ test("/api/tools/import sends empty body for invalid JSON", async () => {
           },
         }
       },
+      publishNotificationUpdated: () => null,
     },
   )
 

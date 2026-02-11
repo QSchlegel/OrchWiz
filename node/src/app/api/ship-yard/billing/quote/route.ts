@@ -14,6 +14,7 @@ import {
   withWalletBalance,
 } from "@/lib/shipyard/billing/pricing"
 import { getOrCreateWallet } from "@/lib/shipyard/billing/wallet"
+import { requireShipyardRequestActor } from "@/lib/shipyard/request-actor"
 
 export const dynamic = "force-dynamic"
 
@@ -162,5 +163,8 @@ export async function handlePostQuote(
 }
 
 export async function POST(request: NextRequest) {
-  return handlePostQuote(request)
+  return handlePostQuote(request, {
+    ...defaultDeps,
+    requireActor: async () => requireShipyardRequestActor(request),
+  })
 }

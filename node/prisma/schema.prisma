@@ -58,6 +58,7 @@ model User {
   shipyardCloudCredentials ShipyardCloudCredential[]
   shipyardCloudSshKeys   ShipyardCloudSshKey[]
   shipyardSshTunnels     ShipyardSshTunnel[]
+  shipyardApiKeys        ShipyardApiKey[]
   shipyardBillingWallet  ShipyardBillingWallet?
   shipyardBillingTopups  ShipyardBillingTopup[]
   shipyardBillingLedgerEntries ShipyardBillingLedgerEntry[]
@@ -566,6 +567,7 @@ model Subagent {
   deployments AgentDeployment[]
   permissions Permission[]
   permissionPolicies SubagentPermissionPolicy[]
+  toolBindings SubagentToolBinding[]
   commandExecutions CommandExecution[]
   agentSyncSignals AgentSyncSignal[]
   agentSyncRuns AgentSyncRun[]
@@ -971,6 +973,7 @@ model ToolCatalogEntry {
 
   owner         User              @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
   importRuns    ToolImportRun[]
+  subagentBindings SubagentToolBinding[]
   shipGrants    ShipToolGrant[]
   accessRequests ShipToolAccessRequest[]
 
@@ -979,6 +982,21 @@ model ToolCatalogEntry {
   @@index([ownerUserId, isInstalled])
   @@index([ownerUserId, slug])
   @@index([ownerUserId, updatedAt])
+}
+
+model SubagentToolBinding {
+  id                 String   @id @default(cuid())
+  subagentId         String
+  toolCatalogEntryId String
+  enabled            Boolean  @default(true)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  subagent           Subagent       @relation(fields: [subagentId], references: [id], onDelete: Cascade)
+  toolCatalogEntry   ToolCatalogEntry @relation(fields: [toolCatalogEntryId], references: [id], onDelete: Cascade)
+
+  @@unique([subagentId, toolCatalogEntryId])
+  @@index([subagentId])
 }
 
 model ToolImportRun {
@@ -1341,6 +1359,23 @@ model ShipyardSshTunnel {
   @@index([deploymentId])
   @@index([status])
   @@index([sshKeyId])
+}
+
+model ShipyardApiKey {
+  id          String   @id @default(cuid())
+  userId      String
+  name        String?
+  keyId       String   @unique
+  keyHash     String
+  lastUsedAt  DateTime?
+  revokedAt   DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, revokedAt, createdAt])
+  @@index([userId])
 }
 
 model ShipyardBillingWallet {

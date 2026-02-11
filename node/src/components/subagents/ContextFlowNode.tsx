@@ -17,29 +17,29 @@ export interface ContextFlowNodeData {
 
 const toneStyles: Record<ContextNodeTone, { container: string; badge: string; icon: string }> = {
   source: {
-    container: "border-cyan-300 bg-cyan-50 text-cyan-900 dark:border-cyan-500/35 dark:bg-cyan-500/10 dark:text-cyan-200",
-    badge: "border-cyan-300 bg-cyan-100 text-cyan-800 dark:border-cyan-400/40 dark:bg-cyan-500/20 dark:text-cyan-100",
-    icon: "text-cyan-700 dark:text-cyan-300",
+    container: "border-cyan-400 bg-cyan-100 text-cyan-950 dark:border-cyan-400/55 dark:bg-cyan-500/18 dark:text-cyan-100",
+    badge: "border-cyan-500 bg-cyan-200 text-cyan-900 dark:border-cyan-300/45 dark:bg-cyan-500/30 dark:text-cyan-50",
+    icon: "text-cyan-800 dark:text-cyan-100",
   },
   agent: {
-    container: "border-indigo-300 bg-indigo-50 text-indigo-900 dark:border-indigo-500/40 dark:bg-indigo-500/12 dark:text-indigo-100",
-    badge: "border-indigo-300 bg-indigo-100 text-indigo-800 dark:border-indigo-400/40 dark:bg-indigo-500/20 dark:text-indigo-50",
-    icon: "text-indigo-700 dark:text-indigo-200",
+    container: "border-indigo-400 bg-indigo-100 text-indigo-950 dark:border-indigo-400/60 dark:bg-indigo-500/20 dark:text-indigo-100",
+    badge: "border-indigo-500 bg-indigo-200 text-indigo-900 dark:border-indigo-300/45 dark:bg-indigo-500/32 dark:text-indigo-50",
+    icon: "text-indigo-800 dark:text-indigo-100",
   },
   layer: {
-    container: "border-fuchsia-300 bg-fuchsia-50 text-fuchsia-900 dark:border-fuchsia-500/35 dark:bg-fuchsia-500/10 dark:text-fuchsia-100",
-    badge: "border-fuchsia-300 bg-fuchsia-100 text-fuchsia-800 dark:border-fuchsia-400/40 dark:bg-fuchsia-500/20 dark:text-fuchsia-100",
-    icon: "text-fuchsia-700 dark:text-fuchsia-200",
+    container: "border-fuchsia-400 bg-fuchsia-100 text-fuchsia-950 dark:border-fuchsia-400/55 dark:bg-fuchsia-500/20 dark:text-fuchsia-100",
+    badge: "border-fuchsia-500 bg-fuchsia-200 text-fuchsia-900 dark:border-fuchsia-300/45 dark:bg-fuchsia-500/30 dark:text-fuchsia-50",
+    icon: "text-fuchsia-800 dark:text-fuchsia-100",
   },
   output: {
-    container: "border-emerald-300 bg-emerald-50 text-emerald-900 dark:border-emerald-500/35 dark:bg-emerald-500/12 dark:text-emerald-100",
-    badge: "border-emerald-300 bg-emerald-100 text-emerald-800 dark:border-emerald-400/40 dark:bg-emerald-500/20 dark:text-emerald-100",
-    icon: "text-emerald-700 dark:text-emerald-200",
+    container: "border-emerald-400 bg-emerald-100 text-emerald-950 dark:border-emerald-400/55 dark:bg-emerald-500/20 dark:text-emerald-100",
+    badge: "border-emerald-500 bg-emerald-200 text-emerald-900 dark:border-emerald-300/45 dark:bg-emerald-500/30 dark:text-emerald-50",
+    icon: "text-emerald-800 dark:text-emerald-100",
   },
   risk: {
-    container: "border-rose-300 bg-rose-50 text-rose-900 dark:border-rose-500/40 dark:bg-rose-500/12 dark:text-rose-100",
-    badge: "border-rose-300 bg-rose-100 text-rose-800 dark:border-rose-400/40 dark:bg-rose-500/20 dark:text-rose-100",
-    icon: "text-rose-700 dark:text-rose-200",
+    container: "border-rose-400 bg-rose-100 text-rose-950 dark:border-rose-400/55 dark:bg-rose-500/20 dark:text-rose-100",
+    badge: "border-rose-500 bg-rose-200 text-rose-900 dark:border-rose-300/45 dark:bg-rose-500/30 dark:text-rose-50",
+    icon: "text-rose-800 dark:text-rose-100",
   },
 }
 

@@ -9,6 +9,7 @@ import {
   requireAccessActor,
 } from "@/lib/security/access-control"
 import { publishShipUpdated } from "@/lib/shipyard/events"
+import { requireShipyardRequestActor } from "@/lib/shipyard/request-actor"
 
 export const dynamic = "force-dynamic"
 
@@ -302,5 +303,8 @@ export async function handlePostTransfer(
 }
 
 export async function POST(request: NextRequest) {
-  return handlePostTransfer(request)
+  return handlePostTransfer(request, {
+    ...defaultDeps,
+    requireActor: async () => requireShipyardRequestActor(request),
+  })
 }

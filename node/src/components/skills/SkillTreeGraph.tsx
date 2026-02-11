@@ -16,44 +16,57 @@ function groupColumn(groupId: SkillGraphGroupId): number {
 interface SkillTreeGraphProps {
   graph: SkillGraphResponse
   selectedSkillId: string | null
-  query: string
+  allowedSkillIds?: string[]
+  activeGroupId?: SkillGraphGroupId | null
   onSelectSkill: (skillId: string) => void
+  onToggleGroup?: (groupId: SkillGraphGroupId) => void
+  className?: string
+  showMiniMap?: boolean
 }
 
 export function SkillTreeGraph(props: SkillTreeGraphProps) {
-  const normalizedQuery = props.query.trim().toLowerCase()
-
   const filteredGraph = useMemo(() => {
-    if (!normalizedQuery) {
-      return props.graph
+    const allowedSkillIds = new Set(props.allowedSkillIds || [])
+    const hasAllowedList = allowedSkillIds.size > 0 || Array.isArray(props.allowedSkillIds)
+
+    const skillNodes = props.graph.nodes
+      .filter((node) => node.nodeType === "skill")
+      .filter((node) => {
+        if (!hasAllowedList) {
+          return true
+        }
+
+        return Boolean(node.skillId && allowedSkillIds.has(node.skillId))
+      })
+
+    const allowedSkillNodeIds = new Set(skillNodes.map((node) => node.id))
+    const nodes = props.graph.nodes.filter((node) => node.nodeType === "group" || allowedSkillNodeIds.has(node.id))
+    const edges = props.graph.edges.filter((edge) => allowedSkillNodeIds.has(edge.target))
+
+    const groupedCounts: Record<SkillGraphGroupId, number> = {
+      installed: 0,
+      curated: 0,
+      experimental: 0,
+      custom: 0,
+      system: 0,
     }
 
-    const allowedSkillNodeIds = new Set(
-      props.graph.nodes
-        .filter((node) => node.nodeType === "skill")
-        .filter((node) => node.label.toLowerCase().includes(normalizedQuery))
-        .map((node) => node.id),
-    )
-
-    const nodes = props.graph.nodes.filter((node) => {
-      if (node.nodeType === "group") {
-        return true
-      }
-      return allowedSkillNodeIds.has(node.id)
-    })
-
-    const edges = props.graph.edges.filter((edge) => allowedSkillNodeIds.has(edge.target))
+    for (const node of skillNodes) {
+      groupedCounts[node.groupId] += 1
+    }
 
     return {
       ...props.graph,
       nodes,
       edges,
       stats: {
-        ...props.graph.stats,
-        totalSkills: nodes.filter((node) => node.nodeType === "skill").length,
+        totalSkills: skillNodes.length,
+        installedCount: skillNodes.filter((node) => node.isInstalled).length,
+        systemCount: skillNodes.filter((node) => node.source === "system").length,
+        groupedCounts,
       },
     }
-  }, [normalizedQuery, props.graph])
+  }, [props.allowedSkillIds, props.graph])
 
   const nodes = useMemo<Node[]>(() => {
     const byGroup = new Map<SkillGraphGroupId, number>()
@@ -61,6 +74,8 @@ export function SkillTreeGraph(props: SkillTreeGraphProps) {
     return filteredGraph.nodes.map((node) => {
       if (node.nodeType === "group") {
         const column = groupColumn(node.groupId)
+        const isActiveGroup = props.activeGroupId === node.groupId
+        const isDimmed = Boolean(props.activeGroupId && !isActiveGroup)
         return {
           id: node.id,
           position: {
@@ -78,10 +93,11 @@ export function SkillTreeGraph(props: SkillTreeGraphProps) {
           style: {
             minWidth: 220,
             borderRadius: 12,
-            border: "1px solid rgba(30, 41, 59, 0.15)",
-            background: "rgba(248, 250, 252, 0.9)",
+            border: isActiveGroup ? "2px solid rgba(14, 116, 144, 0.85)" : "1px solid rgba(30, 41, 59, 0.15)",
+            background: isActiveGroup ? "rgba(14, 116, 144, 0.14)" : "rgba(248, 250, 252, 0.9)",
             color: "#0f172a",
             padding: 10,
+            opacity: isDimmed ? 0.42 : 1,
           },
         }
       }
@@ -91,6 +107,7 @@ export function SkillTreeGraph(props: SkillTreeGraphProps) {
 
       const selected = node.skillId === props.selectedSkillId
       const column = groupColumn(node.groupId)
+      const isDimmed = Boolean(props.activeGroupId && props.activeGroupId !== node.groupId)
 
       return {
         id: node.id,
@@ -118,10 +135,11 @@ export function SkillTreeGraph(props: SkillTreeGraphProps) {
           color: "#0f172a",
           padding: 10,
           boxShadow: selected ? "0 0 0 2px rgba(6, 182, 212, 0.15)" : "none",
+          opacity: isDimmed ? 0.48 : 1,
         },
       }
     })
-  }, [filteredGraph.nodes, props.selectedSkillId])
+  }, [filteredGraph.nodes, props.activeGroupId, props.selectedSkillId])
 
   const edges = useMemo<Edge[]>(() => {
     return filteredGraph.edges.map((edge) => ({
@@ -130,19 +148,36 @@ export function SkillTreeGraph(props: SkillTreeGraphProps) {
       target: edge.target,
       type: "smoothstep",
       style: {
-        stroke: "rgba(59, 130, 246, 0.55)",
-        strokeWidth: 2,
+        stroke: "rgba(59, 130, 246, 0.35)",
+        strokeWidth: 1.3,
+        opacity: (() => {
+          if (!props.activeGroupId) {
+            return 0.85
+          }
+
+          const sourceGroup = edge.source.replace("group:", "") as SkillGraphGroupId
+          return sourceGroup === props.activeGroupId ? 0.9 : 0.28
+        })(),
       },
       markerEnd: {
         type: MarkerType.ArrowClosed,
-        color: "rgba(59, 130, 246, 0.55)",
+        color: "rgba(59, 130, 246, 0.35)",
       },
     }))
-  }, [filteredGraph.edges])
+  }, [filteredGraph.edges, props.activeGroupId])
 
   const handleNodeClick = (_event: unknown, node: Node) => {
     const graphNode = filteredGraph.nodes.find((item) => item.id === node.id)
-    if (!graphNode || graphNode.nodeType !== "skill" || !graphNode.skillId) {
+    if (!graphNode) {
+      return
+    }
+
+    if (graphNode.nodeType === "group") {
+      props.onToggleGroup?.(graphNode.groupId)
+      return
+    }
+
+    if (!graphNode.skillId) {
       return
     }
 
@@ -161,6 +196,11 @@ export function SkillTreeGraph(props: SkillTreeGraphProps) {
         <span className="rounded border border-slate-200 bg-white/70 px-2 py-1 dark:border-white/10 dark:bg-white/[0.03]">
           System: {filteredGraph.stats.systemCount}
         </span>
+        {props.activeGroupId ? (
+          <span className="rounded border border-cyan-500/40 bg-cyan-500/10 px-2 py-1 text-cyan-700 dark:text-cyan-300">
+            Group filter: {props.activeGroupId}
+          </span>
+        ) : null}
       </div>
 
       <FlowCanvas
@@ -169,8 +209,8 @@ export function SkillTreeGraph(props: SkillTreeGraphProps) {
         onNodeClick={handleNodeClick}
         nodesDraggable={false}
         nodesConnectable={false}
-        showMiniMap
-        className="h-[560px]"
+        showMiniMap={props.showMiniMap ?? false}
+        className={props.className || "h-[420px]"}
       />
     </div>
   )

@@ -57,6 +57,7 @@ export async function POST(
       provider: result.provider,
       fallbackUsed: result.fallbackUsed,
       signature: result.signature,
+      ...(result.warnings && result.warnings.length > 0 ? { warnings: result.warnings } : {}),
     })
   } catch (error) {
     if (error instanceof SessionPromptError) {

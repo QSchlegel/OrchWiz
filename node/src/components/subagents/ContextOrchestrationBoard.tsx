@@ -72,11 +72,11 @@ const CONTEXT_SOURCES = [
 ]
 
 const toneClasses: Record<ContextNodeTone, string> = {
-  source: "border-cyan-300 bg-cyan-50 text-cyan-800 dark:border-cyan-500/30 dark:bg-cyan-500/10 dark:text-cyan-200",
-  agent: "border-indigo-300 bg-indigo-50 text-indigo-800 dark:border-indigo-500/30 dark:bg-indigo-500/10 dark:text-indigo-100",
-  layer: "border-fuchsia-300 bg-fuchsia-50 text-fuchsia-800 dark:border-fuchsia-500/30 dark:bg-fuchsia-500/10 dark:text-fuchsia-100",
-  output: "border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-100",
-  risk: "border-rose-300 bg-rose-50 text-rose-800 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-100",
+  source: "border-cyan-400 bg-cyan-100 text-cyan-900 dark:border-cyan-400/50 dark:bg-cyan-500/20 dark:text-cyan-100",
+  agent: "border-indigo-400 bg-indigo-100 text-indigo-900 dark:border-indigo-400/55 dark:bg-indigo-500/20 dark:text-indigo-100",
+  layer: "border-fuchsia-400 bg-fuchsia-100 text-fuchsia-900 dark:border-fuchsia-400/50 dark:bg-fuchsia-500/20 dark:text-fuchsia-100",
+  output: "border-emerald-400 bg-emerald-100 text-emerald-900 dark:border-emerald-400/50 dark:bg-emerald-500/20 dark:text-emerald-100",
+  risk: "border-rose-400 bg-rose-100 text-rose-900 dark:border-rose-400/50 dark:bg-rose-500/20 dark:text-rose-100",
 }
 
 const toneLabels: Record<ContextNodeTone, string> = {
@@ -292,6 +292,7 @@ export function ContextOrchestrationBoard({
     subagents.forEach((subagent, index) => {
       const analysis = analysisById.get(subagent.id)
       const nodeId = `agent-${subagent.id}`
+      const isSelectedAgent = !selectedAgentId || subagent.id === selectedAgentId
       const riskCount = analysis?.risks.filter((risk) => risk.level === "warning").length || 0
       const agentWords = effectiveAgentWordCountById.get(subagent.id) || 0
       const relativeSharePercent = aggregateWordCount > 0
@@ -330,57 +331,55 @@ export function ContextOrchestrationBoard({
         ],
       })
 
-      if (!selectedAgentId || subagent.id === selectedAgentId) {
-        sourceNodeIds.forEach((sourceNodeId) => {
-          edges.push({
-            id: `edge-${sourceNodeId}-${nodeId}`,
-            source: sourceNodeId,
-            target: nodeId,
-            sourceHandle: "source-right",
-            targetHandle: "target-left",
-            animated: false,
-            type: "smoothstep",
-            style: {
-              stroke: subagent.id === selectedAgentId ? "var(--context-edge-source-active)" : "var(--context-edge-source-muted)",
-              strokeWidth: subagent.id === selectedAgentId ? 2 : 1.4,
-            },
-            markerEnd: {
-              type: MarkerType.ArrowClosed,
-              color: subagent.id === selectedAgentId
-                ? "var(--context-edge-source-marker-active)"
-                : "var(--context-edge-source-marker-muted)",
-            },
-          })
+      sourceNodeIds.forEach((sourceNodeId) => {
+        edges.push({
+          id: `edge-${sourceNodeId}-${nodeId}`,
+          source: sourceNodeId,
+          target: nodeId,
+          sourceHandle: "source-right",
+          targetHandle: "target-left",
+          animated: false,
+          type: "smoothstep",
+          style: {
+            stroke: isSelectedAgent ? "var(--context-edge-source-active)" : "var(--context-edge-source-muted)",
+            strokeWidth: isSelectedAgent ? 2 : 1.4,
+            opacity: selectedAgentId && !isSelectedAgent ? 0.34 : 1,
+          },
+          markerEnd: {
+            type: MarkerType.ArrowClosed,
+            color: isSelectedAgent
+              ? "var(--context-edge-source-marker-active)"
+              : "var(--context-edge-source-marker-muted)",
+          },
         })
-      }
+      })
 
       const dependencies = analysis?.dependencies || []
-      if (!selectedAgentId || subagent.id === selectedAgentId) {
-        dependencies.forEach((dependencyId) => {
-          edges.push({
-            id: `edge-handoff-${subagent.id}-${dependencyId}`,
-            source: `agent-${subagent.id}`,
-            target: `agent-${dependencyId}`,
-            sourceHandle: "source-left",
-            targetHandle: "target-left",
-            type: "smoothstep",
-            animated: true,
-            pathOptions: {
-              offset: 220,
-              borderRadius: 14,
-            },
-            style: {
-              stroke: "var(--context-edge-handoff)",
-              strokeWidth: 2,
-              zIndex: 0,
-            },
-            markerEnd: {
-              type: MarkerType.ArrowClosed,
-              color: "var(--context-edge-handoff)",
-            },
-          })
+      dependencies.forEach((dependencyId) => {
+        edges.push({
+          id: `edge-handoff-${subagent.id}-${dependencyId}`,
+          source: `agent-${subagent.id}`,
+          target: `agent-${dependencyId}`,
+          sourceHandle: "source-left",
+          targetHandle: "target-left",
+          type: "smoothstep",
+          animated: isSelectedAgent,
+          pathOptions: {
+            offset: 220,
+            borderRadius: 14,
+          },
+          style: {
+            stroke: "var(--context-edge-handoff)",
+            strokeWidth: isSelectedAgent ? 2 : 1.5,
+            zIndex: 0,
+            opacity: selectedAgentId && !isSelectedAgent ? 0.32 : 1,
+          },
+          markerEnd: {
+            type: MarkerType.ArrowClosed,
+            color: "var(--context-edge-handoff)",
+          },
         })
-      }
+      })
 
       if (selectedAgentId && subagent.id === selectedAgentId && dependencies.length > 0) {
         const directDependencySet = new Set(dependencies)
@@ -459,9 +458,7 @@ export function ContextOrchestrationBoard({
     })
 
     subagents.forEach((subagent) => {
-      if (selectedAgentId && subagent.id !== selectedAgentId) {
-        return
-      }
+      const isSelectedAgent = !selectedAgentId || subagent.id === selectedAgentId
       edges.push({
         id: `edge-aggregate-${subagent.id}`,
         source: `agent-${subagent.id}`,
@@ -471,7 +468,8 @@ export function ContextOrchestrationBoard({
         type: "smoothstep",
         style: {
           stroke: "var(--context-edge-aggregate)",
-          strokeWidth: 1.6,
+          strokeWidth: isSelectedAgent ? 1.6 : 1.3,
+          opacity: selectedAgentId && !isSelectedAgent ? 0.32 : 1,
         },
         markerEnd: {
           type: MarkerType.ArrowClosed,
@@ -634,6 +632,46 @@ export function ContextOrchestrationBoard({
             color: "var(--context-edge-risk)",
           },
         })
+      })
+    }
+
+    if (selectedAgentId && !focusedNodeId?.startsWith("source-")) {
+      const isSelectedScopeNode = (nodeId: string) => {
+        if (nodeId === `agent-${selectedAgentId}`) {
+          return true
+        }
+        if (nodeId.startsWith(`section-${selectedAgentId}-`)) {
+          return true
+        }
+        if (nodeId === `output-${selectedAgentId}`) {
+          return true
+        }
+        if (nodeId.startsWith(`risk-${selectedAgentId}-`)) {
+          return true
+        }
+        return false
+      }
+
+      nodes.forEach((node) => {
+        if (!node.id.startsWith("agent-") || node.id === `agent-${selectedAgentId}`) {
+          return
+        }
+        node.style = {
+          ...node.style,
+          opacity: 0.34,
+          filter: "saturate(0.74)",
+        }
+      })
+
+      edges.forEach((edge) => {
+        if (isSelectedScopeNode(edge.source) || isSelectedScopeNode(edge.target)) {
+          return
+        }
+        edge.animated = false
+        edge.style = {
+          ...edge.style,
+          opacity: 0.2,
+        }
       })
     }
 
@@ -871,12 +909,12 @@ export function ContextOrchestrationBoard({
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
           <button
             type="button"
             onClick={handlePrevAgent}
             disabled={!hasPrevAgent}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 transition enabled:hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100 dark:enabled:hover:bg-white/[0.09]"
+            className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 transition enabled:hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40 sm:w-auto dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100 dark:enabled:hover:bg-white/[0.09]"
             aria-label="Select previous agent"
           >
             <ChevronLeft className="h-4 w-4" />
@@ -886,7 +924,7 @@ export function ContextOrchestrationBoard({
             type="button"
             onClick={handleNextAgent}
             disabled={!hasNextAgent}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 transition enabled:hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100 dark:enabled:hover:bg-white/[0.09]"
+            className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 transition enabled:hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40 sm:w-auto dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100 dark:enabled:hover:bg-white/[0.09]"
             aria-label="Select next agent"
           >
             Next Agent
@@ -905,7 +943,7 @@ export function ContextOrchestrationBoard({
                   setSelectedAgentId(nextId)
                   setFocusedNodeId(nextId ? `agent-${nextId}` : null)
                 }}
-                className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
+                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 sm:w-auto dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
               >
                 {subagents.map((subagent) => (
                   <option key={subagent.id} value={subagent.id}>
@@ -918,7 +956,7 @@ export function ContextOrchestrationBoard({
           <button
             type="button"
             onClick={handleFullscreenToggle}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 transition hover:bg-slate-100 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100 dark:hover:bg-white/[0.09]"
+            className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 transition hover:bg-slate-100 sm:w-auto dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100 dark:hover:bg-white/[0.09]"
             aria-label={isFullscreen ? "Exit fullscreen mode" : "Enter fullscreen mode"}
           >
             {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
@@ -948,7 +986,7 @@ export function ContextOrchestrationBoard({
             miniMapWidth={132}
             miniMapHeight={88}
             nodesDraggable={false}
-            className={isFullscreen ? "!h-[calc(100vh-13.6rem)] min-h-[560px]" : "!h-[640px]"}
+            className={isFullscreen ? "!h-[calc(100vh-13.6rem)] min-h-[420px] sm:min-h-[560px]" : "!h-[520px] sm:!h-[640px]"}
           />
           <div className="mt-3 flex flex-wrap gap-2">
             {([
@@ -1001,12 +1039,12 @@ export function ContextOrchestrationBoard({
 
               {activeDetail.body && (
                 <div>
-                  <div className="mb-1 flex items-center justify-between gap-2">
+                  <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
                     <p className="text-xs font-medium uppercase tracking-[0.14em] text-slate-500 dark:text-slate-500">
                       Context Payload
                     </p>
                     {canEditPayload && !isEditingPayload && (
-                      <div className="flex items-center gap-1.5">
+                      <div className="flex flex-wrap items-center gap-1.5">
                         {hasOverride && (
                           <button
                             type="button"
@@ -1036,7 +1074,7 @@ export function ContextOrchestrationBoard({
                       </div>
                     )}
                     {canEditPayload && isEditingPayload && (
-                      <div className="flex items-center gap-1.5">
+                      <div className="flex flex-wrap items-center gap-1.5">
                         <button
                           type="button"
                           onClick={() => {

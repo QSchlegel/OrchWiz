@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { prisma } from "@/lib/prisma"
-import { AccessControlError, requireAccessActor } from "@/lib/security/access-control"
+import { AccessControlError } from "@/lib/security/access-control"
 import { asNonEmptyString, readJsonBody } from "@/lib/shipyard/cloud/http"
 import {
   checkManagedTunnelHealth,
@@ -12,6 +12,7 @@ import {
   resolveCloudSshPrivateKey,
   ShipyardCloudVaultError,
 } from "@/lib/shipyard/cloud/vault"
+import { requireShipyardRequestActor } from "@/lib/shipyard/request-actor"
 
 export const dynamic = "force-dynamic"
 
@@ -77,7 +78,7 @@ export async function POST(
   },
 ) {
   try {
-    const actor = await requireAccessActor()
+    const actor = await requireShipyardRequestActor(request)
     const params = await context.params
     const tunnelId = asNonEmptyString(params.id)
     if (!tunnelId) {

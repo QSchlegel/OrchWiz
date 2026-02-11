@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server"
+import { NextRequest, NextResponse } from "next/server"
 import type { AccessActor } from "@/lib/security/access-control"
 import { AccessControlError, requireAccessActor } from "@/lib/security/access-control"
 import {
@@ -7,6 +7,7 @@ import {
   SHIPYARD_BILLING_QUOTE_HOURS,
 } from "@/lib/shipyard/billing/constants"
 import { getOrCreateWallet } from "@/lib/shipyard/billing/wallet"
+import { requireShipyardRequestActor } from "@/lib/shipyard/request-actor"
 
 export const dynamic = "force-dynamic"
 
@@ -58,6 +59,9 @@ export async function handleGetWallet(deps: ShipyardBillingWalletRouteDeps = def
   }
 }
 
-export async function GET() {
-  return handleGetWallet()
+export async function GET(request: NextRequest) {
+  return handleGetWallet({
+    ...defaultDeps,
+    requireActor: async () => requireShipyardRequestActor(request),
+  })
 }

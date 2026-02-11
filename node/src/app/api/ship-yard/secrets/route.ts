@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import type { Prisma } from "@prisma/client"
 import type { DeploymentProfile } from "@/lib/deployment/profile"
 import { prisma } from "@/lib/prisma"
-import { AccessControlError, requireAccessActor } from "@/lib/security/access-control"
+import { AccessControlError } from "@/lib/security/access-control"
 import {
   buildShipyardSetupSnippets,
   ShipyardSecretVaultError,
@@ -12,6 +12,7 @@ import {
   validateShipyardSecretTemplateValues,
   resolveShipyardSecretTemplateValues,
 } from "@/lib/shipyard/secret-vault"
+import { requireShipyardRequestActor } from "@/lib/shipyard/request-actor"
 
 export const dynamic = "force-dynamic"
 
@@ -38,7 +39,7 @@ function includeValuesFromQuery(value: string | null): boolean {
 
 export async function GET(request: NextRequest) {
   try {
-    const actor = await requireAccessActor()
+    const actor = await requireShipyardRequestActor(request)
     const deploymentProfile = parseDeploymentProfile(request.nextUrl.searchParams.get("deploymentProfile"))
     if (!deploymentProfile) {
       return NextResponse.json({ error: "deploymentProfile is required" }, { status: 400 })
@@ -126,7 +127,7 @@ export async function GET(request: NextRequest) {
 
 export async function PUT(request: NextRequest) {
   try {
-    const actor = await requireAccessActor()
+    const actor = await requireShipyardRequestActor(request)
     const body = await request.json().catch(() => ({}))
     const deploymentProfile = parseDeploymentProfile(body?.deploymentProfile)
     if (!deploymentProfile) {
@@ -204,7 +205,7 @@ export async function PUT(request: NextRequest) {
 
 export async function DELETE(request: NextRequest) {
   try {
-    const actor = await requireAccessActor()
+    const actor = await requireShipyardRequestActor(request)
     const deploymentProfile = parseDeploymentProfile(request.nextUrl.searchParams.get("deploymentProfile"))
     if (!deploymentProfile) {
       return NextResponse.json({ error: "deploymentProfile is required" }, { status: 400 })

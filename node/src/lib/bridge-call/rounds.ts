@@ -398,6 +398,7 @@ async function executeOfficerDirective(args: {
             role: args.station.role,
             name: args.station.name,
             focus: args.station.focus,
+            subagentId: args.station.subagentId || undefined,
             bridgeCrewId: args.station.bridgeCrewId || args.station.subagentId,
             shipDeploymentId: args.shipDeploymentId,
             cameoCandidates,

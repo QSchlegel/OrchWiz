@@ -1,17 +1,18 @@
 import { NextRequest, NextResponse } from "next/server"
-import { AccessControlError, requireAccessActor } from "@/lib/security/access-control"
+import { AccessControlError } from "@/lib/security/access-control"
 import {
   readShipyardCloudEditableFiles,
   SHIPYARD_CLOUD_FILE_ALLOWLIST,
   writeShipyardCloudEditableFiles,
 } from "@/lib/shipyard/cloud/files"
 import { asNonEmptyString, asRecord, readJsonBody } from "@/lib/shipyard/cloud/http"
+import { requireShipyardRequestActor } from "@/lib/shipyard/request-actor"
 
 export const dynamic = "force-dynamic"
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    await requireAccessActor()
+    await requireShipyardRequestActor(request)
 
     const files = await readShipyardCloudEditableFiles()
 
@@ -32,7 +33,7 @@ export async function GET() {
 
 export async function PUT(request: NextRequest) {
   try {
-    await requireAccessActor()
+    await requireShipyardRequestActor(request)
     const body = await readJsonBody(request)
     const rawFiles = Array.isArray(body.files) ? body.files : []
 

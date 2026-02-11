@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from "next/server"
 import { prisma } from "@/lib/prisma"
-import { AccessControlError, requireAccessActor } from "@/lib/security/access-control"
+import { AccessControlError } from "@/lib/security/access-control"
 import {
   asNonEmptyString,
   asNumber,
   readJsonBody,
 } from "@/lib/shipyard/cloud/http"
 import { checkManagedTunnelHealth } from "@/lib/shipyard/cloud/tunnel-manager"
+import { requireShipyardRequestActor } from "@/lib/shipyard/request-actor"
 
 export const dynamic = "force-dynamic"
 
@@ -18,9 +19,9 @@ function normalizePort(value: unknown, fallback: number): number {
   return floored
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    const actor = await requireAccessActor()
+    const actor = await requireShipyardRequestActor(request)
 
     const tunnels = await prisma.shipyardSshTunnel.findMany({
       where: {
@@ -102,7 +103,7 @@ export async function GET() {
 
 export async function POST(request: NextRequest) {
   try {
-    const actor = await requireAccessActor()
+    const actor = await requireShipyardRequestActor(request)
     const body = await readJsonBody(request)
 
     const id = asNonEmptyString(body.id)

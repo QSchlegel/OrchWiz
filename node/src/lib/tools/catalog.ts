@@ -3,7 +3,7 @@ import { basename, join, resolve } from "node:path"
 import { homedir } from "node:os"
 import { Prisma, type ToolCatalogEntry, type ToolCatalogSource, type ToolImportRun } from "@prisma/client"
 import { prisma } from "@/lib/prisma"
-import { findCuratedToolBySlug, CURATED_TOOLS } from "@/lib/tools/curated-tools"
+import { findCuratedToolBySlug, listCuratedTools } from "@/lib/tools/curated-tools"
 import {
   installCuratedToolFromRepo,
   installToolFromGithubUrl,
@@ -553,14 +553,14 @@ async function syncToolCatalogForUser(args: {
   const localBySlug = new Map(localTools.map((tool) => [tool.slug, tool]))
 
   const curatedSlugs = new Set<string>()
-  for (const curatedTool of CURATED_TOOLS) {
+  for (const curatedTool of listCuratedTools()) {
     const slug = sanitizeToolSlug(curatedTool.slug)
     curatedSlugs.add(slug)
 
     const sourceKey = buildToolSourceKey({
       source: "curated",
       slug,
-      repo: curatedTool.repo,
+      repo: curatedTool.repo || null,
       sourcePath: curatedTool.sourcePath || null,
       sourceRef: curatedTool.sourceRef || "main",
       sourceUrl: curatedTool.sourceUrl || null,
@@ -576,7 +576,7 @@ async function syncToolCatalogForUser(args: {
       description: localTool?.description ?? existing?.description ?? curatedTool.description ?? null,
       source: "curated",
       sourceKey,
-      repo: curatedTool.repo,
+      repo: curatedTool.repo || null,
       sourcePath: curatedTool.sourcePath || null,
       sourceRef: curatedTool.sourceRef || "main",
       sourceUrl: curatedTool.sourceUrl || null,
@@ -585,9 +585,15 @@ async function syncToolCatalogForUser(args: {
       installedPath: localTool?.installedPath || null,
       metadata: {
         source: "curated_manifest",
+        available: curatedTool.available,
+        unavailableReason: curatedTool.unavailableReason,
       },
       lastSyncedAt: refreshedAt,
     })
+
+    if (!curatedTool.available && curatedTool.unavailableReason) {
+      warnings.push(`${curatedTool.slug}: ${curatedTool.unavailableReason}`)
+    }
   }
 
   for (const localTool of localTools) {
@@ -797,13 +803,16 @@ export async function importCuratedToolForUser(args: {
   if (!curated) {
     throw new Error(`Unknown curated tool slug: ${slug}`)
   }
+  if (!curated.available || !curated.repo) {
+    throw new Error(curated.unavailableReason || `Curated tool ${slug} is unavailable.`)
+  }
 
   const run = await createRunningImportRun({
     ownerUserId: args.ownerUserId,
     mode: "curated",
     source: "curated",
     toolSlug: slug,
-    repo: curated.repo,
+    repo: curated.repo || null,
     sourcePath: curated.sourcePath || null,
     sourceRef: curated.sourceRef || "main",
     sourceUrl: curated.sourceUrl || null,
@@ -864,6 +873,8 @@ export async function importCuratedToolForUser(args: {
       installedPath,
       metadata: {
         source: "curated_import",
+        available: curated.available,
+        unavailableReason: curated.unavailableReason,
       },
       lastSyncedAt: new Date(),
     })
