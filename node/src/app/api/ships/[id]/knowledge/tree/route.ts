@@ -9,6 +9,7 @@ import { getLatestVaultRagSyncRun } from "@/lib/vault/rag"
 import type { VaultTreeNode } from "@/lib/vault/types"
 import { dataCoreEnabled } from "@/lib/data-core/config"
 import { getVaultTreeFromDataCore } from "@/lib/data-core/vault-adapter"
+import { buildShipNotFoundErrorPayload } from "@/lib/ships/errors"
 import { parseKnowledgeScope } from "../route-helpers"
 
 export const dynamic = "force-dynamic"
@@ -53,7 +54,7 @@ export async function GET(
     const { id } = await params
     const owned = await ensureOwnedShip(session.user.id, id)
     if (!owned) {
-      return NextResponse.json({ error: "Ship not found" }, { status: 404 })
+      return NextResponse.json(buildShipNotFoundErrorPayload(), { status: 404 })
     }
 
     const scope = parseKnowledgeScope(request.nextUrl.searchParams.get("scope"))

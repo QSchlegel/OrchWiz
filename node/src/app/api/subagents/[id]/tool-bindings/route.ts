@@ -7,6 +7,8 @@ import {
   replaceSubagentToolBindings,
   SubagentToolBindingError,
 } from "@/lib/tools/agent-bindings"
+import { GovernanceAccessError } from "@/lib/governance/chain-of-command"
+import { isPrismaSchemaUnavailableError, prismaSchemaUnavailableResponse } from "@/lib/prisma-errors"
 import {
   AccessControlError,
   assertCanReadOwnedResource,
@@ -55,6 +57,15 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>
 }
 
+function asNonEmptyString(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null
+  }
+
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : null
+}
+
 export async function handleGetSubagentToolBindingsRoute(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
@@ -88,6 +99,14 @@ export async function handleGetSubagentToolBindingsRoute(
 
     if (error instanceof SubagentToolBindingError) {
       return NextResponse.json({ error: error.message }, { status: error.status })
+    }
+
+    if (error instanceof GovernanceAccessError) {
+      return NextResponse.json({ error: error.message, code: error.code }, { status: error.status })
+    }
+
+    if (isPrismaSchemaUnavailableError(error)) {
+      return prismaSchemaUnavailableResponse()
     }
 
     console.error("Error fetching subagent tool bindings:", error)
@@ -127,6 +146,11 @@ export async function handlePutSubagentToolBindingsRoute(
       subagentId: id,
       ownerUserId: actor.userId,
       bindings: body.bindings,
+      shipDeploymentId: asNonEmptyString(body.shipDeploymentId),
+      actingBridgeCrewId: asNonEmptyString(body.actingBridgeCrewId),
+      grantRationale: asNonEmptyString(body.grantRationale),
+      revokeReason: asNonEmptyString(body.revokeReason),
+      changedByUserId: actor.userId,
     })
 
     deps.publishNotificationUpdated({
@@ -145,6 +169,14 @@ export async function handlePutSubagentToolBindingsRoute(
 
     if (error instanceof SubagentToolBindingError) {
       return NextResponse.json({ error: error.message }, { status: error.status })
+    }
+
+    if (error instanceof GovernanceAccessError) {
+      return NextResponse.json({ error: error.message, code: error.code }, { status: error.status })
+    }
+
+    if (isPrismaSchemaUnavailableError(error)) {
+      return prismaSchemaUnavailableResponse()
     }
 
     console.error("Error replacing subagent tool bindings:", error)

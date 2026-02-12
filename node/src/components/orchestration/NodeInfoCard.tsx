@@ -267,27 +267,35 @@ function NodeMetrics({ uptime, activeSessions, cpu, memory }: NodeMetricsProps) 
   return (
     <div className="grid grid-cols-2 gap-2 text-xs">
       {uptime && (
-        <div className="flex items-center gap-1.5 text-gray-400">
+        <div className="flex items-center gap-1.5 text-slate-500 dark:text-gray-400">
           <Timer className="w-3.5 h-3.5 text-blue-400" />
-          <span>Uptime: <span className="text-white">{uptime}</span></span>
+          <span>
+            Uptime: <span className="font-medium text-slate-900 dark:text-white">{uptime}</span>
+          </span>
         </div>
       )}
       {activeSessions !== undefined && (
-        <div className="flex items-center gap-1.5 text-gray-400">
+        <div className="flex items-center gap-1.5 text-slate-500 dark:text-gray-400">
           <Activity className="w-3.5 h-3.5 text-green-400" />
-          <span>Sessions: <span className="text-white">{activeSessions}</span></span>
+          <span>
+            Sessions: <span className="font-medium text-slate-900 dark:text-white">{activeSessions}</span>
+          </span>
         </div>
       )}
       {cpu !== undefined && (
-        <div className="flex items-center gap-1.5 text-gray-400">
+        <div className="flex items-center gap-1.5 text-slate-500 dark:text-gray-400">
           <Gauge className="w-3.5 h-3.5 text-orange-400" />
-          <span>CPU: <span className="text-white">{cpu}%</span></span>
+          <span>
+            CPU: <span className="font-medium text-slate-900 dark:text-white">{cpu}%</span>
+          </span>
         </div>
       )}
       {memory !== undefined && (
-        <div className="flex items-center gap-1.5 text-gray-400">
+        <div className="flex items-center gap-1.5 text-slate-500 dark:text-gray-400">
           <Server className="w-3.5 h-3.5 text-purple-400" />
-          <span>Memory: <span className="text-white">{memory}%</span></span>
+          <span>
+            Memory: <span className="font-medium text-slate-900 dark:text-white">{memory}%</span>
+          </span>
         </div>
       )}
     </div>

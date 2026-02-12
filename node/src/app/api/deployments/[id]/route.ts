@@ -13,6 +13,19 @@ import {
 export const dynamic = 'force-dynamic'
 // Deprecated alias route: prefer /api/ships/[id] for ship operations.
 
+export function sanitizeDeploymentUpdateData(body: Record<string, unknown>): Record<string, unknown> {
+  const updateData: Record<string, unknown> = {
+    ...body,
+    updatedAt: new Date(),
+  }
+
+  delete updateData.advancedNodeTypeOverride
+  delete updateData.shipVersion
+  delete updateData.shipVersionUpdatedAt
+
+  return updateData
+}
+
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -68,10 +81,7 @@ export async function PUT(
 
     const { id } = await params
     const body = await request.json()
-    const updateData: Record<string, any> = {
-      ...body,
-      updatedAt: new Date(),
-    }
+    const updateData = sanitizeDeploymentUpdateData(body as Record<string, unknown>) as Record<string, any>
 
     const shouldNormalizeProfileInput =
       "deploymentProfile" in body ||
@@ -115,8 +125,6 @@ export async function PUT(
     if (body.deploymentType === "agent" || body.deploymentType === "ship") {
       updateData.deploymentType = parseDeploymentType(body.deploymentType)
     }
-
-    delete updateData.advancedNodeTypeOverride
 
     const deployment = await prisma.agentDeployment.update({
       where: {

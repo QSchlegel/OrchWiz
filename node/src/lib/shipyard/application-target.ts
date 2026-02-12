@@ -12,6 +12,7 @@ import {
   normalizeDeploymentProfileInput,
   normalizeInfrastructureInConfig,
 } from "@/lib/deployment/profile"
+import { SHIP_LATEST_VERSION } from "@/lib/shipyard/versions"
 
 export interface ShipSummary {
   id: string
@@ -188,6 +189,8 @@ export async function resolveShipForApplication(input: ResolveShipInput): Promis
       provisioningMode: normalizedProfile.provisioningMode,
       nodeUrl: asString(input.nodeUrl),
       status: "active",
+      shipVersion: SHIP_LATEST_VERSION,
+      shipVersionUpdatedAt: new Date(),
       config: normalizedProfile.config as Prisma.InputJsonValue,
       metadata: buildInferredShipMetadata(nodeId, input.appName),
       deployedAt: new Date(),

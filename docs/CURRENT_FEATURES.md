@@ -16,9 +16,19 @@ This feature map reflects what is implemented in this repository as of February 
   - `local_starship_build` and `cloud_shipyard` deployment profiles.
   - `terraform_ansible`, `terraform_only`, and `ansible_only` provisioning modes.
   - Profile-scoped secret templates with generated `.env`/`terraform.tfvars` snippets.
+  - Dedicated Build `Apps` step for n8n bootstrap setup with profile-aware auto-fill defaults (local derivation + cloud `database_url` reuse for `n8n_database_url`).
   - Bridge crew bootstrap + quartermaster quick-launch workflows.
+- Ship release versioning on ship deployments (`shipVersion`, `shipVersionUpdatedAt`) with baseline/backfill support.
+- In-place Ship Yard upgrade flow via `POST /api/ship-yard/ships/:id/upgrade`:
+  - latest-only target policy (current catalog `v1` -> `v2`)
+  - session + Ship Yard user API key auth
+  - optimistic transitional lock + realtime ship updates
+  - failure rollback semantics (prior version preserved on failure)
+  - cloud upgrade path without additional wallet debit in v1
 - Ships runtime and deployment status surfaces.
 - Application deployment CRUD + topology/flow visualization.
+- Applications page deploy modal now uses an app-card grid with inline config cards per app type.
+- Applications detail includes embedded Patch UI iframe support with n8n-aware URL resolution and external-open fallback.
 
 ### Personal
 

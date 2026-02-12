@@ -1,6 +1,7 @@
 export type ToolCatalogSourceValue = "curated" | "custom_github" | "local" | "system"
 export type ToolImportStatusValue = "running" | "succeeded" | "failed"
 export type ToolCatalogRefreshMode = "auto" | "force" | "none"
+export type CatalogActivationStatusValue = "pending" | "approved" | "denied"
 
 export type ShipToolGrantScopeValue = "ship" | "bridge_crew"
 export type ShipToolAccessRequestStatusValue = "pending" | "approved" | "denied"
@@ -20,6 +21,12 @@ export interface ToolCatalogEntryDto {
   isInstalled: boolean
   isSystem: boolean
   installedPath: string | null
+  activationStatus: CatalogActivationStatusValue
+  activationRationale: string | null
+  activatedAt: string | null
+  activatedByUserId: string | null
+  activatedByBridgeCrewId: string | null
+  activationSecurityReportId: string | null
   metadata: Record<string, unknown> | null
   ownerUserId: string
   lastSyncedAt: string
@@ -125,4 +132,47 @@ export interface ShipToolsStateDto {
   grants: ShipToolGrantDto[]
   requests: ShipToolAccessRequestDto[]
   bridgeCrew: ShipToolBridgeCrewOptionDto[]
+  subagentAssignments: ShipToolSubagentAssignmentDto[]
+  governanceEvents: ShipToolsGovernanceEventDto[]
+}
+
+export interface ShipToolSubagentAssignmentDto {
+  id: string
+  ownerUserId: string
+  shipDeploymentId: string
+  bridgeCrewId: string
+  subagentId: string
+  assignedByUserId: string
+  assignedByBridgeCrewId: string | null
+  createdAt: string
+  updatedAt: string
+  bridgeCrew: {
+    id: string
+    role: string
+    callsign: string
+    name: string
+  }
+  subagent: {
+    id: string
+    name: string
+    subagentType: string
+  }
+}
+
+export interface ShipToolsGovernanceEventDto {
+  id: string
+  eventType: string
+  toolCatalogEntryId: string | null
+  skillCatalogEntryId: string | null
+  bridgeCrewId: string | null
+  subagentId: string | null
+  actorBridgeCrewId: string | null
+  rationale: string | null
+  metadata: Record<string, unknown> | null
+  createdAt: string
+  securityReport: {
+    id: string
+    reportPathMd: string
+    reportPathJson: string
+  } | null
 }

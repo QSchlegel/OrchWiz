@@ -2,7 +2,7 @@ infrastructure_kind = "kind"
 kube_context = "kind-orchwiz" # set to "minikube" when infrastructure_kind = "minikube"
 namespace    = "orchwiz-starship"
 app_name     = "orchwiz"
-app_image    = "ghcr.io/your-org/orchwiz:latest"
+app_image    = "orchwiz:local-dev"
 
 postgres_user     = "orchwiz"
 postgres_password = "orchwiz_dev"
@@ -18,3 +18,14 @@ github_client_secret = ""
 app_env = {
   ENABLE_LOCAL_COMMAND_EXECUTION = "false"
 }
+
+# Kubeview is deployed by default in local profile.
+# Ingress exposure is opt-in; keep disabled unless local ingress is configured.
+enable_kubeview          = true
+kubeview_chart_version   = "2.0.6"
+kubeview_single_namespace = false
+kubeview_ingress_enabled = false
+kubeview_ingress_host    = ""
+kubeview_ingress_path    = "/kubeview"
+kubeview_ingress_class_name = "nginx"
+kubeview_ingress_annotations = {}

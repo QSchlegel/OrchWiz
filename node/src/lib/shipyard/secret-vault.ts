@@ -16,6 +16,11 @@ export type ShipyardSecretFieldKey =
   | "github_client_secret"
   | "openai_api_key"
   | "openclaw_api_key"
+  | "n8n_database_url"
+  | "n8n_basic_auth_user"
+  | "n8n_basic_auth_password"
+  | "n8n_encryption_key"
+  | "n8n_public_base_url"
   | "postgres_password"
   | "database_url"
 
@@ -25,6 +30,11 @@ export interface ShipyardSecretTemplateValues {
   github_client_secret?: string
   openai_api_key?: string
   openclaw_api_key?: string
+  n8n_database_url?: string
+  n8n_basic_auth_user?: string
+  n8n_basic_auth_password?: string
+  n8n_encryption_key?: string
+  n8n_public_base_url?: string
   postgres_password?: string
   database_url?: string
 }
@@ -103,6 +113,11 @@ const SHIPYARD_SECRET_FIELD_KEYS: ShipyardSecretFieldKey[] = [
   "github_client_secret",
   "openai_api_key",
   "openclaw_api_key",
+  "n8n_database_url",
+  "n8n_basic_auth_user",
+  "n8n_basic_auth_password",
+  "n8n_encryption_key",
+  "n8n_public_base_url",
   "postgres_password",
   "database_url",
 ]
@@ -113,6 +128,11 @@ const COMMON_SHIPYARD_SECRET_FIELDS: ShipyardSecretFieldKey[] = [
   "github_client_secret",
   "openai_api_key",
   "openclaw_api_key",
+  "n8n_database_url",
+  "n8n_basic_auth_user",
+  "n8n_basic_auth_password",
+  "n8n_encryption_key",
+  "n8n_public_base_url",
 ]
 
 const PROFILE_SPECIFIC_FIELDS: Record<DeploymentProfile, ShipyardSecretFieldKey[]> = {
@@ -126,6 +146,11 @@ const ENV_SNIPPET_KEYS: Array<{ field: ShipyardSecretFieldKey; env: string }> = 
   { field: "github_client_secret", env: "GITHUB_CLIENT_SECRET" },
   { field: "openai_api_key", env: "OPENAI_API_KEY" },
   { field: "openclaw_api_key", env: "OPENCLAW_API_KEY" },
+  { field: "n8n_database_url", env: "N8N_DATABASE_URL" },
+  { field: "n8n_basic_auth_user", env: "N8N_BASIC_AUTH_USER" },
+  { field: "n8n_basic_auth_password", env: "N8N_BASIC_AUTH_PASSWORD" },
+  { field: "n8n_encryption_key", env: "N8N_ENCRYPTION_KEY" },
+  { field: "n8n_public_base_url", env: "N8N_PUBLIC_BASE_URL" },
   { field: "database_url", env: "DATABASE_URL" },
 ]
 

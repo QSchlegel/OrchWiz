@@ -44,15 +44,28 @@ test("ship tool grants DELETE returns unauthorized when actor resolution fails",
 
 test("ship tool grants DELETE revokes and returns refreshed state", async () => {
   let receivedGrantId = ""
+  let receivedActingBridgeCrewId: string | null | undefined
+  let receivedRevokeReason: string | null | undefined
 
   const response = await handleDeleteShipToolGrant(
-    requestFor("http://localhost/api/ships/ship-1/tools/grants/grant-1", { method: "DELETE" }),
+    requestFor("http://localhost/api/ships/ship-1/tools/grants/grant-1", {
+      method: "DELETE",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        actingBridgeCrewId: "crew-1",
+        revokeReason: "Rotating duty assignment",
+      }),
+    }),
     "ship-1",
     "grant-1",
     {
       requireActor: async () => actor,
-      revokeGrant: async ({ grantId }) => {
+      revokeGrant: async ({ grantId, actingBridgeCrewId, revokeReason }) => {
         receivedGrantId = grantId
+        receivedActingBridgeCrewId = actingBridgeCrewId
+        receivedRevokeReason = revokeReason
       },
       getState: async () => ({
         ship: {
@@ -64,12 +77,16 @@ test("ship tool grants DELETE revokes and returns refreshed state", async () => 
         grants: [],
         requests: [],
         bridgeCrew: [],
+        subagentAssignments: [],
+        governanceEvents: [],
       }),
     },
   )
 
   assert.equal(response.status, 200)
   assert.equal(receivedGrantId, "grant-1")
+  assert.equal(receivedActingBridgeCrewId, "crew-1")
+  assert.equal(receivedRevokeReason, "Rotating duty assignment")
   const payload = await response.json() as Record<string, unknown>
   assert.equal(payload.success, true)
 })

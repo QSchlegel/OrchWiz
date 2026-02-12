@@ -74,6 +74,8 @@ test("ship tool request PATCH validates decision", async () => {
 
 test("ship tool request PATCH approves and returns refreshed state", async () => {
   let receivedGrantMode: string | undefined = undefined
+  let receivedGrantRationale: string | null | undefined = undefined
+  let receivedActingBridgeCrewId: string | null | undefined = undefined
 
   const response = await handlePatchShipToolRequest(
     requestFor("http://localhost/api/ships/ship-1/tools/requests/request-1", {
@@ -81,14 +83,21 @@ test("ship tool request PATCH approves and returns refreshed state", async () =>
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ decision: "approve", grantMode: "requester_only" }),
+      body: JSON.stringify({
+        decision: "approve",
+        grantMode: "requester_only",
+        grantRationale: "Ops needs scoped access for incident handling",
+        actingBridgeCrewId: "crew-1",
+      }),
     }),
     "ship-1",
     "request-1",
     {
       requireActor: async () => actor,
-      reviewRequest: async ({ grantMode }) => {
+      reviewRequest: async ({ grantMode, grantRationale, actingBridgeCrewId }) => {
         receivedGrantMode = grantMode
+        receivedGrantRationale = grantRationale
+        receivedActingBridgeCrewId = actingBridgeCrewId
         return {
           request: {
             id: "request-1",
@@ -120,6 +129,12 @@ test("ship tool request PATCH approves and returns refreshed state", async () =>
               isInstalled: true,
               isSystem: false,
               installedPath: null,
+              activationStatus: "approved",
+              activationRationale: null,
+              activatedAt: null,
+              activatedByUserId: null,
+              activatedByBridgeCrewId: null,
+              activationSecurityReportId: null,
               metadata: null,
               ownerUserId: "user-1",
               lastSyncedAt: "2026-02-11T09:00:00.000Z",
@@ -141,10 +156,14 @@ test("ship tool request PATCH approves and returns refreshed state", async () =>
         grants: [],
         requests: [],
         bridgeCrew: [],
+        subagentAssignments: [],
+        governanceEvents: [],
       }),
     },
   )
 
   assert.equal(response.status, 200)
   assert.equal(receivedGrantMode, "requester_only")
+  assert.equal(receivedGrantRationale, "Ops needs scoped access for incident handling")
+  assert.equal(receivedActingBridgeCrewId, "crew-1")
 })

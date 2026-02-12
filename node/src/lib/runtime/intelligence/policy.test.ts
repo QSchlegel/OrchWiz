@@ -31,27 +31,32 @@ test("resolveRuntimeExecutionKind defaults to human_chat", () => {
 })
 
 test("applyRuntimeIntelligencePolicy keeps human_chat on max tier", async () => {
-  const policy = await applyRuntimeIntelligencePolicy({
-    request: {
-      sessionId: "session-human",
-      prompt: "Respond politely.",
-      metadata: {
-        runtime: {
-          executionKind: "human_chat",
+  const restorePolicyEnabled = withEnv("RUNTIME_INTELLIGENCE_POLICY_ENABLED", "true")
+  try {
+    const policy = await applyRuntimeIntelligencePolicy({
+      request: {
+        sessionId: "session-human",
+        prompt: "Respond politely.",
+        metadata: {
+          runtime: {
+            executionKind: "human_chat",
+          },
         },
       },
-    },
-    providerOrder: ["openclaw", "openai-fallback", "local-fallback"],
-    profile: "default",
-  })
+      providerOrder: ["openclaw", "openai-fallback", "local-fallback"],
+      profile: "default",
+    })
 
-  assert.equal(policy.state.executionKind, "human_chat")
-  assert.equal(policy.state.tier, "max")
-  assert.equal(policy.state.decision, "human_forced_max")
-  const runtime = (policy.request.metadata?.runtime || {}) as Record<string, unknown>
-  const intelligence = (runtime.intelligence || {}) as Record<string, unknown>
-  assert.equal(intelligence.executionKind, "human_chat")
-  assert.equal(intelligence.tier, "max")
+    assert.equal(policy.state.executionKind, "human_chat")
+    assert.equal(policy.state.tier, "max")
+    assert.equal(policy.state.decision, "human_forced_max")
+    const runtime = (policy.request.metadata?.runtime || {}) as Record<string, unknown>
+    const intelligence = (runtime.intelligence || {}) as Record<string, unknown>
+    assert.equal(intelligence.executionKind, "human_chat")
+    assert.equal(intelligence.tier, "max")
+  } finally {
+    restorePolicyEnabled()
+  }
 })
 
 test("applyRuntimeIntelligencePolicy uses classifier result for autonomous task and filters openclaw", async () => {
@@ -102,6 +107,7 @@ test("applyRuntimeIntelligencePolicy uses classifier result for autonomous task 
 test("applyRuntimeIntelligencePolicy fails open to max tier when classifier output is invalid", async () => {
   resetRuntimeClassifierPromptManagerForTests()
   const restoreOpenAiKey = withEnv("OPENAI_API_KEY", "test-openai-key")
+  const restorePolicyEnabled = withEnv("RUNTIME_INTELLIGENCE_POLICY_ENABLED", "true")
   const originalFetch = globalThis.fetch
 
   globalThis.fetch = (async () => {
@@ -133,12 +139,14 @@ test("applyRuntimeIntelligencePolicy fails open to max tier when classifier outp
   } finally {
     globalThis.fetch = originalFetch
     restoreOpenAiKey()
+    restorePolicyEnabled()
   }
 })
 
 test("applyRuntimeIntelligencePolicy fails open to max tier when classifier request times out", async () => {
   resetRuntimeClassifierPromptManagerForTests()
   const restoreOpenAiKey = withEnv("OPENAI_API_KEY", "test-openai-key")
+  const restorePolicyEnabled = withEnv("RUNTIME_INTELLIGENCE_POLICY_ENABLED", "true")
   const originalFetch = globalThis.fetch
 
   globalThis.fetch = (async () => {
@@ -165,5 +173,6 @@ test("applyRuntimeIntelligencePolicy fails open to max tier when classifier requ
   } finally {
     globalThis.fetch = originalFetch
     restoreOpenAiKey()
+    restorePolicyEnabled()
   }
 })

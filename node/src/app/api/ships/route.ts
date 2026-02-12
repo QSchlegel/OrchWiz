@@ -12,6 +12,7 @@ import {
 } from "@/lib/deployment/profile"
 import { ensureShipQuartermaster } from "@/lib/quartermaster/service"
 import { publishNotificationUpdated } from "@/lib/realtime/notifications"
+import { SHIP_LATEST_VERSION } from "@/lib/shipyard/versions"
 
 export const dynamic = "force-dynamic"
 
@@ -141,6 +142,8 @@ export async function POST(request: NextRequest) {
         deploymentProfile: normalizedProfile.deploymentProfile,
         provisioningMode: normalizedProfile.provisioningMode,
         nodeUrl: nodeUrl || null,
+        shipVersion: SHIP_LATEST_VERSION,
+        shipVersionUpdatedAt: new Date(),
         config: normalizedProfile.config as Prisma.InputJsonValue,
         metadata: metadata || {},
         userId: session.user.id,

@@ -31,6 +31,25 @@ const FALLBACK_POSITION: XYPosition = { x: 80, y: 1020 }
 
 const NODE_POSITIONS_STORAGE_KEY = "orchwiz:uss-k8s-node-positions"
 
+function isFinitePosition(value: unknown): value is XYPosition {
+  if (typeof value !== "object" || value === null) return false
+  const candidate = value as Partial<XYPosition>
+  return Number.isFinite(candidate.x) && Number.isFinite(candidate.y)
+}
+
+function sanitizePositions(raw: unknown): Record<string, XYPosition> {
+  if (typeof raw !== "object" || raw === null) return {}
+  const entries = Object.entries(raw as Record<string, unknown>)
+  const sanitized: Record<string, XYPosition> = {}
+
+  for (const [id, value] of entries) {
+    if (!isFinitePosition(value)) continue
+    sanitized[id] = { x: value.x, y: value.y }
+  }
+
+  return sanitized
+}
+
 export function layoutUssK8sTopology<T extends Node>(nodes: T[]): T[] {
   return nodes.map((node, index) => {
     const position = USS_K8S_STRUCTURAL_LAYOUT[node.id] || {
@@ -52,7 +71,7 @@ export function mergeCustomPositions<T extends Node>(
   if (Object.keys(overrides).length === 0) return nodes
   return nodes.map((node) => {
     const custom = overrides[node.id]
-    if (!custom) return node
+    if (!custom || !isFinitePosition(custom)) return node
     return { ...node, position: custom }
   })
 }
@@ -63,8 +82,7 @@ export function readNodePositions(): Record<string, XYPosition> {
     const raw = window.localStorage.getItem(NODE_POSITIONS_STORAGE_KEY)
     if (!raw) return {}
     const parsed = JSON.parse(raw)
-    if (typeof parsed !== "object" || parsed === null) return {}
-    return parsed
+    return sanitizePositions(parsed)
   } catch {
     return {}
   }
@@ -72,7 +90,8 @@ export function readNodePositions(): Record<string, XYPosition> {
 
 export function writeNodePositions(positions: Record<string, XYPosition>): void {
   if (typeof window === "undefined") return
-  window.localStorage.setItem(NODE_POSITIONS_STORAGE_KEY, JSON.stringify(positions))
+  const sanitized = sanitizePositions(positions)
+  window.localStorage.setItem(NODE_POSITIONS_STORAGE_KEY, JSON.stringify(sanitized))
 }
 
 export function clearNodePositions(): void {

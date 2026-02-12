@@ -1,5 +1,9 @@
-import type { BridgeConnectionCredentials } from "./validation"
 import type { BridgeConnectionProvider } from "@prisma/client"
+import {
+  isBridgeStationKey,
+  resolveOpenClawRuntimeUrlForStation,
+} from "@/lib/bridge/openclaw-runtime"
+import type { BridgeConnectionCredentials } from "./validation"
 
 export interface OpenClawBridgeDispatchInput {
   deliveryId: string
@@ -54,7 +58,7 @@ function openClawDispatchTimeoutMs(): number {
   return parsed
 }
 
-function openClawGatewayUrl(): string {
+function openClawGatewayUrlFallback(): string {
   const value = asNonEmptyString(process.env.OPENCLAW_GATEWAY_URL)
   if (!value) {
     throw new Error("OPENCLAW_GATEWAY_URL is required for bridge dispatch.")
@@ -63,10 +67,31 @@ function openClawGatewayUrl(): string {
   return value.replace(/\/+$/u, "")
 }
 
+function resolveOpenClawGatewayUrl(input: OpenClawBridgeDispatchInput): string {
+  const metadata = asRecord(input.metadata)
+  const bridgeContext = asRecord(metadata.bridgeContext)
+  const stationKeyRaw = bridgeContext.stationKey
+  const payload = asRecord(metadata.payload)
+  const shipContext = asRecord(payload.shipContext)
+  const namespace = asNonEmptyString(shipContext.namespace)
+
+  if (isBridgeStationKey(stationKeyRaw)) {
+    const resolved = resolveOpenClawRuntimeUrlForStation({
+      stationKey: stationKeyRaw,
+      namespace,
+    })
+    if (resolved.href) {
+      return resolved.href
+    }
+  }
+
+  return openClawGatewayUrlFallback()
+}
+
 export async function dispatchBridgeConnectionViaOpenClaw(
   input: OpenClawBridgeDispatchInput,
 ): Promise<OpenClawBridgeDispatchResult> {
-  const gatewayUrl = openClawGatewayUrl()
+  const gatewayUrl = resolveOpenClawGatewayUrl(input)
   const path = openClawDispatchPath()
   const timeoutMs = openClawDispatchTimeoutMs()
   const controller = new AbortController()

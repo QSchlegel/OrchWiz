@@ -56,6 +56,15 @@ const allPersonalDetailChannels: NotificationChannel[] = [
   ...Object.values(PERSONAL_DETAIL_NOTIFICATION_CHANNEL.shared),
 ]
 
+const personalToolChannels: NotificationChannel[] = [
+  PERSONAL_DETAIL_NOTIFICATION_CHANNEL.personal.tools,
+  PERSONAL_DETAIL_NOTIFICATION_CHANNEL.shared.tools,
+]
+
+const personalNonToolDetailChannels: NotificationChannel[] = allPersonalDetailChannels.filter(
+  (channel) => !personalToolChannels.includes(channel),
+)
+
 export const SIDEBAR_NOTIFICATION_CHANNELS_BY_HREF: Record<string, NotificationChannel[]> = {
   "/sessions": ["sessions"],
   "/tasks": ["tasks"],
@@ -66,8 +75,9 @@ export const SIDEBAR_NOTIFICATION_CHANNELS_BY_HREF: Record<string, NotificationC
   "/personal": [
     PERSONAL_TAB_NOTIFICATION_CHANNEL.personal,
     PERSONAL_TAB_NOTIFICATION_CHANNEL.shared,
-    ...allPersonalDetailChannels,
+    ...personalNonToolDetailChannels,
   ],
+  "/personal/tools": personalToolChannels,
   "/skills": ["skills"],
   "/bridge": ["bridge"],
   "/bridge-call": ["bridge-call"],
@@ -78,6 +88,7 @@ export const SIDEBAR_NOTIFICATION_CHANNELS_BY_HREF: Record<string, NotificationC
   "/commands": ["commands"],
   "/permissions": Object.values(PERMISSIONS_TAB_NOTIFICATION_CHANNEL),
   "/hooks": ["hooks"],
+  "/settings": [],
   "/performance": [],
   "/verification": ["verification"],
   "/security": ["security"],

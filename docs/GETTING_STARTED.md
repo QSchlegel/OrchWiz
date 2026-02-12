@@ -45,6 +45,15 @@ LANDING_XO_ENABLED=true
 LANDING_XO_STAGE=public-preview
 ```
 
+Optional Quartermaster Codex runtime settings (recommended for local ship-quartermaster prompts):
+
+```dotenv
+CODEX_CLI_PATH=/Applications/Codex.app/Contents/Resources/codex
+# Optional:
+CODEX_RUNTIME_MODEL=
+CODEX_RUNTIME_WORKDIR=/absolute/path/to/workspace
+```
+
 Generate a local auth secret:
 
 ```bash
@@ -62,6 +71,55 @@ npm run dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000).
+
+## Optional: verify Ship Yard API smoke harness
+
+Use this after local setup when you want a quick auth + endpoint readiness check for Ship Yard user API key flows.
+
+```bash
+cd /path/to/OrchWiz/node
+export SHIPYARD_BEARER_TOKEN="owz_shipyard_v1.<keyId>.<secret>"
+npm run shipyard:smoke
+```
+
+Optional base URL override:
+
+```bash
+export SHIPYARD_BASE_URL="http://localhost:3000"
+```
+
+Expected result:
+
+- Checks print `PASS`/`FAIL`/`ERR` lines and a summary.
+- Exit code `0` means smoke checks passed.
+
+For full endpoint matrix, flags, exit codes, and troubleshooting, see:
+[Ship Yard API Smoke Harness](../node/README.md#ship-yard-api-smoke-harness).
+
+## Optional: run Ship Yard local launch debug loop
+
+Use this to run a full local launch + probe loop for `local_starship_build` and get direct remediation hints when provisioning fails.
+
+```bash
+cd /path/to/OrchWiz/node
+export SHIPYARD_BEARER_TOKEN="owz_shipyard_v1.<keyId>.<secret>"
+npm run shipyard:local:debug
+```
+
+Notes:
+
+- For `kind`, local bootstrap uses Docker to build/load `orchwiz:local-dev` from `node/Dockerfile.shipyard` when `saneBootstrap=true`.
+- Debug loop enforces one-ship-at-a-time for debug ships: it deletes prior debug ships by name prefix and recreates the target kind cluster before launching.
+- kind control-plane containers are expected to run in Docker for local kind-based testing.
+- First run can take several minutes, and launch can be quiet while Terraform/Ansible runs inline.
+- On `failed` status, the loop automatically calls `/api/ship-yard/status/<deploymentId>/inspection?includeRuntime=true&deliveriesTake=6` and prints curated failure/readout diagnostics.
+- Terminal exit code:
+  - `0`: ship reached `active`
+  - `1`: ship reached `failed`
+  - `2`: preflight/runtime failure
+
+Detailed controls and local bootstrap variables are documented in:
+[Ship Yard Local Launch (Sane Bootstrap)](../node/README.md#ship-yard-local-launch-sane-bootstrap).
 
 ## Optional: expose local webhook flows with ngrok
 

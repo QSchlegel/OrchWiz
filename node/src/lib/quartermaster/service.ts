@@ -9,11 +9,12 @@ import {
   QUARTERMASTER_CALLSIGN,
   QUARTERMASTER_CHANNEL,
   QUARTERMASTER_DIAGNOSTICS_SCOPE,
+  QUARTERMASTER_FLEET_SCOPE,
   QUARTERMASTER_POLICY_SLUG,
   QUARTERMASTER_ROLE_KEY,
   QUARTERMASTER_RUNTIME_PROFILE,
-  quartermasterSessionTitle,
-  quartermasterSubagentName,
+  quartermasterFleetSessionTitle,
+  quartermasterFleetSubagentName,
 } from "@/lib/quartermaster/constants"
 
 interface ShipSummary {
@@ -92,9 +93,9 @@ function asString(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null
 }
 
-function quartermasterPromptTemplate(shipName: string): string {
+function quartermasterPromptTemplate(): string {
   return [
-    `You are ${QUARTERMASTER_CALLSIGN}, the Quartermaster for ${shipName}.`,
+    `You are ${QUARTERMASTER_CALLSIGN}, the Quartermaster for this user's fleet.`,
     "Operate inside OrchWiz ship control surfaces only.",
     "Primary duties: setup guidance, maintenance planning, diagnostics triage, and operational readiness checks.",
     "Execution posture: read-only diagnostics first; propose command sequences but do not assume destructive execution.",
@@ -148,9 +149,35 @@ function extractQuartermasterMetadata(input: Prisma.JsonValue | null): Quarterma
 
 async function findQuartermasterSubagent(args: {
   userId: string
-  shipDeploymentId: string
   metadataSubagentId: string | null
 }): Promise<Subagent | null> {
+  const fleetNamed = await prisma.subagent.findFirst({
+    where: {
+      teamId: args.userId,
+      name: quartermasterFleetSubagentName(),
+    },
+  })
+
+  if (fleetNamed) {
+    return fleetNamed
+  }
+
+  const legacyNamed = await prisma.subagent.findFirst({
+    where: {
+      teamId: args.userId,
+      name: {
+        startsWith: `${QUARTERMASTER_CALLSIGN}:`,
+      },
+    },
+    orderBy: {
+      updatedAt: "desc",
+    },
+  })
+
+  if (legacyNamed) {
+    return legacyNamed
+  }
+
   if (args.metadataSubagentId) {
     const byId = await prisma.subagent.findFirst({
       where: {
@@ -164,19 +191,30 @@ async function findQuartermasterSubagent(args: {
     }
   }
 
-  return prisma.subagent.findFirst({
-    where: {
-      teamId: args.userId,
-      name: quartermasterSubagentName(args.shipDeploymentId),
-    },
-  })
+  return null
 }
 
 async function findQuartermasterSession(args: {
   userId: string
-  shipDeploymentId: string
   metadataSessionId: string | null
 }): Promise<Session | null> {
+  const sharedSession = await prisma.session.findFirst({
+    where: {
+      userId: args.userId,
+      metadata: {
+        path: ["quartermaster", "channel"],
+        equals: QUARTERMASTER_CHANNEL,
+      },
+    },
+    orderBy: {
+      updatedAt: "desc",
+    },
+  })
+
+  if (sharedSession) {
+    return sharedSession
+  }
+
   if (args.metadataSessionId) {
     const byId = await prisma.session.findFirst({
       where: {
@@ -190,28 +228,7 @@ async function findQuartermasterSession(args: {
     }
   }
 
-  return prisma.session.findFirst({
-    where: {
-      userId: args.userId,
-      AND: [
-        {
-          metadata: {
-            path: ["quartermaster", "channel"],
-            equals: QUARTERMASTER_CHANNEL,
-          },
-        },
-        {
-          metadata: {
-            path: ["quartermaster", "shipDeploymentId"],
-            equals: args.shipDeploymentId,
-          },
-        },
-      ],
-    },
-    orderBy: {
-      updatedAt: "desc",
-    },
-  })
+  return null
 }
 
 function buildQuartermasterSessionMetadata(args: {
@@ -324,13 +341,11 @@ export async function getShipQuartermasterState(args: {
   const metadataState = extractQuartermasterMetadata(ship.metadata)
   const subagent = await findQuartermasterSubagent({
     userId: args.userId,
-    shipDeploymentId: args.shipDeploymentId,
     metadataSubagentId: metadataState.subagentId,
   })
 
   const session = await findQuartermasterSession({
     userId: args.userId,
-    shipDeploymentId: args.shipDeploymentId,
     metadataSessionId: metadataState.sessionId,
   })
 
@@ -378,21 +393,19 @@ export async function ensureShipQuartermaster(args: EnsureShipQuartermasterArgs)
     throw new Error("Ship deployment not found for Quartermaster provisioning")
   }
 
-  const shipName = args.shipName?.trim() || ship.name || "Unnamed Ship"
   const metadataState = extractQuartermasterMetadata(ship.metadata)
 
   let subagent = await findQuartermasterSubagent({
     userId: args.userId,
-    shipDeploymentId: args.shipDeploymentId,
     metadataSubagentId: metadataState.subagentId,
   })
 
   if (!subagent) {
     subagent = await prisma.subagent.create({
       data: {
-        name: quartermasterSubagentName(args.shipDeploymentId),
-        description: `${QUARTERMASTER_CALLSIGN} Quartermaster for ${shipName}.`,
-        content: quartermasterPromptTemplate(shipName),
+        name: quartermasterFleetSubagentName(),
+        description: `${QUARTERMASTER_CALLSIGN} Quartermaster for fleet operations.`,
+        content: quartermasterPromptTemplate(),
         isShared: false,
         teamId: args.userId,
         ownerUserId: args.userId,
@@ -403,7 +416,7 @@ export async function ensureShipQuartermaster(args: EnsureShipQuartermasterArgs)
             authority: QUARTERMASTER_AUTHORITY,
             runtimeProfile: QUARTERMASTER_RUNTIME_PROFILE,
             diagnosticsScope: QUARTERMASTER_DIAGNOSTICS_SCOPE,
-            shipDeploymentId: args.shipDeploymentId,
+            scope: QUARTERMASTER_FLEET_SCOPE,
           },
         },
       },
@@ -414,12 +427,11 @@ export async function ensureShipQuartermaster(args: EnsureShipQuartermasterArgs)
 
   let session = await findQuartermasterSession({
     userId: args.userId,
-    shipDeploymentId: args.shipDeploymentId,
     metadataSessionId: metadataState.sessionId,
   })
 
-  const desiredTitle = quartermasterSessionTitle(shipName)
-  const desiredDescription = `Quartermaster channel for ${shipName}.`
+  const desiredTitle = quartermasterFleetSessionTitle()
+  const desiredDescription = "Quartermaster channel for fleet operations."
   const sessionMetadata = buildQuartermasterSessionMetadata({
     existingMetadata: session?.metadata || null,
     shipDeploymentId: args.shipDeploymentId,

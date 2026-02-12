@@ -1,0 +1,76 @@
+{
+  "id": null,
+  "uid": "prom-runtime",
+  "title": "Prometheus Runtime Deep Dive",
+  "tags": ["prometheus", "runtime", "orchwiz"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "editable": true,
+  "time": {
+    "from": "now-30m",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Query Rate (queries/sec)",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "rate(prometheus_engine_queries_total[5m])", "legendFormat": "queries"}]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Query Latency p95 (s)",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "histogram_quantile(0.95, sum(rate(prometheus_engine_query_duration_seconds_bucket[5m])) by (le))", "legendFormat": "p95"}]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "TSDB Head Chunks",
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "prometheus_tsdb_head_chunks", "legendFormat": "chunks"}]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "TSDB Head Series",
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "prometheus_tsdb_head_series", "legendFormat": "series"}]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "WAL fsync p95 (s)",
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "histogram_quantile(0.95, sum(rate(prometheus_tsdb_wal_fsync_duration_seconds_bucket[5m])) by (le))", "legendFormat": "p95"}]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Rule Group Eval Duration p95 (s)",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "histogram_quantile(0.95, sum(rate(prometheus_rule_group_duration_seconds_bucket[5m])) by (le, rule_group))", "legendFormat": "{{rule_group}}"}]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Notifications Queue",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"refId": "A", "expr": "prometheus_notifications_queue_length", "legendFormat": "length"},
+        {"refId": "B", "expr": "prometheus_notifications_queue_capacity", "legendFormat": "capacity"}
+      ]
+    }
+  ]
+}

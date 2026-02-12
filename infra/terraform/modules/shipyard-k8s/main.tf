@@ -1,5 +1,20 @@
 locals {
   create_database_secret = length(trimspace(var.database_url)) > 0
+  kubeview_chart_archive = "${path.module}/../../../vendor/kubeview/deploy/helm/kubeview-${var.kubeview_chart_version}.tgz"
+  kubeview_ingress_host = (
+    trimspace(var.kubeview_ingress_host) != ""
+    ? trimspace(var.kubeview_ingress_host)
+    : trimspace(var.ingress_host)
+  )
+  kubeview_ingress_path = trimspace(var.kubeview_ingress_path) != "" ? trimspace(var.kubeview_ingress_path) : "/kubeview"
+  kubeview_ingress_annotations = merge(
+    {
+      "nginx.ingress.kubernetes.io/use-regex"      = "true"
+      "nginx.ingress.kubernetes.io/rewrite-target" = "/$2"
+    },
+    var.kubeview_ingress_annotations,
+    var.kubeview_ingress_auth_required ? var.kubeview_ingress_auth_annotations : {},
+  )
 
   app_env = merge(
     {
@@ -185,4 +200,78 @@ resource "kubernetes_ingress_v1" "app" {
       }
     }
   }
+}
+
+resource "helm_release" "kubeview" {
+  count = var.enable_kubeview ? 1 : 0
+
+  name      = "${var.app_name}-kubeview"
+  chart     = local.kubeview_chart_archive
+  namespace = kubernetes_namespace_v1.shipyard.metadata[0].name
+
+  set {
+    name  = "loadBalancer.enabled"
+    value = "false"
+  }
+
+  set {
+    name  = "nodePort.enabled"
+    value = "false"
+  }
+
+  set {
+    name  = "singleNamespace"
+    value = var.kubeview_single_namespace ? "true" : "false"
+  }
+}
+
+resource "kubernetes_ingress_v1" "kubeview" {
+  count = var.enable_kubeview && var.kubeview_ingress_enabled ? 1 : 0
+
+  metadata {
+    name        = "${var.app_name}-kubeview-ingress"
+    namespace   = kubernetes_namespace_v1.shipyard.metadata[0].name
+    annotations = local.kubeview_ingress_annotations
+  }
+
+  spec {
+    ingress_class_name = var.kubeview_ingress_class_name
+
+    rule {
+      host = local.kubeview_ingress_host
+
+      http {
+        path {
+          path      = "${trimsuffix(local.kubeview_ingress_path, "/")}(/|$)(.*)"
+          path_type = "ImplementationSpecific"
+
+          backend {
+            service {
+              name = helm_release.kubeview[0].name
+              port {
+                number = 8000
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  lifecycle {
+    precondition {
+      condition     = trimspace(local.kubeview_ingress_host) != ""
+      error_message = "kubeview ingress requires kubeview_ingress_host or ingress_host to be set."
+    }
+
+    precondition {
+      condition = (
+        !var.kubeview_ingress_auth_required
+        || length(var.kubeview_ingress_auth_annotations) > 0
+      )
+      error_message = "kubeview ingress auth is required; set kubeview_ingress_auth_annotations."
+    }
+  }
+
+  depends_on = [helm_release.kubeview]
 }

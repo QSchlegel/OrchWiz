@@ -210,6 +210,7 @@ const defaultDeps: HarnessDeps = {
         enabled: true,
         toolCatalogEntry: {
           isInstalled: true,
+          activationStatus: "approved",
         },
       },
       select: {

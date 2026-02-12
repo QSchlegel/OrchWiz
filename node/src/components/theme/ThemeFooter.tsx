@@ -3,8 +3,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { usePathname } from "next/navigation"
 import type { ElementType } from "react"
-import { LayoutGrid, Monitor, MoonStar, Ship, Sun, Wrench } from "lucide-react"
+import { Bot, LayoutGrid, Monitor, MoonStar, Ship, Sun } from "lucide-react"
 import { type ThemeMode } from "@/components/theme/ThemeProvider"
+import { NodeRuntimeIndicator } from "@/components/theme/NodeRuntimeIndicator"
 import { ShipQuartermasterPanel } from "@/components/quartermaster/ShipQuartermasterPanel"
 import { useTheme } from "@/components/theme/useTheme"
 import { useEventStream } from "@/lib/realtime/useEventStream"
@@ -143,6 +144,10 @@ export function ThemeFooter() {
     },
   })
 
+  const handleShipNotFound = useCallback(async () => {
+    await loadShips()
+  }, [loadShips])
+
   if (hiddenForPath) {
     return null
   }
@@ -152,19 +157,22 @@ export function ThemeFooter() {
       {quartermasterAvailable && quartermasterOpen && (
         <div className="theme-footer pointer-events-none fixed inset-x-0 bottom-[calc(var(--theme-footer-height)+env(safe-area-inset-bottom)+0.65rem)] z-[65]">
           <div className="mx-auto w-full max-w-7xl px-4 sm:px-6 lg:px-8">
-            <div className="pointer-events-auto ml-auto max-w-2xl">
+            <div className="pointer-events-auto ml-auto w-full max-w-[min(92vw,78rem)]">
               <ShipQuartermasterPanel
                 shipDeploymentId={selectedShipDeploymentId}
                 className="shadow-[0_16px_44px_rgba(15,23,42,0.3)]"
                 compact
+                onShipNotFound={handleShipNotFound}
               />
             </div>
           </div>
         </div>
       )}
 
-      <footer className="theme-footer fixed inset-x-0 bottom-0 z-[60] border-t border-slate-300/70 bg-white/92 backdrop-blur dark:border-white/12 dark:bg-slate-950/86">
-        <div className="mx-auto flex w-full max-w-7xl items-center gap-3 px-4 py-2 sm:px-6 lg:px-8">
+      <footer className="fixed inset-x-0 bottom-0 z-[60] border-t border-slate-300/70 bg-white/92 pb-[env(safe-area-inset-bottom)] backdrop-blur dark:border-white/12 dark:bg-slate-950/86">
+        <div className="flex w-full min-w-0 items-center gap-2 overflow-x-hidden overflow-y-visible py-2 pr-2 pl-0 sm:gap-3 sm:pr-4 lg:pr-6">
+          <NodeRuntimeIndicator />
+
           {shipSelectorAvailable && (
             <label className="inline-flex min-w-[220px] max-w-[320px] flex-1 items-center gap-2 rounded-lg border border-slate-300/70 bg-white/75 px-2.5 py-1.5 dark:border-white/15 dark:bg-white/[0.05] sm:flex-none">
               <Ship className="h-3.5 w-3.5 text-cyan-700 dark:text-cyan-300" />
@@ -205,7 +213,7 @@ export function ThemeFooter() {
                   : "border-slate-300/70 bg-white/75 text-slate-700 hover:bg-slate-100 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-300 dark:hover:bg-white/[0.12]"
               }`}
             >
-              <Wrench className="h-3.5 w-3.5" />
+              <Bot className="h-3.5 w-3.5" />
               Quartermaster
               {!selectedShipDeploymentId && (
                 <span className="readout rounded bg-slate-200/80 px-1.5 py-0.5 text-[10px] text-slate-600 dark:bg-white/[0.1] dark:text-slate-300">

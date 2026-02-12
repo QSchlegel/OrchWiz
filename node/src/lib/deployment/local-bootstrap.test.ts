@@ -46,17 +46,18 @@ function createRuntime(options: RuntimeOptions = {}): {
 } {
   const calls: RuntimeCall[] = []
   const installedCommands = new Set(
-    options.installedCommands || ["terraform", "kubectl", "ansible-playbook", "kind"],
+    options.installedCommands || ["terraform", "kubectl", "ansible-playbook", "kind", "docker"],
   )
   const existingFiles = new Set(
     options.existingFiles || [
       "/repo/infra/terraform/environments/starship-local/terraform.tfvars",
       "/repo/infra/ansible/inventory/local.ini",
       "/repo/infra/ansible/playbooks/starship_local.yml",
+      "/repo/node/Dockerfile.shipyard",
     ],
   )
   const existingDirectories = new Set(
-    options.existingDirectories || ["/repo/infra/terraform/environments/starship-local"],
+    options.existingDirectories || ["/repo/infra/terraform/environments/starship-local", "/repo/node"],
   )
 
   const runtime: LocalBootstrapRuntime = {
@@ -308,6 +309,54 @@ test("fails when expected kube context is missing", async () => {
   assert.ok(result.details?.suggestedCommands?.includes("kind create cluster --name orchwiz"))
 })
 
+test("provisioning failure includes OCI helm remediation for invalid chart reference", async () => {
+  const { runtime } = createRuntime({
+    runCommand: async (command, args) => {
+      if (command === "kubectl" && args.join(" ") === "config get-contexts -o name") {
+        return {
+          ok: true,
+          stdout: "kind-orchwiz\n",
+          stderr: "",
+          exitCode: 0,
+        }
+      }
+      if (command === "ansible-playbook") {
+        return {
+          ok: false,
+          stdout: "",
+          stderr: "Error: could not download chart: invalid_reference: invalid tag",
+          exitCode: 1,
+        }
+      }
+      return {
+        ok: true,
+        stdout: "",
+        stderr: "",
+        exitCode: 0,
+      }
+    },
+  })
+
+  const result = await runLocalBootstrap(
+    {
+      infrastructure: baseInfrastructure,
+      provisioningMode: "terraform_ansible",
+      saneBootstrap: false,
+    },
+    runtime,
+  )
+
+  assert.equal(result.ok, false)
+  if (result.ok) return
+
+  assert.equal(result.code, "LOCAL_PROVISIONING_FAILED")
+  assert.ok(
+    result.details?.suggestedCommands?.some((command) =>
+      command.includes("oci://registry-1.docker.io/bitnamicharts"),
+    ),
+  )
+})
+
 test("passes expected environment to ansible provisioning command", async () => {
   const { runtime, calls } = createRuntime({
     env: {
@@ -341,6 +390,77 @@ test("passes expected environment to ansible provisioning command", async () => 
   assert.equal(ansibleCall?.env?.ORCHWIZ_NAMESPACE, "orchwiz-starship")
   assert.equal(ansibleCall?.env?.ORCHWIZ_APP_NAME, "orchwiz-custom")
   assert.equal(ansibleCall?.timeoutMs, 900000)
+})
+
+test("sane bootstrap builds/loads local app image and passes TF_VAR_app_image", async () => {
+  const { runtime, calls } = createRuntime({
+    env: {
+      ENABLE_LOCAL_COMMAND_EXECUTION: "true",
+      LOCAL_SHIPYARD_FORCE_REBUILD_APP_IMAGE: "true",
+    },
+    runCommand: async (command, args) => {
+      if (command === "kubectl" && args.join(" ") === "config get-contexts -o name") {
+        return {
+          ok: true,
+          stdout: "kind-orchwiz\n",
+          stderr: "",
+          exitCode: 0,
+        }
+      }
+      return {
+        ok: true,
+        stdout: "",
+        stderr: "",
+        exitCode: 0,
+      }
+    },
+  })
+
+  const result = await runLocalBootstrap(
+    {
+      infrastructure: baseInfrastructure,
+      provisioningMode: "terraform_ansible",
+      saneBootstrap: true,
+    },
+    runtime,
+  )
+
+  assert.equal(result.ok, true)
+
+  const dockerBuildCall = calls.find(
+    (call) => call.command === "docker" && call.args[0] === "build",
+  )
+  assert.ok(dockerBuildCall)
+
+  const kindLoadCall = calls.find(
+    (call) => call.command === "kind" && call.args.join(" ") === "load docker-image orchwiz:local-dev --name orchwiz",
+  )
+  assert.ok(kindLoadCall)
+
+  const ansibleCall = calls.find((call) => call.command === "ansible-playbook")
+  assert.ok(ansibleCall)
+  assert.equal(ansibleCall?.env?.TF_VAR_app_image, "orchwiz:local-dev")
+})
+
+test("returns missing docker error when kind image bootstrap is enabled", async () => {
+  const { runtime } = createRuntime({
+    installedCommands: ["terraform", "kubectl", "ansible-playbook", "kind"],
+  })
+
+  const result = await runLocalBootstrap(
+    {
+      infrastructure: baseInfrastructure,
+      provisioningMode: "terraform_ansible",
+      saneBootstrap: true,
+    },
+    runtime,
+  )
+
+  assert.equal(result.ok, false)
+  if (result.ok) return
+
+  assert.equal(result.code, "LOCAL_BOOTSTRAP_TOOLS_MISSING")
+  assert.deepEqual(result.details?.missingCommands, ["docker"])
 })
 
 test("injects OpenClaw bridge context bundle into target deployments", async () => {
@@ -438,4 +558,128 @@ test("skips OpenClaw context injection when disabled", async () => {
   }
   assert.equal(injectionMetadata.attempted, false)
   assert.equal(injectionMetadata.skippedReason, "disabled")
+})
+
+test("captures kubeview metadata from terraform outputs", async () => {
+  const { runtime } = createRuntime({
+    runCommand: async (command, args) => {
+      if (command === "kubectl" && args.join(" ") === "config get-contexts -o name") {
+        return {
+          ok: true,
+          stdout: "kind-orchwiz\n",
+          stderr: "",
+          exitCode: 0,
+        }
+      }
+      if (command === "ansible-playbook") {
+        return {
+          ok: true,
+          stdout: "PLAY RECAP",
+          stderr: "",
+          exitCode: 0,
+        }
+      }
+      if (command === "terraform" && args.join(" ") === "-chdir /repo/infra/terraform/environments/starship-local output -json") {
+        return {
+          ok: true,
+          stdout: JSON.stringify({
+            kubeview_enabled: { value: true },
+            kubeview_ingress_enabled: { value: true },
+            kubeview_url: { value: "http://kubeview.orchwiz-starship.localhost/kubeview" },
+          }),
+          stderr: "",
+          exitCode: 0,
+        }
+      }
+      return {
+        ok: true,
+        stdout: "",
+        stderr: "",
+        exitCode: 0,
+      }
+    },
+  })
+
+  const result = await runLocalBootstrap(
+    {
+      infrastructure: baseInfrastructure,
+      provisioningMode: "terraform_ansible",
+      saneBootstrap: false,
+    },
+    runtime,
+  )
+
+  assert.equal(result.ok, true)
+  if (!result.ok) return
+
+  const kubeview = result.metadata.kubeview as {
+    enabled?: boolean
+    ingressEnabled?: boolean
+    url?: string | null
+    source?: string
+  }
+  assert.equal(kubeview.enabled, true)
+  assert.equal(kubeview.ingressEnabled, true)
+  assert.equal(kubeview.url, "http://kubeview.orchwiz-starship.localhost/kubeview")
+  assert.equal(kubeview.source, "terraform_output")
+})
+
+test("falls back to local kubeview metadata when terraform outputs are unavailable", async () => {
+  const { runtime } = createRuntime({
+    runCommand: async (command, args) => {
+      if (command === "kubectl" && args.join(" ") === "config get-contexts -o name") {
+        return {
+          ok: true,
+          stdout: "kind-orchwiz\n",
+          stderr: "",
+          exitCode: 0,
+        }
+      }
+      if (command === "ansible-playbook") {
+        return {
+          ok: true,
+          stdout: "PLAY RECAP",
+          stderr: "",
+          exitCode: 0,
+        }
+      }
+      if (command === "terraform" && args.join(" ") === "-chdir /repo/infra/terraform/environments/starship-local output -json") {
+        return {
+          ok: false,
+          stdout: "",
+          stderr: "no outputs yet",
+          exitCode: 1,
+        }
+      }
+      return {
+        ok: true,
+        stdout: "",
+        stderr: "",
+        exitCode: 0,
+      }
+    },
+  })
+
+  const result = await runLocalBootstrap(
+    {
+      infrastructure: baseInfrastructure,
+      provisioningMode: "terraform_ansible",
+      saneBootstrap: false,
+    },
+    runtime,
+  )
+
+  assert.equal(result.ok, true)
+  if (!result.ok) return
+
+  const kubeview = result.metadata.kubeview as {
+    enabled?: boolean
+    ingressEnabled?: boolean
+    url?: string | null
+    source?: string
+  }
+  assert.equal(kubeview.enabled, true)
+  assert.equal(kubeview.ingressEnabled, false)
+  assert.equal(kubeview.url, null)
+  assert.equal(kubeview.source, "fallback")
 })

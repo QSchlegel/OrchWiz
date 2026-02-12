@@ -43,6 +43,13 @@ const RAW_CURATED_TOOLS: CuratedToolDefinition[] = [
       "Data-core connector toolkit for memory retrieval and orchestration workflows.",
     sourceUriEnvKey: "DATA_CORE_CONNECTOR_TOOL_URI",
   },
+  {
+    slug: "n8n",
+    name: "n8n Connector",
+    description:
+      "n8n workflow orchestration connector for creating, debugging, and operating automations.",
+    sourceUriEnvKey: "N8N_TOOL_URI",
+  },
 ]
 
 function normalizeOptionalPath(path: string | null): string | null {

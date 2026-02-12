@@ -7,6 +7,8 @@
     "dev:ngrok:app": "ngrok http 3000",
     "dev:ngrok:webhooks": "ngrok http 4000",
     "dev:ngrok:urls": "npx tsx scripts/ngrok-urls.ts",
+    "shipyard:smoke": "npx tsx scripts/shipyard-api-smoke.ts",
+    "shipyard:local:debug": "npx tsx scripts/shipyard-local-debug-loop.ts",
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",

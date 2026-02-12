@@ -37,11 +37,17 @@ import { ApplicationNode, SystemNode } from "@/components/flow/nodes"
 import { layoutColumns } from "@/lib/flow/layout"
 import { buildEdgesToAnchors, mapAnchorsToNodes, mapApplicationsToNodes } from "@/lib/flow/mappers"
 import { useEventStream } from "@/lib/realtime/useEventStream"
+import {
+  parseRuntimeNodeMetricsPayload,
+  RUNTIME_NODE_METRICS_EVENT_TYPE,
+  type RuntimeNodeMetricsPayload,
+} from "@/lib/runtime/realtime-node-metrics"
 import { useShipSelection } from "@/lib/shipyard/useShipSelection"
 import {
   computeApplicationSummary,
   filterApplications,
   getApplicationActionCapability,
+  resolveApplicationPatchUiUrl,
   resolveSelectedApplicationId,
   type ApplicationListItem,
   type ApplicationViewFilters,
@@ -100,7 +106,7 @@ interface Application {
   id: string
   name: string
   description: string | null
-  applicationType: "docker" | "nodejs" | "python" | "static" | "custom"
+  applicationType: "docker" | "nodejs" | "python" | "static" | "n8n" | "custom"
   image: string | null
   repository: string | null
   branch: string | null
@@ -234,6 +240,13 @@ const appTypeConfig = {
     bg: "bg-violet-500/15 dark:bg-violet-500/20",
     description: "Static file hosting",
   },
+  n8n: {
+    icon: GitBranch,
+    label: "n8n",
+    color: "text-cyan-700 dark:text-cyan-300",
+    bg: "bg-cyan-500/15 dark:bg-cyan-500/20",
+    description: "Workflow orchestration runtime",
+  },
   custom: {
     icon: Box,
     label: "Custom",
@@ -270,6 +283,16 @@ const APPLICATION_TYPE_FILTER_VALUES: Array<"all" | Application["applicationType
   "nodejs",
   "python",
   "static",
+  "n8n",
+  "custom",
+]
+
+const DEPLOY_APP_TYPE_ORDER: Application["applicationType"][] = [
+  "docker",
+  "nodejs",
+  "python",
+  "static",
+  "n8n",
   "custom",
 ]
 
@@ -426,6 +449,7 @@ export default function ApplicationsPage() {
 
   const [notice, setNotice] = useState<Notice | null>(null)
   const [pendingAction, setPendingAction] = useState<{ id: string; type: "status" | "delete" } | null>(null)
+  const [runtimeMetrics, setRuntimeMetrics] = useState<RuntimeNodeMetricsPayload | null>(null)
 
   const [formData, setFormData] = useState<ApplicationFormData>({
     name: "",
@@ -561,6 +585,24 @@ export default function ApplicationsPage() {
     }
   }, [includeForwarded, sourceNodeId])
 
+  const fetchRuntimeMetrics = useCallback(async () => {
+    try {
+      const response = await fetch("/api/runtime/node/metrics", {
+        cache: "no-store",
+      })
+      if (!response.ok) {
+        return
+      }
+
+      const payload = parseRuntimeNodeMetricsPayload(await response.json())
+      if (payload) {
+        setRuntimeMetrics(payload)
+      }
+    } catch (error) {
+      console.error("Error fetching runtime metrics:", error)
+    }
+  }, [])
+
   useEffect(() => {
     void fetchShips()
   }, [fetchShips])
@@ -569,10 +611,47 @@ export default function ApplicationsPage() {
     void fetchApplications()
   }, [fetchApplications])
 
+  useEffect(() => {
+    void fetchRuntimeMetrics()
+
+    const poller = window.setInterval(() => {
+      if (document.visibilityState !== "visible") {
+        return
+      }
+      void fetchRuntimeMetrics()
+    }, 5_000)
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        void fetchRuntimeMetrics()
+      }
+    }
+
+    document.addEventListener("visibilitychange", handleVisibilityChange)
+
+    return () => {
+      window.clearInterval(poller)
+      document.removeEventListener("visibilitychange", handleVisibilityChange)
+    }
+  }, [fetchRuntimeMetrics])
+
   useEventStream({
     enabled: true,
-    types: ["ship.application.updated", "application.updated", "ship.updated", "forwarding.received"],
-    onEvent: () => {
+    types: [
+      "ship.application.updated",
+      "application.updated",
+      "ship.updated",
+      "forwarding.received",
+      RUNTIME_NODE_METRICS_EVENT_TYPE,
+    ],
+    onEvent: (event) => {
+      if (event.type === RUNTIME_NODE_METRICS_EVENT_TYPE) {
+        const parsedMetrics = parseRuntimeNodeMetricsPayload(event.payload)
+        if (parsedMetrics) {
+          setRuntimeMetrics(parsedMetrics)
+        }
+        return
+      }
       void fetchApplications()
       void fetchShips()
     },
@@ -711,6 +790,30 @@ export default function ApplicationsPage() {
       return ship ? applyShipToForm(ship, base) : base
     })
   }, [applyShipToForm, selectedShipDeploymentId, ships])
+
+  const selectDeployApplicationType = useCallback((applicationType: Application["applicationType"]) => {
+    setFormData((current) => {
+      if (current.applicationType === applicationType) {
+        return current
+      }
+
+      const next: ApplicationFormData = {
+        ...current,
+        applicationType,
+      }
+
+      if (applicationType === "n8n") {
+        if (current.image.trim().length === 0) {
+          next.image = "docker.n8n.io/n8nio/n8n:latest"
+        }
+        if (!Number.isFinite(current.port) || current.port <= 0 || current.port === 3000) {
+          next.port = 5678
+        }
+      }
+
+      return next
+    })
+  }, [])
 
   const handleCreate = useCallback(
     async (event: React.FormEvent) => {
@@ -1083,7 +1186,17 @@ export default function ApplicationsPage() {
                           <UseCaseBadge
                             key={type}
                             label={config.label}
-                            variant={type === "docker" ? "blue" : type === "nodejs" ? "green" : type === "python" ? "orange" : "purple"}
+                            variant={
+                              type === "docker"
+                                ? "blue"
+                                : type === "nodejs"
+                                  ? "green"
+                                  : type === "python"
+                                    ? "orange"
+                                    : type === "n8n"
+                                      ? "blue"
+                                      : "purple"
+                            }
                           />
                         ))}
                       </div>
@@ -1188,6 +1301,7 @@ export default function ApplicationsPage() {
             {selectedApplication ? (
               <ApplicationDetailPanel
                 application={selectedApplication}
+                runtimeMetrics={runtimeMetrics}
                 pendingAction={pendingAction}
                 onCopyNodeId={handleCopyNodeId}
                 onDelete={handleDelete}
@@ -1261,24 +1375,40 @@ export default function ApplicationsPage() {
                   />
                 </div>
 
-                <div>
-                  <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">APPLICATION TYPE</label>
-                  <select
-                    value={formData.applicationType}
-                    onChange={(event) =>
-                      setFormData({
-                        ...formData,
-                        applicationType: event.target.value as Application["applicationType"],
-                      })
-                    }
-                    className={`${selectCls} w-full`}
-                  >
-                    <option value="docker">Docker</option>
-                    <option value="nodejs">Node.js</option>
-                    <option value="python">Python</option>
-                    <option value="static">Static</option>
-                    <option value="custom">Custom</option>
-                  </select>
+                <div className="sm:col-span-2">
+                  <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">APPS GRID</label>
+                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                    {DEPLOY_APP_TYPE_ORDER.map((type) => {
+                      const config = appTypeConfig[type]
+                      const Icon = config.icon
+                      const active = formData.applicationType === type
+
+                      return (
+                        <button
+                          key={type}
+                          type="button"
+                          onClick={() => selectDeployApplicationType(type)}
+                          className={`rounded-xl border px-3 py-2 text-left transition-all ${
+                            active
+                              ? "border-cyan-500/45 bg-cyan-500/12 shadow-sm"
+                              : "border-slate-300/70 bg-white/70 hover:border-cyan-300/40 dark:border-white/15 dark:bg-white/[0.04]"
+                          }`}
+                        >
+                          <div className="flex items-center gap-2">
+                            <span className={`rounded-lg border p-1 ${config.bg}`}>
+                              <Icon className={`h-3.5 w-3.5 ${config.color}`} />
+                            </span>
+                            <span className="text-xs font-semibold text-slate-800 dark:text-slate-100">
+                              {config.label}
+                            </span>
+                          </div>
+                          <p className="mt-1 text-[11px] text-slate-600 dark:text-slate-300">
+                            {config.description}
+                          </p>
+                        </button>
+                      )
+                    })}
+                  </div>
                 </div>
 
                 <div className="sm:col-span-2">
@@ -1327,75 +1457,177 @@ export default function ApplicationsPage() {
                 </div>
 
                 {formData.applicationType === "docker" && (
-                  <div className="sm:col-span-2">
-                    <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">DOCKER IMAGE</label>
-                    <input
-                      type="text"
-                      value={formData.image}
-                      onChange={(event) => setFormData({ ...formData, image: event.target.value })}
-                      className={inputCls}
-                      placeholder="nginx:latest or myregistry/myapp:v1.0"
-                    />
+                  <div className="sm:col-span-2 rounded-xl border border-blue-400/30 bg-blue-500/8 p-3">
+                    <p className="readout mb-2 text-blue-700 dark:text-blue-300">DOCKER CONFIG CARD</p>
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                      <div className="sm:col-span-2">
+                        <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">DOCKER IMAGE</label>
+                        <input
+                          type="text"
+                          value={formData.image}
+                          onChange={(event) => setFormData({ ...formData, image: event.target.value })}
+                          className={inputCls}
+                          placeholder="nginx:latest or myregistry/myapp:v1.0"
+                        />
+                      </div>
+                      <div>
+                        <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">PORT</label>
+                        <input
+                          type="number"
+                          value={formData.port}
+                          onChange={(event) =>
+                            setFormData({ ...formData, port: parseInt(event.target.value, 10) || 3000 })
+                          }
+                          className={inputCls}
+                          placeholder="3000"
+                        />
+                      </div>
+                    </div>
                   </div>
                 )}
 
                 {(formData.applicationType === "nodejs" ||
                   formData.applicationType === "python" ||
                   formData.applicationType === "static") && (
-                  <>
-                    <div className="sm:col-span-2">
-                      <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">REPOSITORY URL</label>
-                      <input
-                        type="url"
-                        value={formData.repository}
-                        onChange={(event) => setFormData({ ...formData, repository: event.target.value })}
-                        className={inputCls}
-                        placeholder="https://github.com/user/repo"
-                      />
+                  <div className="sm:col-span-2 rounded-xl border border-emerald-400/30 bg-emerald-500/8 p-3">
+                    <p className="readout mb-2 text-emerald-700 dark:text-emerald-300">
+                      REPOSITORY CONFIG CARD
+                    </p>
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                      <div className="sm:col-span-2">
+                        <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">REPOSITORY URL</label>
+                        <input
+                          type="url"
+                          value={formData.repository}
+                          onChange={(event) => setFormData({ ...formData, repository: event.target.value })}
+                          className={inputCls}
+                          placeholder="https://github.com/user/repo"
+                        />
+                      </div>
+                      <div>
+                        <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">BRANCH</label>
+                        <input
+                          type="text"
+                          value={formData.branch}
+                          onChange={(event) => setFormData({ ...formData, branch: event.target.value })}
+                          className={inputCls}
+                          placeholder="main"
+                        />
+                      </div>
+                      <div>
+                        <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">PORT</label>
+                        <input
+                          type="number"
+                          value={formData.port}
+                          onChange={(event) =>
+                            setFormData({ ...formData, port: parseInt(event.target.value, 10) || 3000 })
+                          }
+                          className={inputCls}
+                          placeholder="3000"
+                        />
+                      </div>
+                      <div className="sm:col-span-2">
+                        <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">BUILD COMMAND (OPTIONAL)</label>
+                        <input
+                          type="text"
+                          value={formData.buildCommand}
+                          onChange={(event) => setFormData({ ...formData, buildCommand: event.target.value })}
+                          className={inputCls}
+                          placeholder="npm install && npm run build"
+                        />
+                      </div>
+                      <div className="sm:col-span-2">
+                        <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">START COMMAND</label>
+                        <input
+                          type="text"
+                          value={formData.startCommand}
+                          onChange={(event) => setFormData({ ...formData, startCommand: event.target.value })}
+                          className={inputCls}
+                          placeholder="npm start or python app.py"
+                        />
+                      </div>
                     </div>
-                    <div>
-                      <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">BRANCH</label>
-                      <input
-                        type="text"
-                        value={formData.branch}
-                        onChange={(event) => setFormData({ ...formData, branch: event.target.value })}
-                        className={inputCls}
-                        placeholder="main"
-                      />
+                  </div>
+                )}
+
+                {formData.applicationType === "n8n" && (
+                  <div className="sm:col-span-2 rounded-xl border border-cyan-400/30 bg-cyan-500/8 p-3">
+                    <p className="readout mb-2 text-cyan-700 dark:text-cyan-300">N8N CONFIG CARD</p>
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                      <div className="sm:col-span-2">
+                        <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">N8N IMAGE</label>
+                        <input
+                          type="text"
+                          value={formData.image}
+                          onChange={(event) => setFormData({ ...formData, image: event.target.value })}
+                          className={inputCls}
+                          placeholder="docker.n8n.io/n8nio/n8n:latest"
+                        />
+                      </div>
+                      <div>
+                        <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">N8N PORT</label>
+                        <input
+                          type="number"
+                          value={formData.port}
+                          onChange={(event) =>
+                            setFormData({ ...formData, port: parseInt(event.target.value, 10) || 5678 })
+                          }
+                          className={inputCls}
+                          placeholder="5678"
+                        />
+                      </div>
                     </div>
-                    <div>
-                      <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">PORT</label>
-                      <input
-                        type="number"
-                        value={formData.port}
-                        onChange={(event) =>
-                          setFormData({ ...formData, port: parseInt(event.target.value, 10) || 3000 })
-                        }
-                        className={inputCls}
-                        placeholder="3000"
-                      />
+                  </div>
+                )}
+
+                {formData.applicationType === "custom" && (
+                  <div className="sm:col-span-2 rounded-xl border border-slate-400/30 bg-slate-500/8 p-3">
+                    <p className="readout mb-2 text-slate-700 dark:text-slate-300">CUSTOM CONFIG CARD</p>
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                      <div className="sm:col-span-2">
+                        <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">IMAGE (OPTIONAL)</label>
+                        <input
+                          type="text"
+                          value={formData.image}
+                          onChange={(event) => setFormData({ ...formData, image: event.target.value })}
+                          className={inputCls}
+                          placeholder="myregistry/my-custom-app:latest"
+                        />
+                      </div>
+                      <div className="sm:col-span-2">
+                        <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">REPOSITORY URL (OPTIONAL)</label>
+                        <input
+                          type="url"
+                          value={formData.repository}
+                          onChange={(event) => setFormData({ ...formData, repository: event.target.value })}
+                          className={inputCls}
+                          placeholder="https://github.com/user/repo"
+                        />
+                      </div>
+                      <div>
+                        <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">PORT (OPTIONAL)</label>
+                        <input
+                          type="number"
+                          value={formData.port}
+                          onChange={(event) =>
+                            setFormData({ ...formData, port: parseInt(event.target.value, 10) || 3000 })
+                          }
+                          className={inputCls}
+                          placeholder="3000"
+                        />
+                      </div>
+                      <div>
+                        <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">START COMMAND (OPTIONAL)</label>
+                        <input
+                          type="text"
+                          value={formData.startCommand}
+                          onChange={(event) => setFormData({ ...formData, startCommand: event.target.value })}
+                          className={inputCls}
+                          placeholder="./run.sh"
+                        />
+                      </div>
                     </div>
-                    <div className="sm:col-span-2">
-                      <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">BUILD COMMAND (OPTIONAL)</label>
-                      <input
-                        type="text"
-                        value={formData.buildCommand}
-                        onChange={(event) => setFormData({ ...formData, buildCommand: event.target.value })}
-                        className={inputCls}
-                        placeholder="npm install && npm run build"
-                      />
-                    </div>
-                    <div className="sm:col-span-2">
-                      <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">START COMMAND</label>
-                      <input
-                        type="text"
-                        value={formData.startCommand}
-                        onChange={(event) => setFormData({ ...formData, startCommand: event.target.value })}
-                        className={inputCls}
-                        placeholder="npm start or python app.py"
-                      />
-                    </div>
-                  </>
+                  </div>
                 )}
 
                 <div>
@@ -1483,12 +1715,14 @@ export default function ApplicationsPage() {
 
 function ApplicationDetailPanel({
   application,
+  runtimeMetrics,
   pendingAction,
   onCopyNodeId,
   onDelete,
   onStatusUpdate,
 }: {
   application: Application
+  runtimeMetrics: RuntimeNodeMetricsPayload | null
   pendingAction: { id: string; type: "status" | "delete" } | null
   onCopyNodeId: (nodeId: string) => void
   onDelete: (application: Application) => void
@@ -1502,6 +1736,20 @@ function ApplicationDetailPanel({
   const capability = getApplicationActionCapability(asApplicationListItem(application))
   const isStatusPending = pendingAction?.id === application.id && pendingAction.type === "status"
   const isDeletePending = pendingAction?.id === application.id && pendingAction.type === "delete"
+  const patchUiUrl = useMemo(
+    () =>
+      resolveApplicationPatchUiUrl({
+        applicationType: application.applicationType,
+        environment: application.environment,
+        nodeUrl: application.nodeUrl,
+      }),
+    [application.applicationType, application.environment, application.nodeUrl],
+  )
+  const [showPatchUi, setShowPatchUi] = useState(false)
+
+  useEffect(() => {
+    setShowPatchUi(false)
+  }, [application.id, patchUiUrl])
 
   return (
     <div className="glass-elevated overflow-hidden rounded-2xl">
@@ -1705,6 +1953,65 @@ function ApplicationDetailPanel({
           </div>
         )}
 
+        <div className="rounded-xl border border-cyan-400/35 bg-cyan-500/8 p-3 dark:border-cyan-300/35">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <p className="readout text-cyan-700 dark:text-cyan-300">Patch UI</p>
+              <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
+                Open the runtime patch surface inside Applications for quick config edits.
+              </p>
+            </div>
+
+            {!capability.isForwarded && patchUiUrl && (
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowPatchUi((current) => !current)}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-cyan-500/45 bg-cyan-500/12 px-3 py-1.5 text-xs font-medium text-cyan-700 dark:border-cyan-300/45 dark:text-cyan-200"
+                >
+                  {showPatchUi ? "Hide Patch UI" : "Open Patch UI"}
+                </button>
+                <a
+                  href={patchUiUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 rounded-md border border-slate-300/70 bg-white/70 px-3 py-1.5 text-xs font-medium text-slate-700 dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-300"
+                >
+                  <ExternalLink className="h-3.5 w-3.5" />
+                  Open in new tab
+                </a>
+              </div>
+            )}
+          </div>
+
+          {capability.isForwarded ? (
+            <p className="mt-2 text-xs text-slate-600 dark:text-slate-300">
+              Patch UI is disabled for forwarded applications.
+            </p>
+          ) : !patchUiUrl ? (
+            <p className="mt-2 text-xs text-amber-700 dark:text-amber-200">
+              No patch URL detected. For n8n, set <code>N8N_EDITOR_BASE_URL</code> or <code>N8N_PUBLIC_BASE_URL</code>;
+              otherwise provide a valid application node URL.
+            </p>
+          ) : (
+            <>
+              {showPatchUi && (
+                <div className="mt-2 overflow-hidden rounded-lg border border-slate-300/70 bg-white dark:border-white/12 dark:bg-slate-900/70">
+                  <iframe
+                    key={patchUiUrl}
+                    src={patchUiUrl}
+                    title={`${application.name} patch ui`}
+                    className="h-[560px] w-full bg-white"
+                  />
+                </div>
+              )}
+              <p className="mt-2 text-xs text-slate-600 dark:text-slate-300">
+                If embedding is blocked by browser or app security headers, use <span className="font-medium">Open in new tab</span>.
+              </p>
+            </>
+          )}
+        </div>
+
         <NodeInfoCard
           nodeType={application.nodeType}
           nodeId={application.nodeId}
@@ -1722,6 +2029,8 @@ function ApplicationDetailPanel({
             application.status === "active"
               ? {
                   uptime: application.deployedAt ? formatUptime(new Date(application.deployedAt)) : undefined,
+                  cpu: runtimeMetrics?.signals.cpuPercent,
+                  memory: runtimeMetrics?.signals.heapPressurePercent,
                 }
               : undefined
           }

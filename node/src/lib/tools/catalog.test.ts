@@ -5,6 +5,31 @@ import {
   choosePreferredToolEntryBySlug,
   isToolCatalogStale,
 } from "@/lib/tools/catalog"
+import { findCuratedToolBySlug } from "@/lib/tools/curated-tools"
+
+function withEnv<T>(patch: Record<string, string | undefined>, run: () => T): T {
+  const previous: Record<string, string | undefined> = {}
+  for (const [key, value] of Object.entries(patch)) {
+    previous[key] = process.env[key]
+    if (value === undefined) {
+      delete process.env[key]
+    } else {
+      process.env[key] = value
+    }
+  }
+
+  try {
+    return run()
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) {
+        delete process.env[key]
+      } else {
+        process.env[key] = value
+      }
+    }
+  }
+}
 
 test("buildToolSourceKey is deterministic for curated source tuples", () => {
   const keyA = buildToolSourceKey({
@@ -45,4 +70,24 @@ test("isToolCatalogStale evaluates by staleness window", () => {
   assert.equal(isToolCatalogStale(null, now), true)
   assert.equal(isToolCatalogStale(old, now), true)
   assert.equal(isToolCatalogStale(fresh, now), false)
+})
+
+test("n8n curated tool surfaces env-driven unavailable warning when N8N_TOOL_URI is missing", () => {
+  withEnv({ N8N_TOOL_URI: undefined }, () => {
+    const curated = findCuratedToolBySlug("n8n")
+    assert.ok(curated)
+    assert.equal(curated?.available, false)
+    assert.match(curated?.unavailableReason || "", /N8N_TOOL_URI/)
+  })
+})
+
+test("n8n curated tool resolves env-driven GitHub URI when N8N_TOOL_URI is set", () => {
+  withEnv({ N8N_TOOL_URI: "example/n8n-tool" }, () => {
+    const curated = findCuratedToolBySlug("n8n")
+    assert.ok(curated)
+    assert.equal(curated?.available, true)
+    assert.equal(curated?.repo, "example/n8n-tool")
+    assert.equal(curated?.sourceRef, "main")
+    assert.equal(curated?.sourcePath, ".")
+  })
 })

@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import type { NextRequest } from "next/server"
 import { AccessControlError, type AccessActor } from "@/lib/security/access-control"
+import { ShipToolsError } from "@/lib/tools/requests"
 import { handleGetShipTools } from "./route"
 
 const actor: AccessActor = {
@@ -62,6 +63,8 @@ test("ship tools GET returns owner-scoped state", async () => {
           grants: [],
           requests: [],
           bridgeCrew: [],
+          subagentAssignments: [],
+          governanceEvents: [],
         }
       },
     },
@@ -70,4 +73,22 @@ test("ship tools GET returns owner-scoped state", async () => {
   assert.equal(response.status, 200)
   assert.equal(receivedOwnerUserId, "user-1")
   assert.equal(receivedShipDeploymentId, "ship-1")
+})
+
+test("ship tools GET returns coded ship-not-found response", async () => {
+  const response = await handleGetShipTools(
+    requestFor("http://localhost/api/ships/missing/tools"),
+    "missing",
+    {
+      requireActor: async () => actor,
+      getState: async () => {
+        throw new ShipToolsError("Ship not found", 404, "SHIP_NOT_FOUND")
+      },
+    },
+  )
+
+  assert.equal(response.status, 404)
+  const payload = await response.json() as Record<string, unknown>
+  assert.equal(payload.error, "Ship not found")
+  assert.equal(payload.code, "SHIP_NOT_FOUND")
 })

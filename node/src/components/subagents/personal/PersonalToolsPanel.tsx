@@ -21,10 +21,18 @@ interface PersonalToolsPanelProps {
   isBindingsLoading: boolean
   isBindingsSaving: boolean
   bindingsDirty: boolean
+  shipDeploymentIdDraft: string
+  actingBridgeCrewIdDraft: string
+  grantRationaleDraft: string
+  revokeReasonDraft: string
   onRefreshCatalog: () => void
   onImportCurated: (slug: string) => void
   onGithubUrlDraftChange: (value: string) => void
   onImportGithubUrl: () => void
+  onShipDeploymentIdDraftChange: (value: string) => void
+  onActingBridgeCrewIdDraftChange: (value: string) => void
+  onGrantRationaleDraftChange: (value: string) => void
+  onRevokeReasonDraftChange: (value: string) => void
   onToggleBinding: (toolCatalogEntryId: string, enabled: boolean) => void
   onSaveBindings: () => void
 }
@@ -67,10 +75,18 @@ export function PersonalToolsPanel({
   isBindingsLoading,
   isBindingsSaving,
   bindingsDirty,
+  shipDeploymentIdDraft,
+  actingBridgeCrewIdDraft,
+  grantRationaleDraft,
+  revokeReasonDraft,
   onRefreshCatalog,
   onImportCurated,
   onGithubUrlDraftChange,
   onImportGithubUrl,
+  onShipDeploymentIdDraftChange,
+  onActingBridgeCrewIdDraftChange,
+  onGrantRationaleDraftChange,
+  onRevokeReasonDraftChange,
   onToggleBinding,
   onSaveBindings,
 }: PersonalToolsPanelProps) {
@@ -111,7 +127,11 @@ export function PersonalToolsPanel({
             curatedEntries.map((entry) => {
               const available = asBooleanMetadata(entry.metadata, "available", true)
               const unavailableReason = asStringMetadata(entry.metadata, "unavailableReason")
-              const importDisabled = !available || entry.isInstalled || importingCuratedSlug === entry.slug
+              const importDisabled =
+                !available
+                || entry.isInstalled
+                || entry.activationStatus !== "approved"
+                || importingCuratedSlug === entry.slug
 
               return (
                 <div
@@ -138,6 +158,11 @@ export function PersonalToolsPanel({
                   {!available && unavailableReason ? (
                     <p className="mt-2 rounded-md border border-amber-500/35 bg-amber-500/10 px-2 py-1 text-xs text-amber-800 dark:text-amber-200">
                       {unavailableReason}
+                    </p>
+                  ) : null}
+                  {entry.activationStatus !== "approved" ? (
+                    <p className="mt-2 rounded-md border border-rose-500/35 bg-rose-500/10 px-2 py-1 text-xs text-rose-800 dark:text-rose-200">
+                      Activation status: {entry.activationStatus}
                     </p>
                   ) : null}
                 </div>
@@ -174,9 +199,14 @@ export function PersonalToolsPanel({
             <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-300">Recent imports</p>
             <div className="mt-2 space-y-1">
               {toolImportRuns.slice(0, 6).map((run) => (
-                <div key={run.id} className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                  <span className="text-slate-700 dark:text-slate-200">{run.toolSlug || run.sourceUrl || "Unknown tool"}</span>
-                  <span className={`rounded px-2 py-0.5 ${
+                <div key={run.id} className="flex items-start justify-between gap-2 text-xs">
+                  <span
+                    title={run.toolSlug || run.sourceUrl || "Unknown tool"}
+                    className="min-w-0 flex-1 break-all text-slate-700 dark:text-slate-200"
+                  >
+                    {run.toolSlug || run.sourceUrl || "Unknown tool"}
+                  </span>
+                  <span className={`shrink-0 rounded px-2 py-0.5 ${
                     run.status === "succeeded"
                       ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
                       : run.status === "failed"
@@ -219,23 +249,26 @@ export function PersonalToolsPanel({
             installedEntries.map((entry) => {
               const enabled = bindingsDraft[entry.id] === true
               const storedBinding = bindings.find((binding) => binding.toolCatalogEntryId === entry.id)
+              const activationBlocked = entry.activationStatus !== "approved"
 
               return (
                 <label
                   key={entry.id}
-                  className="inline-flex w-full items-center justify-between rounded-lg border border-slate-200/80 bg-white/80 px-3 py-2 text-sm text-slate-700 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-200"
+                  className="inline-flex w-full items-start justify-between gap-3 rounded-lg border border-slate-200/80 bg-white/80 px-3 py-2 text-sm text-slate-700 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-200"
                 >
-                  <div>
-                    <p className="font-medium">{entry.name}</p>
-                    <p className="text-xs text-slate-500 dark:text-slate-400">
+                  <div className="min-w-0">
+                    <p className="break-words font-medium">{entry.name}</p>
+                    <p className="break-all text-xs text-slate-500 dark:text-slate-400">
                       {entry.slug} · {entry.source}
                       {storedBinding ? ` · saved=${storedBinding.enabled ? "enabled" : "disabled"}` : ""}
+                      {` · activation=${entry.activationStatus}`}
                     </p>
                   </div>
                   <input
                     type="checkbox"
                     checked={enabled}
-                    disabled={readOnly}
+                    disabled={readOnly || activationBlocked}
+                    className="mt-0.5 shrink-0"
                     onChange={(event) => onToggleBinding(entry.id, event.target.checked)}
                   />
                 </label>
@@ -246,6 +279,36 @@ export function PersonalToolsPanel({
 
         {!readOnly ? (
           <div className="mt-3">
+            <div className="mb-3 grid gap-2 sm:grid-cols-2">
+              <input
+                type="text"
+                value={shipDeploymentIdDraft}
+                onChange={(event) => onShipDeploymentIdDraftChange(event.target.value)}
+                placeholder="Ship deployment ID (optional)"
+                className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
+              />
+              <input
+                type="text"
+                value={actingBridgeCrewIdDraft}
+                onChange={(event) => onActingBridgeCrewIdDraftChange(event.target.value)}
+                placeholder="Acting bridge crew ID (optional)"
+                className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
+              />
+              <input
+                type="text"
+                value={grantRationaleDraft}
+                onChange={(event) => onGrantRationaleDraftChange(event.target.value)}
+                placeholder="Grant rationale (required for new grants)"
+                className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
+              />
+              <input
+                type="text"
+                value={revokeReasonDraft}
+                onChange={(event) => onRevokeReasonDraftChange(event.target.value)}
+                placeholder="Revoke reason (optional)"
+                className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
+              />
+            </div>
             <button
               type="button"
               onClick={onSaveBindings}

@@ -47,6 +47,7 @@ test("sidebar route channel aggregation resolves canonical channels", () => {
     "vault.graph",
   ])
 
+  assert.deepEqual(notificationChannelsForSidebarHref("/settings"), [])
   assert.equal(notificationChannelsForSidebarHref("/does-not-exist").length, 0)
 })
 
@@ -56,6 +57,12 @@ test("sidebar nav items receive channel mappings", () => {
     .find((item) => item.href === "/hooks")
   assert.ok(hooksItem)
   assert.deepEqual(hooksItem?.channels, ["hooks"])
+
+  const settingsItem = sidebarNav
+    .flatMap((group) => group.items)
+    .find((item) => item.href === "/settings")
+  assert.ok(settingsItem)
+  assert.deepEqual(settingsItem?.channels, [])
 
   const personalItem = sidebarNav
     .flatMap((group) => group.items)
@@ -68,10 +75,6 @@ test("sidebar nav items receive channel mappings", () => {
     true,
   )
   assert.equal(
-    personalItem?.channels.includes(PERSONAL_DETAIL_NOTIFICATION_CHANNEL.shared.guidelines),
-    true,
-  )
-  assert.equal(
     personalItem?.channels.includes(PERSONAL_DETAIL_NOTIFICATION_CHANNEL.personal.capabilities),
     true,
   )
@@ -80,7 +83,7 @@ test("sidebar nav items receive channel mappings", () => {
     true,
   )
   assert.equal(
-    personalItem?.channels.includes(PERSONAL_DETAIL_NOTIFICATION_CHANNEL.personal.tools),
+    personalItem?.channels.includes(PERSONAL_DETAIL_NOTIFICATION_CHANNEL.shared.guidelines),
     true,
   )
   assert.equal(
@@ -92,7 +95,24 @@ test("sidebar nav items receive channel mappings", () => {
     true,
   )
   assert.equal(
+    personalItem?.channels.includes(PERSONAL_DETAIL_NOTIFICATION_CHANNEL.personal.tools),
+    false,
+  )
+  assert.equal(
     personalItem?.channels.includes(PERSONAL_DETAIL_NOTIFICATION_CHANNEL.shared.tools),
+    false,
+  )
+
+  const personalToolsItem = sidebarNav
+    .flatMap((group) => group.items)
+    .find((item) => item.href === "/personal/tools")
+  assert.ok(personalToolsItem)
+  assert.equal(
+    personalToolsItem?.channels.includes(PERSONAL_DETAIL_NOTIFICATION_CHANNEL.personal.tools),
+    true,
+  )
+  assert.equal(
+    personalToolsItem?.channels.includes(PERSONAL_DETAIL_NOTIFICATION_CHANNEL.shared.tools),
     true,
   )
 })
@@ -156,6 +176,18 @@ test("channel registries include full permissions, vault, and personal contracts
   assert.equal(
     SIDEBAR_NOTIFICATION_CHANNELS_BY_HREF["/personal"]?.includes(
       PERSONAL_DETAIL_NOTIFICATION_CHANNEL.personal.tools,
+    ),
+    false,
+  )
+  assert.equal(
+    SIDEBAR_NOTIFICATION_CHANNELS_BY_HREF["/personal/tools"]?.includes(
+      PERSONAL_DETAIL_NOTIFICATION_CHANNEL.personal.tools,
+    ),
+    true,
+  )
+  assert.equal(
+    SIDEBAR_NOTIFICATION_CHANNELS_BY_HREF["/personal/tools"]?.includes(
+      PERSONAL_DETAIL_NOTIFICATION_CHANNEL.shared.tools,
     ),
     true,
   )

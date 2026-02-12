@@ -17,6 +17,7 @@ interface SkillTreeGraphProps {
   graph: SkillGraphResponse
   selectedSkillId: string | null
   allowedSkillIds?: string[]
+  importableSkillIds?: string[]
   activeGroupId?: SkillGraphGroupId | null
   onSelectSkill: (skillId: string) => void
   onToggleGroup?: (groupId: SkillGraphGroupId) => void
@@ -25,6 +26,11 @@ interface SkillTreeGraphProps {
 }
 
 export function SkillTreeGraph(props: SkillTreeGraphProps) {
+  const importableSkillIds = useMemo(
+    () => new Set(props.importableSkillIds || []),
+    [props.importableSkillIds],
+  )
+
   const filteredGraph = useMemo(() => {
     const allowedSkillIds = new Set(props.allowedSkillIds || [])
     const hasAllowedList = allowedSkillIds.size > 0 || Array.isArray(props.allowedSkillIds)
@@ -108,6 +114,7 @@ export function SkillTreeGraph(props: SkillTreeGraphProps) {
       const selected = node.skillId === props.selectedSkillId
       const column = groupColumn(node.groupId)
       const isDimmed = Boolean(props.activeGroupId && props.activeGroupId !== node.groupId)
+      const isImportable = Boolean(node.skillId && importableSkillIds.has(node.skillId))
 
       return {
         id: node.id,
@@ -124,14 +131,27 @@ export function SkillTreeGraph(props: SkillTreeGraphProps) {
                 {node.source?.replaceAll("_", " ") || "skill"}
                 {node.isInstalled ? " · installed" : ""}
               </p>
+              {isImportable ? (
+                <span className="mt-1 inline-flex rounded-full border border-cyan-500/35 bg-cyan-500/10 px-2 py-0.5 text-[10px] uppercase tracking-wide text-cyan-700 dark:text-cyan-300">
+                  importable
+                </span>
+              ) : null}
             </div>
           ),
         },
         style: {
           minWidth: 220,
           borderRadius: 12,
-          border: selected ? "2px solid rgba(6, 182, 212, 0.9)" : "1px solid rgba(30, 41, 59, 0.12)",
-          background: selected ? "rgba(6, 182, 212, 0.12)" : "rgba(255, 255, 255, 0.96)",
+          border: selected
+            ? "2px solid rgba(6, 182, 212, 0.9)"
+            : isImportable
+              ? "1px solid rgba(6, 182, 212, 0.45)"
+              : "1px solid rgba(30, 41, 59, 0.12)",
+          background: selected
+            ? "rgba(6, 182, 212, 0.12)"
+            : isImportable
+              ? "rgba(236, 254, 255, 0.95)"
+              : "rgba(255, 255, 255, 0.96)",
           color: "#0f172a",
           padding: 10,
           boxShadow: selected ? "0 0 0 2px rgba(6, 182, 212, 0.15)" : "none",
@@ -139,7 +159,7 @@ export function SkillTreeGraph(props: SkillTreeGraphProps) {
         },
       }
     })
-  }, [filteredGraph.nodes, props.activeGroupId, props.selectedSkillId])
+  }, [filteredGraph.nodes, importableSkillIds, props.activeGroupId, props.selectedSkillId])
 
   const edges = useMemo<Edge[]>(() => {
     return filteredGraph.edges.map((edge) => ({

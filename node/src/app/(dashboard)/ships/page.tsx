@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import {
   Rocket,
   Server,
@@ -25,14 +25,18 @@ import {
   X,
   Anchor,
   Info,
-  MessageSquare,
   Check,
   Radio,
 } from "lucide-react"
 import { NodeInfoCard } from "@/components/orchestration/NodeInfoCard"
-import { ShipQuartermasterPanel } from "@/components/quartermaster/ShipQuartermasterPanel"
 import { ShipToolsPanel } from "@/components/shipyard/ShipToolsPanel"
 import { useEventStream } from "@/lib/realtime/useEventStream"
+import { SHIP_MONITORING_DEFAULTS } from "@/lib/shipyard/monitoring"
+import {
+  parseRuntimeNodeMetricsPayload,
+  RUNTIME_NODE_METRICS_EVENT_TYPE,
+  type RuntimeNodeMetricsPayload,
+} from "@/lib/runtime/realtime-node-metrics"
 
 // ---------------------------------------------------------------------------
 // Types
@@ -52,6 +56,12 @@ interface InfrastructureConfig {
   ansiblePlaybook: string
 }
 
+interface MonitoringConfigInput {
+  grafanaUrl: string
+  prometheusUrl: string
+  kubeviewUrl: string
+}
+
 interface DeploymentFormData {
   name: string
   description: string
@@ -63,6 +73,7 @@ interface DeploymentFormData {
   advancedNodeTypeOverride: boolean
   nodeUrl: string
   infrastructure: InfrastructureConfig
+  monitoring: MonitoringConfigInput
 }
 
 // ---------------------------------------------------------------------------
@@ -257,7 +268,7 @@ function relativeTime(value: string | null | undefined): string {
 // ---------------------------------------------------------------------------
 // Detail Panel Tab
 // ---------------------------------------------------------------------------
-type DetailTab = "overview" | "quartermaster" | "tools"
+type DetailTab = "overview" | "tools"
 
 // ---------------------------------------------------------------------------
 // Page
@@ -275,6 +286,7 @@ export default function ShipsPage() {
   const [infraFilter, setInfraFilter] = useState<"all" | InfrastructureKind>("all")
   const [subagents, setSubagents] = useState<any[]>([])
   const [runtime, setRuntime] = useState<RuntimeSnapshot | null>(null)
+  const [runtimeMetrics, setRuntimeMetrics] = useState<RuntimeNodeMetricsPayload | null>(null)
   const [runtimeLoading, setRuntimeLoading] = useState(true)
   const [runtimeOpen, setRuntimeOpen] = useState(false)
   const [tab, setTab] = useState<DetailTab>("overview")
@@ -285,12 +297,35 @@ export default function ShipsPage() {
     nodeType: "local", deploymentProfile: initialProfile,
     provisioningMode: "terraform_ansible", advancedNodeTypeOverride: false,
     nodeUrl: "", infrastructure: defaultInfrastructure(initialProfile),
+    monitoring: {
+      grafanaUrl: SHIP_MONITORING_DEFAULTS.grafanaUrl,
+      prometheusUrl: SHIP_MONITORING_DEFAULTS.prometheusUrl,
+      kubeviewUrl: SHIP_MONITORING_DEFAULTS.kubeviewUrl,
+    },
   })
 
   const derivedNodeType = useMemo(
     () => deriveNodeType(form.deploymentProfile, form.advancedNodeTypeOverride, form.nodeType),
     [form.advancedNodeTypeOverride, form.deploymentProfile, form.nodeType],
   )
+
+  const fetchRuntimeMetrics = useCallback(async () => {
+    try {
+      const response = await fetch("/api/runtime/node/metrics", {
+        cache: "no-store",
+      })
+      if (!response.ok) {
+        return
+      }
+
+      const payload = parseRuntimeNodeMetricsPayload(await response.json())
+      if (payload) {
+        setRuntimeMetrics(payload)
+      }
+    } catch (error) {
+      console.error("Error fetching runtime metrics:", error)
+    }
+  }, [])
 
   // ── Fetching ──────────────────────────────────────────────────────────
   useEffect(() => { fetchDeployments() }, [])
@@ -300,10 +335,44 @@ export default function ShipsPage() {
     return () => window.clearInterval(t)
   }, [])
 
+  useEffect(() => {
+    void fetchRuntimeMetrics()
+
+    const poller = window.setInterval(() => {
+      if (document.visibilityState !== "visible") {
+        return
+      }
+      void fetchRuntimeMetrics()
+    }, 5_000)
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        void fetchRuntimeMetrics()
+      }
+    }
+
+    document.addEventListener("visibilitychange", handleVisibilityChange)
+
+    return () => {
+      window.clearInterval(poller)
+      document.removeEventListener("visibilitychange", handleVisibilityChange)
+    }
+  }, [fetchRuntimeMetrics])
+
   useEventStream({
     enabled: true,
-    types: ["ship.updated", "deployment.updated", "forwarding.received"],
-    onEvent: () => { fetchDeployments(); fetchRuntime() },
+    types: ["ship.updated", "deployment.updated", "forwarding.received", RUNTIME_NODE_METRICS_EVENT_TYPE],
+    onEvent: (event) => {
+      if (event.type === RUNTIME_NODE_METRICS_EVENT_TYPE) {
+        const parsedMetrics = parseRuntimeNodeMetricsPayload(event.payload)
+        if (parsedMetrics) {
+          setRuntimeMetrics(parsedMetrics)
+        }
+        return
+      }
+      fetchDeployments()
+      fetchRuntime()
+    },
   })
 
   useEffect(() => {
@@ -337,6 +406,11 @@ export default function ShipsPage() {
     finally { setRuntimeLoading(false) }
   }
 
+  async function handlePanelShipNotFound(missingShipDeploymentId: string) {
+    await fetchDeployments()
+    setSelectedId((current) => (current === missingShipDeploymentId ? null : current))
+  }
+
   // ── Handlers ──────────────────────────────────────────────────────────
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault(); setIsCreating(true)
@@ -351,12 +425,35 @@ export default function ShipsPage() {
           provisioningMode: form.provisioningMode,
           advancedNodeTypeOverride: form.advancedNodeTypeOverride,
           nodeUrl: form.nodeUrl || null,
-          config: { infrastructure: form.infrastructure },
+          config: {
+            infrastructure: form.infrastructure,
+            monitoring: {
+              grafanaUrl: form.monitoring.grafanaUrl,
+              prometheusUrl: form.monitoring.prometheusUrl,
+              kubeviewUrl: form.monitoring.kubeviewUrl,
+            },
+          },
         }),
       })
       if (r.ok) {
         setShowModal(false)
-        setForm({ name: "", description: "", subagentId: "", nodeId: "", nodeType: "local", deploymentProfile: initialProfile, provisioningMode: "terraform_ansible", advancedNodeTypeOverride: false, nodeUrl: "", infrastructure: defaultInfrastructure(initialProfile) })
+        setForm({
+          name: "",
+          description: "",
+          subagentId: "",
+          nodeId: "",
+          nodeType: "local",
+          deploymentProfile: initialProfile,
+          provisioningMode: "terraform_ansible",
+          advancedNodeTypeOverride: false,
+          nodeUrl: "",
+          infrastructure: defaultInfrastructure(initialProfile),
+          monitoring: {
+            grafanaUrl: SHIP_MONITORING_DEFAULTS.grafanaUrl,
+            prometheusUrl: SHIP_MONITORING_DEFAULTS.prometheusUrl,
+            kubeviewUrl: SHIP_MONITORING_DEFAULTS.kubeviewUrl,
+          },
+        })
         fetchDeployments()
       }
     } catch (e) { console.error("Error creating deployment:", e) }
@@ -698,6 +795,8 @@ export default function ShipsPage() {
                 onCopy={handleCopy} copied={copied}
                 kindCluster={selected.infrastructure?.kind === "kind" ? kindByCtx.get(selected.infrastructure.kubeContext) : undefined}
                 runtime={runtime}
+                runtimeMetrics={runtimeMetrics}
+                onShipNotFound={handlePanelShipNotFound}
               />
             ) : (
               <div className="glass flex min-h-[420px] flex-col items-center justify-center rounded-2xl">
@@ -796,6 +895,48 @@ export default function ShipsPage() {
                   <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">NODE URL (OPTIONAL)</label>
                   <input type="url" value={form.nodeUrl} onChange={e => setForm({ ...form, nodeUrl: e.target.value })} className={inputCls} placeholder="https://node.example.com" />
                 </div>
+                <div>
+                  <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">GRAFANA URL (OPTIONAL)</label>
+                  <input
+                    type="url"
+                    value={form.monitoring.grafanaUrl}
+                    onChange={e =>
+                      setForm({
+                        ...form,
+                        monitoring: { ...form.monitoring, grafanaUrl: e.target.value },
+                      })}
+                    className={inputCls}
+                    placeholder="https://grafana.example.com/d/..."
+                  />
+                </div>
+                <div>
+                  <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">PROMETHEUS URL (OPTIONAL)</label>
+                  <input
+                    type="url"
+                    value={form.monitoring.prometheusUrl}
+                    onChange={e =>
+                      setForm({
+                        ...form,
+                        monitoring: { ...form.monitoring, prometheusUrl: e.target.value },
+                      })}
+                    className={inputCls}
+                    placeholder="https://prometheus.example.com/graph"
+                  />
+                </div>
+                <div>
+                  <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">KUBEVIEW URL (OPTIONAL)</label>
+                  <input
+                    type="url"
+                    value={form.monitoring.kubeviewUrl}
+                    onChange={e =>
+                      setForm({
+                        ...form,
+                        monitoring: { ...form.monitoring, kubeviewUrl: e.target.value },
+                      })}
+                    className={inputCls}
+                    placeholder="http://kubeview.orchwiz-starship.localhost:18080/"
+                  />
+                </div>
                 <div className="sm:col-span-2">
                   <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">INFRASTRUCTURE</label>
                   <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
@@ -848,7 +989,7 @@ export default function ShipsPage() {
 // Detail Panel
 // ---------------------------------------------------------------------------
 function DetailPanel({
-  ship, tab, onTab, onStatus, onDelete, onCopy, copied, kindCluster, runtime,
+  ship, tab, onTab, onStatus, onDelete, onCopy, copied, kindCluster, runtime, runtimeMetrics, onShipNotFound,
 }: {
   ship: DeploymentWithInfra
   tab: DetailTab
@@ -859,6 +1000,8 @@ function DetailPanel({
   copied: boolean
   kindCluster?: RuntimeSnapshot["kind"]["clusters"][number]
   runtime: RuntimeSnapshot | null
+  runtimeMetrics: RuntimeNodeMetricsPayload | null
+  onShipNotFound?: (shipDeploymentId: string) => void | Promise<void>
 }) {
   const st = statusCfg[ship.status]
   const nt = nodeTypeCfg[ship.nodeType]
@@ -952,7 +1095,6 @@ function DetailPanel({
       <div className="flex border-b border-slate-200/60 dark:border-white/10 bg-slate-50/50 dark:bg-transparent">
         {([
           { key: "overview" as const, icon: Info, label: "Overview" },
-          { key: "quartermaster" as const, icon: MessageSquare, label: "Quartermaster" },
           { key: "tools" as const, icon: Package, label: "Tools" },
         ]).map(t => (
           <button
@@ -1015,6 +1157,8 @@ function DetailPanel({
               metrics={ship.status === "active" ? {
                 uptime: ship.deployedAt ? formatUptime(new Date(ship.deployedAt)) : undefined,
                 activeSessions: typeof ship.metadata?.activeSessions === "number" ? ship.metadata.activeSessions : undefined,
+                cpu: runtimeMetrics?.signals.cpuPercent,
+                memory: runtimeMetrics?.signals.heapPressurePercent,
               } : undefined}
             />
 
@@ -1033,13 +1177,14 @@ function DetailPanel({
               </>
             )}
           </div>
-        ) : tab === "quartermaster" ? (
-          <div className="animate-slide-in">
-            <ShipQuartermasterPanel shipDeploymentId={ship.id} shipName={ship.name} />
-          </div>
         ) : (
           <div className="animate-slide-in">
-            <ShipToolsPanel shipDeploymentId={ship.id} shipName={ship.name} compact />
+            <ShipToolsPanel
+              shipDeploymentId={ship.id}
+              shipName={ship.name}
+              compact
+              onShipNotFound={onShipNotFound}
+            />
           </div>
         )}
       </div>

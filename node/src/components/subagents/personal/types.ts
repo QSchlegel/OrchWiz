@@ -133,6 +133,12 @@ export interface ToolCatalogEntryView {
   source: "curated" | "custom_github" | "local" | "system"
   isInstalled: boolean
   isSystem: boolean
+  activationStatus: "pending" | "approved" | "denied"
+  activationRationale: string | null
+  activatedAt: string | null
+  activatedByUserId: string | null
+  activatedByBridgeCrewId: string | null
+  activationSecurityReportId: string | null
   sourceUrl: string | null
   metadata: Record<string, unknown> | null
 }

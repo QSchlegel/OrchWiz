@@ -111,6 +111,21 @@ test("handleGetToolsCatalog returns owner-scoped payload", async () => {
   assert.equal(receivedRefreshMode, "force")
 })
 
+test("handleGetToolsCatalog returns 503 when schema is unavailable", async () => {
+  const result = await handleGetToolsCatalog(
+    { refresh: "auto" },
+    baseDependencies({
+      getToolCatalogForUser: async () => {
+        throw { code: "P2022" }
+      },
+    }),
+  )
+
+  assert.equal(result.status, 503)
+  assert.equal(result.body.code, "SCHEMA_UNAVAILABLE")
+  assert.equal(String(result.body.error).includes("npm run db:migrate"), true)
+})
+
 test("handlePostToolImport succeeds for curated mode", async () => {
   const result = await handlePostToolImport(
     {

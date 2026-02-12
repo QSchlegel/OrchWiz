@@ -6,7 +6,7 @@ export type ApplicationStatus =
   | "failed"
   | "updating"
 
-export type ApplicationType = "docker" | "nodejs" | "python" | "static" | "custom"
+export type ApplicationType = "docker" | "nodejs" | "python" | "static" | "n8n" | "custom"
 export type ApplicationNodeType = "local" | "cloud" | "hybrid"
 
 export interface ApplicationListItem {
@@ -44,6 +44,12 @@ export interface ApplicationActionCapability {
   sourceNodeId: string | null
 }
 
+export interface ResolveApplicationPatchUiUrlInput {
+  applicationType: ApplicationType
+  environment: unknown
+  nodeUrl?: string | null
+}
+
 function normalizeSearchInput(input: string): string {
   return input.trim().toLowerCase()
 }
@@ -56,9 +62,56 @@ function metadataRecord(metadata: unknown): Record<string, unknown> | null {
   return metadata as Record<string, unknown>
 }
 
+function asNonEmptyString(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null
+  }
+
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : null
+}
+
+function asHttpUrl(value: unknown): string | null {
+  const stringValue = asNonEmptyString(value)
+  if (!stringValue) {
+    return null
+  }
+
+  try {
+    const parsed = new URL(stringValue)
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return null
+    }
+    return parsed.toString()
+  } catch {
+    return null
+  }
+}
+
 function isForwardedApplication(app: Pick<ApplicationListItem, "metadata">): boolean {
   const metadata = metadataRecord(app.metadata)
   return metadata?.isForwarded === true
+}
+
+export function resolveApplicationPatchUiUrl(input: ResolveApplicationPatchUiUrlInput): string | null {
+  if (input.applicationType === "n8n") {
+    const environment = metadataRecord(input.environment) || {}
+    const n8nUrlCandidates = [
+      environment.N8N_EDITOR_BASE_URL,
+      environment.N8N_PUBLIC_BASE_URL,
+      environment.n8n_editor_base_url,
+      environment.n8n_public_base_url,
+    ]
+
+    for (const candidate of n8nUrlCandidates) {
+      const resolved = asHttpUrl(candidate)
+      if (resolved) {
+        return resolved
+      }
+    }
+  }
+
+  return asHttpUrl(input.nodeUrl)
 }
 
 export function filterApplications<T extends ApplicationListItem>(

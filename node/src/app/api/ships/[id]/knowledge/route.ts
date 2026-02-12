@@ -19,6 +19,7 @@ import {
 } from "@/lib/data-core/vault-adapter"
 import { getMergedMemoryRetriever } from "@/lib/data-core/merged-memory-retriever"
 import { recordRagPerformanceSample } from "@/lib/performance/tracker"
+import { buildShipNotFoundErrorPayload } from "@/lib/ships/errors"
 import {
   parseKnowledgeBackend,
   parseKnowledgeContent,
@@ -81,7 +82,7 @@ export async function GET(
     shipDeploymentId = id
     const owned = await ensureOwnedShip(session.user.id, id)
     if (!owned) {
-      return NextResponse.json({ error: "Ship not found" }, { status: 404 })
+      return NextResponse.json(buildShipNotFoundErrorPayload(), { status: 404 })
     }
 
     const k = parseTopK(searchParams.get("k"))
@@ -257,7 +258,7 @@ export async function POST(
     const { id } = await params
     const owned = await ensureOwnedShip(session.user.id, id)
     if (!owned) {
-      return NextResponse.json({ error: "Ship not found" }, { status: 404 })
+      return NextResponse.json(buildShipNotFoundErrorPayload(), { status: 404 })
     }
 
     const body = asRecord(await request.json().catch(() => ({})))
@@ -314,7 +315,7 @@ export async function PATCH(
     const { id } = await params
     const owned = await ensureOwnedShip(session.user.id, id)
     if (!owned) {
-      return NextResponse.json({ error: "Ship not found" }, { status: 404 })
+      return NextResponse.json(buildShipNotFoundErrorPayload(), { status: 404 })
     }
 
     const body = asRecord(await request.json().catch(() => ({})))
@@ -372,7 +373,7 @@ export async function DELETE(
     const { id } = await params
     const owned = await ensureOwnedShip(session.user.id, id)
     if (!owned) {
-      return NextResponse.json({ error: "Ship not found" }, { status: 404 })
+      return NextResponse.json(buildShipNotFoundErrorPayload(), { status: 404 })
     }
 
     const searchParams = request.nextUrl.searchParams

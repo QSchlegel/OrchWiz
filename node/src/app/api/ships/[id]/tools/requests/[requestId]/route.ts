@@ -5,6 +5,8 @@ import {
   reviewShipToolAccessRequestForOwner,
   ShipToolsError,
 } from "@/lib/tools/requests"
+import { GovernanceAccessError } from "@/lib/governance/chain-of-command"
+import { publishNotificationUpdated } from "@/lib/realtime/notifications"
 
 export const dynamic = "force-dynamic"
 
@@ -36,6 +38,10 @@ function toErrorResponse(error: unknown): NextResponse {
 
   if (error instanceof ShipToolsError) {
     return NextResponse.json({ error: error.message }, { status: error.status })
+  }
+
+  if (error instanceof GovernanceAccessError) {
+    return NextResponse.json({ error: error.message, code: error.code }, { status: error.status })
   }
 
   console.error("Ship tools request review route failed:", error)
@@ -70,12 +76,20 @@ export async function handlePatchShipToolRequest(
       decision,
       grantMode,
       reviewedByUserId: actor.userId,
+      actingBridgeCrewId: asNonEmptyString(body.actingBridgeCrewId),
+      grantRationale: asNonEmptyString(body.grantRationale),
       reviewNote: asNonEmptyString(body.reviewNote),
     })
 
     const state = await deps.getState({
       ownerUserId: actor.userId,
       shipDeploymentId,
+    })
+
+    publishNotificationUpdated({
+      userId: actor.userId,
+      channel: "ship-yard",
+      entityId: shipDeploymentId,
     })
 
     return NextResponse.json({ ...result, state })

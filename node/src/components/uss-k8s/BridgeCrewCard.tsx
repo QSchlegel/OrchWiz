@@ -32,10 +32,18 @@ export function BridgeCrewCard({
   const badge = roleBadges[agent.id]
 
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
+      aria-pressed={isSelected}
       onClick={() => onSelect(agent.id)}
-      className={`group relative w-full text-left rounded-lg border overflow-hidden transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500/60 dark:focus-visible:ring-cyan-400/60 ${
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault()
+          onSelect(agent.id)
+        }
+      }}
+      className={`group relative w-full cursor-pointer text-left rounded-lg border overflow-hidden transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500/60 dark:focus-visible:ring-cyan-400/60 ${
         isSelected
           ? "border-cyan-500/45 bg-gradient-to-r from-cyan-500/12 to-transparent surface-glow-cyan dark:border-cyan-300/55 dark:from-cyan-500/[0.16]"
           : "border-slate-300/70 bg-white/80 hover:border-cyan-500/35 hover:bg-cyan-50/60 dark:border-white/10 dark:bg-white/[0.03] dark:hover:border-cyan-300/35 dark:hover:bg-white/[0.06]"
@@ -109,6 +117,6 @@ export function BridgeCrewCard({
           </div>
         )}
       </div>
-    </button>
+    </div>
   )
 }

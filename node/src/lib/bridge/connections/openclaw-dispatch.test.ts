@@ -52,6 +52,16 @@ test("dispatchBridgeConnectionViaOpenClaw sends configured request payload", asy
         message: "hello",
         config: { parseMode: "MarkdownV2" },
         credentials: { botToken: "abc" },
+        metadata: {
+          runtime: {
+            id: "openclaw",
+          },
+          bridgeContext: {
+            stationKey: "ops",
+            callsign: "OPS-ARX",
+            bridgeCrewId: "crew-ops",
+          },
+        },
       })
 
       assert.equal(result.ok, true)
@@ -59,6 +69,16 @@ test("dispatchBridgeConnectionViaOpenClaw sends configured request payload", asy
       assert.equal(capturedUrl, "http://127.0.0.1:18789/v1/message")
       assert.equal(capturedAuth, "Bearer openclaw-secret")
       assert.equal(capturedBody.requestType, "bridge_connection_dispatch.v1")
+      assert.deepEqual(capturedBody.metadata, {
+        runtime: {
+          id: "openclaw",
+        },
+        bridgeContext: {
+          stationKey: "ops",
+          callsign: "OPS-ARX",
+          bridgeCrewId: "crew-ops",
+        },
+      })
     },
   ).finally(() => {
     globalThis.fetch = originalFetch
@@ -90,6 +110,51 @@ test("dispatchBridgeConnectionViaOpenClaw treats ok:false as failure", async () 
 
       assert.equal(result.ok, false)
       assert.equal(result.status, 200)
+    },
+  ).finally(() => {
+    globalThis.fetch = originalFetch
+  })
+})
+
+test("dispatchBridgeConnectionViaOpenClaw routes via station-specific gateway when configured", async () => {
+  const originalFetch = globalThis.fetch
+  let capturedUrl = ""
+
+  await withEnv(
+    {
+      OPENCLAW_GATEWAY_URL: "http://127.0.0.1:18789",
+      OPENCLAW_GATEWAY_URLS: "ops=http://openclaw-ops.orchwiz-starship.svc.cluster.local:18789",
+      OPENCLAW_DISPATCH_PATH: "/v1/message",
+    },
+    async () => {
+      globalThis.fetch = (async (input: RequestInfo | URL) => {
+        capturedUrl = String(input)
+        return new Response(JSON.stringify({ ok: true, providerMessageId: "msg-ops-1" }), { status: 200 })
+      }) as typeof globalThis.fetch
+
+      const result = await dispatchBridgeConnectionViaOpenClaw({
+        deliveryId: "delivery-3",
+        provider: "telegram",
+        destination: "-100123",
+        message: "ops route check",
+        config: {},
+        credentials: {
+          botToken: "abc",
+        },
+        metadata: {
+          bridgeContext: {
+            stationKey: "ops",
+          },
+          payload: {
+            shipContext: {
+              namespace: "orchwiz-starship",
+            },
+          },
+        },
+      })
+
+      assert.equal(result.ok, true)
+      assert.equal(capturedUrl, "http://openclaw-ops.orchwiz-starship.svc.cluster.local:18789/v1/message")
     },
   ).finally(() => {
     globalThis.fetch = originalFetch

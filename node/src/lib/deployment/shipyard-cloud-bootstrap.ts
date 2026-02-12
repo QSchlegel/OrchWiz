@@ -95,12 +95,28 @@ interface ResolvedCloudPaths {
 }
 
 interface TerraformOutputShape {
+  kubeview_enabled?: {
+    value?: unknown
+  }
+  kubeview_ingress_enabled?: {
+    value?: unknown
+  }
+  kubeview_url?: {
+    value?: unknown
+  }
   control_plane_public_ipv4?: {
     value?: unknown
   }
   control_plane_private_ipv4?: {
     value?: unknown
   }
+}
+
+interface KubeviewBootstrapMetadata {
+  enabled: boolean
+  ingressEnabled: boolean
+  url: string | null
+  source: "terraform_output" | "fallback"
 }
 
 function asString(value: unknown): string | null {
@@ -116,10 +132,24 @@ function asStringArray(value: unknown): string[] {
     .filter((entry): entry is string => Boolean(entry))
 }
 
+function asBoolean(value: unknown): boolean | null {
+  if (typeof value !== "boolean") return null
+  return value
+}
+
 function outputTail(result: { stdout?: string; stderr?: string }): string {
   const combined = [result.stdout || "", result.stderr || ""].filter(Boolean).join("\n").trim()
   if (combined.length <= 8_000) return combined
   return combined.slice(-8_000)
+}
+
+function fallbackCloudKubeviewMetadata(): KubeviewBootstrapMetadata {
+  return {
+    enabled: true,
+    ingressEnabled: true,
+    url: "/kubeview",
+    source: "fallback",
+  }
 }
 
 function sanitizeWorkspaceRelativePath(pathValue: string): string {
@@ -443,10 +473,61 @@ async function runProvisioning(args: {
   }
 
   metadata.clusterReadyCheck = outputTail(clusterCheckResult)
+  metadata.kubeview = await resolveCloudKubeviewMetadata({
+    runtime: args.runtime,
+    terraformEnvDirAbsolute: args.paths.terraformEnvDirAbsolute,
+  })
 
   return {
     ok: true,
     metadata,
+  }
+}
+
+async function resolveCloudKubeviewMetadata(args: {
+  runtime: ShipyardCloudBootstrapRuntime
+  terraformEnvDirAbsolute: string
+}): Promise<KubeviewBootstrapMetadata> {
+  const fallback = fallbackCloudKubeviewMetadata()
+
+  const outputResult = await args.runtime.runCommand(
+    "terraform",
+    ["-chdir", args.terraformEnvDirAbsolute, "output", "-json"],
+    {
+      timeoutMs: timeoutMs(args.runtime.env),
+    },
+  )
+
+  if (!outputResult.ok) {
+    return fallback
+  }
+
+  let parsedOutput: TerraformOutputShape = {}
+  try {
+    parsedOutput = JSON.parse(outputResult.stdout) as TerraformOutputShape
+  } catch {
+    return fallback
+  }
+
+  const hasKubeviewOutputs = (
+    parsedOutput.kubeview_enabled !== undefined
+    || parsedOutput.kubeview_ingress_enabled !== undefined
+    || parsedOutput.kubeview_url !== undefined
+  )
+  if (!hasKubeviewOutputs) {
+    return fallback
+  }
+
+  const enabled = asBoolean(parsedOutput.kubeview_enabled?.value) ?? fallback.enabled
+  const ingressEnabled = asBoolean(parsedOutput.kubeview_ingress_enabled?.value) ?? fallback.ingressEnabled
+  const outputUrl = asString(parsedOutput.kubeview_url?.value)
+  const resolvedUrl = ingressEnabled ? (outputUrl || fallback.url) : null
+
+  return {
+    enabled,
+    ingressEnabled,
+    url: resolvedUrl,
+    source: "terraform_output",
   }
 }
 

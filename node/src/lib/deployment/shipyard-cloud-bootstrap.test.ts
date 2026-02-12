@@ -132,3 +132,115 @@ test("cloud bootstrap fails when required files are missing", async () => {
   assert.equal(result.code, "CLOUD_BOOTSTRAP_CONFIG_MISSING")
   assert.ok(result.details?.missingFiles?.some((file) => file.endsWith("terraform.tfvars")))
 })
+
+test("cloud bootstrap captures kubeview metadata from terraform outputs", async () => {
+  const runtime = createRuntime({
+    runCommand: async (command, args) => {
+      if (command === "terraform" && args.join(" ") === "-chdir /repo/infra/terraform/environments/shipyard-cloud output -json") {
+        return {
+          ok: true,
+          stdout: JSON.stringify({
+            kubeview_enabled: { value: true },
+            kubeview_ingress_enabled: { value: true },
+            kubeview_url: { value: "https://orchwiz.example.com/kubeview" },
+          }),
+          stderr: "",
+          exitCode: 0,
+        }
+      }
+      if (command === "kubectl") {
+        return {
+          ok: true,
+          stdout: "orchwiz-abc Running",
+          stderr: "",
+          exitCode: 0,
+        }
+      }
+      return {
+        ok: true,
+        stdout: "",
+        stderr: "",
+        exitCode: 0,
+      }
+    },
+  })
+
+  const result = await runShipyardCloudBootstrap(
+    {
+      deploymentId: "deployment-1",
+      provisioningMode: "terraform_ansible",
+      infrastructure,
+      cloudProvider,
+      sshPrivateKey: "PRIVATE",
+    },
+    runtime,
+  )
+
+  assert.equal(result.ok, true)
+  if (!result.ok) return
+
+  const kubeview = result.metadata.kubeview as {
+    enabled?: boolean
+    ingressEnabled?: boolean
+    url?: string | null
+    source?: string
+  }
+  assert.equal(kubeview.enabled, true)
+  assert.equal(kubeview.ingressEnabled, true)
+  assert.equal(kubeview.url, "https://orchwiz.example.com/kubeview")
+  assert.equal(kubeview.source, "terraform_output")
+})
+
+test("cloud bootstrap falls back when kubeview terraform outputs are unavailable", async () => {
+  const runtime = createRuntime({
+    runCommand: async (command, args) => {
+      if (command === "terraform" && args.join(" ") === "-chdir /repo/infra/terraform/environments/shipyard-cloud output -json") {
+        return {
+          ok: false,
+          stdout: "",
+          stderr: "no outputs",
+          exitCode: 1,
+        }
+      }
+      if (command === "kubectl") {
+        return {
+          ok: true,
+          stdout: "orchwiz-abc Running",
+          stderr: "",
+          exitCode: 0,
+        }
+      }
+      return {
+        ok: true,
+        stdout: "",
+        stderr: "",
+        exitCode: 0,
+      }
+    },
+  })
+
+  const result = await runShipyardCloudBootstrap(
+    {
+      deploymentId: "deployment-1",
+      provisioningMode: "terraform_ansible",
+      infrastructure,
+      cloudProvider,
+      sshPrivateKey: "PRIVATE",
+    },
+    runtime,
+  )
+
+  assert.equal(result.ok, true)
+  if (!result.ok) return
+
+  const kubeview = result.metadata.kubeview as {
+    enabled?: boolean
+    ingressEnabled?: boolean
+    url?: string | null
+    source?: string
+  }
+  assert.equal(kubeview.enabled, true)
+  assert.equal(kubeview.ingressEnabled, true)
+  assert.equal(kubeview.url, "/kubeview")
+  assert.equal(kubeview.source, "fallback")
+})

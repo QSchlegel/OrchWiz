@@ -25,3 +25,20 @@ ingress_annotations = {
 app_env = {
   ENABLE_LOCAL_COMMAND_EXECUTION = "false"
 }
+
+# Kubeview is deployed and exposed by default at /kubeview.
+enable_kubeview            = true
+kubeview_chart_version     = "2.0.6"
+kubeview_single_namespace  = false
+kubeview_ingress_enabled   = true
+kubeview_ingress_host      = "" # defaults to ingress_host when empty
+kubeview_ingress_path      = "/kubeview"
+kubeview_ingress_class_name = "nginx"
+kubeview_ingress_annotations = {}
+
+# Required when kubeview ingress auth enforcement is enabled.
+kubeview_ingress_auth_required = true
+kubeview_ingress_auth_annotations = {
+  "nginx.ingress.kubernetes.io/auth-url"    = "https://auth.example.com/oauth2/auth"
+  "nginx.ingress.kubernetes.io/auth-signin" = "https://auth.example.com/oauth2/start?rd=$scheme://$host$request_uri"
+}

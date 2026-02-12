@@ -1,7 +1,13 @@
 import { readFile, readdir } from "node:fs/promises"
 import { basename, join, resolve } from "node:path"
 import { homedir } from "node:os"
-import { Prisma, type ToolCatalogEntry, type ToolCatalogSource, type ToolImportRun } from "@prisma/client"
+import {
+  Prisma,
+  type CatalogActivationStatus,
+  type ToolCatalogEntry,
+  type ToolCatalogSource,
+  type ToolImportRun,
+} from "@prisma/client"
 import { prisma } from "@/lib/prisma"
 import { findCuratedToolBySlug, listCuratedTools } from "@/lib/tools/curated-tools"
 import {
@@ -348,6 +354,19 @@ function bestEntryBySlug(entries: ToolCatalogEntry[]): Map<string, ToolCatalogEn
   return choosePreferredToolEntryBySlug(entries)
 }
 
+function defaultActivationStatusForSource(source: ToolCatalogSource): CatalogActivationStatus {
+  switch (source) {
+    case "custom_github":
+    case "local":
+    case "system":
+      return "pending"
+    case "curated":
+      return "approved"
+    default:
+      return "approved"
+  }
+}
+
 function toEntryDto(entry: ToolCatalogEntry): ToolCatalogEntryDto {
   return {
     id: entry.id,
@@ -363,6 +382,12 @@ function toEntryDto(entry: ToolCatalogEntry): ToolCatalogEntryDto {
     isInstalled: entry.isInstalled,
     isSystem: entry.isSystem,
     installedPath: entry.installedPath,
+    activationStatus: entry.activationStatus,
+    activationRationale: entry.activationRationale,
+    activatedAt: entry.activatedAt ? entry.activatedAt.toISOString() : null,
+    activatedByUserId: entry.activatedByUserId,
+    activatedByBridgeCrewId: entry.activatedByBridgeCrewId,
+    activationSecurityReportId: entry.activationSecurityReportId,
     metadata: asObjectJson(entry.metadata),
     ownerUserId: entry.ownerUserId,
     lastSyncedAt: entry.lastSyncedAt.toISOString(),
@@ -483,6 +508,7 @@ async function upsertCatalogEntry(data: {
       isInstalled: data.isInstalled,
       isSystem: data.isSystem,
       installedPath: data.installedPath || null,
+      activationStatus: defaultActivationStatusForSource(data.source),
       metadata: normalizedMetadata,
       lastSyncedAt: data.lastSyncedAt,
     },

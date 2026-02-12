@@ -46,6 +46,10 @@ import {
   ShipyardInsufficientCreditsError,
 } from "@/lib/shipyard/billing/wallet"
 import { requireShipyardRequestActor } from "@/lib/shipyard/request-actor"
+import {
+  bootstrapInitialApplicationsForShipFailOpen,
+} from "@/lib/shipyard/initial-applications"
+import { SHIP_LATEST_VERSION } from "@/lib/shipyard/versions"
 
 export const dynamic = "force-dynamic"
 
@@ -77,6 +81,24 @@ function asRecord(value: unknown): Record<string, unknown> {
 function asBoolean(value: unknown): boolean | null {
   if (typeof value !== "boolean") return null
   return value
+}
+
+function mergeMetadataPreservingKubeview(
+  base: Record<string, unknown>,
+  incoming?: Record<string, unknown>,
+): Record<string, unknown> {
+  const next = {
+    ...base,
+    ...(incoming || {}),
+  }
+
+  if (!incoming || !Object.prototype.hasOwnProperty.call(incoming, "kubeview")) {
+    if (Object.prototype.hasOwnProperty.call(base, "kubeview")) {
+      next.kubeview = base.kubeview
+    }
+  }
+
+  return next
 }
 
 type CrewOverrides = Partial<
@@ -212,6 +234,8 @@ export async function POST(request: NextRequest) {
           deploymentProfile: normalizedProfile.deploymentProfile,
           provisioningMode: normalizedProfile.provisioningMode,
           nodeUrl: asString(body?.nodeUrl),
+          shipVersion: SHIP_LATEST_VERSION,
+          shipVersionUpdatedAt: new Date(),
           config: normalizedProfile.config as Prisma.InputJsonValue,
           metadata: {
             shipYard: true,
@@ -336,8 +360,7 @@ export async function POST(request: NextRequest) {
       }
 
       const failureMetadata = {
-        ...launchMetadataState,
-        ...(args.metadata || {}),
+        ...mergeMetadataPreservingKubeview(launchMetadataState, args.metadata),
         deploymentError: args.error,
         deploymentErrorCode: args.code,
         ...(launchDebitLedgerEntryId
@@ -628,12 +651,14 @@ export async function POST(request: NextRequest) {
     }
 
     const successMetadata = {
-      ...launchMetadataState,
-      ...(adapterResult.metadata || {}),
+      ...mergeMetadataPreservingKubeview(
+        launchMetadataState,
+        (adapterResult.metadata || {}) as Record<string, unknown>,
+      ),
       ...(adapterResult.error ? { deploymentError: adapterResult.error } : {}),
     }
 
-    const deployment = await prisma.agentDeployment.update({
+    let deployment = await prisma.agentDeployment.update({
       where: { id: created.deployment.id },
       data: {
         status: adapterResult.status,
@@ -641,6 +666,58 @@ export async function POST(request: NextRequest) {
         lastHealthCheck: adapterResult.lastHealthCheck || null,
         healthStatus: adapterResult.healthStatus || null,
         metadata: successMetadata as Prisma.InputJsonValue,
+      },
+    })
+
+    const bootstrap = await bootstrapInitialApplicationsForShipFailOpen({
+      ownerUserId,
+      ship: {
+        id: deployment.id,
+        name: deployment.name,
+        userId: deployment.userId,
+        nodeId: deployment.nodeId,
+        nodeType: deployment.nodeType,
+        nodeUrl: deployment.nodeUrl,
+        deploymentProfile: deployment.deploymentProfile,
+        provisioningMode: deployment.provisioningMode,
+        config: deployment.config,
+      },
+      shipStatus: deployment.status,
+    })
+
+    console.info("Ship launch initial application bootstrap summary", {
+      shipId: deployment.id,
+      ownerUserId,
+      n8nStatus: bootstrap.n8n.status,
+      n8nWarnings: bootstrap.n8n.warnings,
+      n8nErrors: bootstrap.n8n.errors.map((entry) => ({
+        stage: entry.stage,
+        code: entry.code || null,
+        message: entry.message,
+      })),
+      n8nApplicationId: bootstrap.n8n.applicationId,
+      n8nToolCatalogEntryId: bootstrap.n8n.toolCatalogEntryId,
+      n8nToolGrantId: bootstrap.n8n.toolGrantId,
+    })
+
+    const deploymentMetadata = asRecord(deployment.metadata)
+    const existingBootstrap = asRecord(deploymentMetadata.bootstrap)
+    const existingInitialApplications = asRecord(existingBootstrap.initialApplications)
+    const nextMetadata = {
+      ...deploymentMetadata,
+      bootstrap: {
+        ...existingBootstrap,
+        initialApplications: {
+          ...existingInitialApplications,
+          n8n: bootstrap.n8n,
+        },
+      },
+    }
+
+    deployment = await prisma.agentDeployment.update({
+      where: { id: deployment.id },
+      data: {
+        metadata: nextMetadata as Prisma.InputJsonValue,
       },
     })
 
@@ -657,6 +734,7 @@ export async function POST(request: NextRequest) {
       quartermaster,
       baseRequirementsEstimate,
       deploymentOverview,
+      bootstrap,
     })
   } catch (error) {
     if (error instanceof AccessControlError) {

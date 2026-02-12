@@ -14,6 +14,11 @@ This folder contains Terraform + Ansible scaffolding for two deployment profiles
 - `ansible/playbooks/starship_local.yml`: local deploy workflow.
 - `ansible/playbooks/shipyard_cloud.yml`: cloud deploy workflow.
 
+## Vendor Dependencies
+
+- Initialize vendored infra dependencies (including KubeView chart source):
+  - `git submodule update --init --recursive infra/vendor/kubeview`
+
 ## Quick Start: Local Starship (KIND default, Minikube optional)
 
 1. Copy vars template:
@@ -36,8 +41,21 @@ This folder contains Terraform + Ansible scaffolding for two deployment profiles
 - The app server local-launch path is fail-fast: it requires `terraform.tfvars`, Ansible inventory, and playbook paths to exist.
 - Missing files are reported with copy-ready remediation commands; files are not auto-generated.
 - `saneBootstrap` can assist with CLI auto-install only when `ENABLE_LOCAL_INFRA_AUTO_INSTALL=true`.
+- For `kind`, `saneBootstrap=true` uses a docker-first flow to bootstrap app image delivery:
+  - Build context defaults to `node/` using `node/Dockerfile.shipyard`
+  - `node/.dockerignore` trims build context for faster local loops
+  - Image runs a local-friendly Next dev server for bootstrap stability
+  - Image tag defaults to `orchwiz:local-dev`
+  - Image is loaded into the target kind cluster before Terraform/Ansible
+  - Controls: `LOCAL_SHIPYARD_AUTO_BUILD_APP_IMAGE`, `LOCAL_SHIPYARD_FORCE_REBUILD_APP_IMAGE`, `LOCAL_SHIPYARD_APP_IMAGE`, `LOCAL_SHIPYARD_DOCKERFILE`, `LOCAL_SHIPYARD_DOCKER_CONTEXT`, `LOCAL_SHIPYARD_KIND_CLUSTER_NAME`
 - Local provisioning command execution still requires `ENABLE_LOCAL_COMMAND_EXECUTION=true`.
 - Kube context presence is validated before provisioning; cluster auto-create/start is not performed.
+- PostgreSQL Helm release uses the Bitnami OCI repo (`oci://registry-1.docker.io/bitnamicharts`) in `terraform/modules/starship-minikube/main.tf`.
+- `postgres_chart_version` is pinned in `terraform/modules/starship-minikube/variables.tf`; keep it current and run `terraform init -upgrade -backend=false` when chart fetch behavior changes upstream.
+
+Debug loop helper:
+
+- `cd node && SHIPYARD_BEARER_TOKEN=owz_shipyard_v1.<keyId>.<secret> npm run shipyard:local:debug`
 
 ## Quick Start: Cloud Shipyard (Existing Kubernetes)
 
@@ -49,6 +67,19 @@ This folder contains Terraform + Ansible scaffolding for two deployment profiles
    - `terraform -chdir=infra/terraform/environments/shipyard-cloud apply`
 4. Or run the Ansible wrapper:
    - `ansible-playbook -i infra/ansible/inventory/cloud.ini.example infra/ansible/playbooks/shipyard_cloud.yml`
+
+## KubeView
+
+- KubeView is deployed by default in both profiles (`enable_kubeview = true`).
+- Deployment scope is whole cluster by default (`kubeview_single_namespace = false`).
+- Local profile:
+  - Ingress exposure is opt-in (`kubeview_ingress_enabled = false` by default).
+  - Default host pattern when ingress is enabled: `kubeview.<namespace>.localhost`.
+- Cloud profile:
+  - KubeView ingress is enabled by default and mounted at `/kubeview`.
+  - Path-prefix hosting uses nginx regex rewrite (`/kubeview(/|$)(.*)` -> `/$2`).
+  - Ingress auth annotations are required when `kubeview_ingress_auth_required = true`.
+  - Configure `kubeview_ingress_auth_annotations` in `terraform.tfvars` (see example values in `infra/terraform/environments/shipyard-cloud/terraform.tfvars.example`).
 
 ## Notes
 

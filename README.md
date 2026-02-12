@@ -24,6 +24,7 @@ This is the shortest local path for a clean setup.
 ```bash
 git clone git@github.com:QSchlegel/OrchWiz.git
 cd OrchWiz
+git submodule update --init --recursive infra/vendor/kubeview
 
 cd dev-local
 docker compose up -d
@@ -41,6 +42,8 @@ Open [http://localhost:3000](http://localhost:3000).
 
 For the full setup (required env values, wallet-enclave modes, troubleshooting), use
 [Getting Started](docs/GETTING_STARTED.md).
+
+Ship clusters include bundled KubeView support (local + cloud profiles) for topology visualization.
 
 ## Agent VPC Boundary Diagram
 
@@ -148,6 +151,7 @@ This documentation does not claim completed certification or attestation.
 - [Contribution guide](CONTRIBUTING.md)
 - [Marketing execution plan](MARKETING_EXECUTION.md)
 - [Node app README](node/README.md)
+- [Ship Yard smoke harness](node/README.md#ship-yard-api-smoke-harness)
 - [Infrastructure setup](infra/README.md)
 - [Architecture overview](OWZ-Vault/01-Project-Overview/Architecture.md)
 - [Node concept](OWZ-Vault/01-Project-Overview/Node-Concept.md)

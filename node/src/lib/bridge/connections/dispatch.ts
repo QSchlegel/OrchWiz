@@ -8,7 +8,8 @@ import type {
 } from "@prisma/client"
 import { prisma } from "@/lib/prisma"
 import { publishRealtimeEvent } from "@/lib/realtime/events"
-import { dispatchBridgeConnectionViaOpenClaw } from "./openclaw-dispatch"
+import { resolveBridgeDispatchRuntime } from "./dispatch-runtime"
+import { dispatchBridgeConnectionViaRuntime } from "./runtime-adapter"
 import { resolveBridgeConnectionCredentials } from "./secrets"
 
 const BRIDGE_DISPATCH_RETRY_BASE_MS = 1_000
@@ -250,21 +251,34 @@ async function runBridgeDispatchDelivery(
   })
 
   const payload = asRecord(delivery.payload)
+  const runtimeId = resolveBridgeDispatchRuntime(asRecord(payload.runtime).id)
+  const bridgeContext = asRecord(payload.bridgeContext)
 
-  const dispatchResult = await dispatchBridgeConnectionViaOpenClaw({
-    deliveryId: delivery.id,
-    provider: delivery.connection.provider,
-    destination: delivery.connection.destination,
-    message: delivery.message,
-    config: asRecord(delivery.connection.config),
-    credentials,
-    metadata: {
+  const dispatchResult = await dispatchBridgeConnectionViaRuntime({
+    runtimeId,
+    input: {
       deliveryId: delivery.id,
-      deploymentId: delivery.deploymentId,
-      connectionId: delivery.connection.id,
-      connectionName: delivery.connection.name,
-      source: delivery.source,
-      payload,
+      provider: delivery.connection.provider,
+      destination: delivery.connection.destination,
+      message: delivery.message,
+      config: asRecord(delivery.connection.config),
+      credentials,
+      metadata: {
+        deliveryId: delivery.id,
+        deploymentId: delivery.deploymentId,
+        connectionId: delivery.connection.id,
+        connectionName: delivery.connection.name,
+        source: delivery.source,
+        runtime: {
+          id: runtimeId,
+        },
+        ...(Object.keys(bridgeContext).length > 0
+          ? {
+              bridgeContext,
+            }
+          : {}),
+        payload,
+      },
     },
   })
 

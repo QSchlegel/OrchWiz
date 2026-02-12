@@ -22,6 +22,7 @@ import type {
   ToolImportRunView,
 } from "@/components/subagents/personal/types"
 import { formatUnreadBadgeCount } from "@/lib/notifications/store"
+import { asNotificationUpdatedPayload } from "@/lib/types/notifications"
 import {
   PERSONAL_DETAIL_NOTIFICATION_CHANNEL,
   PERSONAL_TAB_NOTIFICATION_CHANNEL,
@@ -375,6 +376,11 @@ function normalizeToolCatalogEntry(value: any): ToolCatalogEntryView | null {
     return null
   }
 
+  const activationStatus =
+    value.activationStatus === "pending" || value.activationStatus === "denied" || value.activationStatus === "approved"
+      ? value.activationStatus
+      : "approved"
+
   return {
     id: value.id,
     slug: typeof value.slug === "string" ? value.slug : "",
@@ -383,6 +389,13 @@ function normalizeToolCatalogEntry(value: any): ToolCatalogEntryView | null {
     source,
     isInstalled: Boolean(value.isInstalled),
     isSystem: Boolean(value.isSystem),
+    activationStatus,
+    activationRationale: typeof value.activationRationale === "string" ? value.activationRationale : null,
+    activatedAt: typeof value.activatedAt === "string" ? value.activatedAt : null,
+    activatedByUserId: typeof value.activatedByUserId === "string" ? value.activatedByUserId : null,
+    activatedByBridgeCrewId: typeof value.activatedByBridgeCrewId === "string" ? value.activatedByBridgeCrewId : null,
+    activationSecurityReportId:
+      typeof value.activationSecurityReportId === "string" ? value.activationSecurityReportId : null,
     sourceUrl: typeof value.sourceUrl === "string" ? value.sourceUrl : null,
     metadata: value.metadata && typeof value.metadata === "object" && !Array.isArray(value.metadata)
       ? (value.metadata as Record<string, unknown>)
@@ -482,6 +495,7 @@ export default function PersonalPage() {
   const searchParams = useSearchParams()
   const router = useRouter()
   const pathname = usePathname()
+  const isToolsSubcategoryRoute = pathname === "/personal/tools" || pathname.startsWith("/personal/tools/")
 
   const [allSubagents, setAllSubagents] = useState<Subagent[]>([])
   const [isLoading, setIsLoading] = useState(true)
@@ -493,7 +507,7 @@ export default function PersonalPage() {
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
   const [isMobileLayout, setIsMobileLayout] = useState(false)
   const [mobileSection, setMobileSection] = useState<MobileSection>("agents")
-  const [detailTab, setDetailTab] = useState<CoreDetailView>("context")
+  const [detailTab, setDetailTab] = useState<CoreDetailView>(isToolsSubcategoryRoute ? "tools" : "context")
   const [isAdvancedOpen, setIsAdvancedOpen] = useState(false)
   const [isWorkspaceInspectorOpen, setIsWorkspaceInspectorOpen] = useState(false)
   const [advancedSection, setAdvancedSection] = useState<AdvancedSection>("workspace")
@@ -566,6 +580,10 @@ export default function PersonalPage() {
   const [isAgentToolBindingsSaving, setIsAgentToolBindingsSaving] = useState(false)
   const [agentToolBindingsDraft, setAgentToolBindingsDraft] = useState<Record<string, boolean>>({})
   const [agentToolBindingsSnapshot, setAgentToolBindingsSnapshot] = useState("[]")
+  const [toolBindingsShipDeploymentIdDraft, setToolBindingsShipDeploymentIdDraft] = useState("")
+  const [toolBindingsActingBridgeCrewIdDraft, setToolBindingsActingBridgeCrewIdDraft] = useState("")
+  const [toolBindingsGrantRationaleDraft, setToolBindingsGrantRationaleDraft] = useState("")
+  const [toolBindingsRevokeReasonDraft, setToolBindingsRevokeReasonDraft] = useState("")
   const autoBootstrapAttemptedRef = useRef(false)
 
   const activeTab = parseTab(searchParams.get("tab"))
@@ -591,10 +609,13 @@ export default function PersonalPage() {
     [activeSubagents, selectedAgentId],
   )
 
-  const visibleCoreTabs = useMemo(
-    () => CORE_DETAIL_TABS.filter((tab) => coreTabsForMode(activeTab).includes(tab.id)),
-    [activeTab],
-  )
+  const visibleCoreTabs = useMemo(() => {
+    const tabs = CORE_DETAIL_TABS.filter((tab) => coreTabsForMode(activeTab).includes(tab.id))
+    if (activeTab === "personal" && isToolsSubcategoryRoute) {
+      return tabs.filter((tab) => tab.id === "tools")
+    }
+    return tabs
+  }, [activeTab, isToolsSubcategoryRoute])
 
   const filteredAgents = useMemo(() => {
     const normalizedQuery = agentSearchQuery.trim().toLowerCase()
@@ -1057,9 +1078,13 @@ export default function PersonalPage() {
   }, [loadPolicyLibrary])
 
   useEffect(() => {
+    if (activeTab !== "personal" || effectiveDetailTab !== "tools") {
+      return
+    }
+
     void loadToolCatalog({ refreshMode: "auto" })
     void loadToolImportRuns()
-  }, [loadToolCatalog, loadToolImportRuns])
+  }, [activeTab, effectiveDetailTab, loadToolCatalog, loadToolImportRuns])
 
   useEffect(() => {
     void loadAgentSyncPreference()
@@ -1116,11 +1141,12 @@ export default function PersonalPage() {
   }, [selectedSubagent])
 
   useEffect(() => {
-    const enforced = enforceCoreTabForMode(activeTab, detailTab)
+    const requestedDetailTab = activeTab === "personal" && isToolsSubcategoryRoute ? "tools" : detailTab
+    const enforced = enforceCoreTabForMode(activeTab, requestedDetailTab)
     if (enforced !== detailTab) {
       setDetailTab(enforced)
     }
-  }, [activeTab, detailTab])
+  }, [activeTab, detailTab, isToolsSubcategoryRoute])
 
   useEffect(() => {
     if (!selectedSubagent) {
@@ -1161,8 +1187,15 @@ export default function PersonalPage() {
     void loadContextFiles(selectedSubagent.id)
     void loadPermissions(selectedSubagent.id)
     void loadPolicyAssignments(selectedSubagent.id)
+  }, [selectedSubagent, loadContextFiles, loadPermissions, loadPolicyAssignments])
+
+  useEffect(() => {
+    if (!selectedSubagent || activeTab !== "personal" || effectiveDetailTab !== "tools") {
+      return
+    }
+
     void loadAgentToolBindings(selectedSubagent.id)
-  }, [selectedSubagent, loadContextFiles, loadPermissions, loadPolicyAssignments, loadAgentToolBindings])
+  }, [activeTab, effectiveDetailTab, loadAgentToolBindings, selectedSubagent])
 
   const handleAgentSyncRealtimeUpdate = useCallback(() => {
     void loadAgentSyncPreference()
@@ -1173,6 +1206,33 @@ export default function PersonalPage() {
     enabled: activeTab === "personal",
     types: ["agentsync.updated"],
     onEvent: handleAgentSyncRealtimeUpdate,
+  })
+
+  const handlePersonalToolsRealtimeUpdate = useCallback((event: { type: string; payload: unknown }) => {
+    if (event.type !== "notification.updated") {
+      return
+    }
+
+    const payload = asNotificationUpdatedPayload(event.payload)
+    if (!payload) {
+      return
+    }
+
+    if (payload.channel !== "personal.personal.tools" && payload.channel !== "ship-yard") {
+      return
+    }
+
+    void loadToolCatalog({ refreshMode: "auto" })
+    void loadToolImportRuns()
+    if (selectedSubagent?.id) {
+      void loadAgentToolBindings(selectedSubagent.id)
+    }
+  }, [loadAgentToolBindings, loadToolCatalog, loadToolImportRuns, selectedSubagent?.id])
+
+  useEventStream({
+    enabled: activeTab === "personal" && effectiveDetailTab === "tools",
+    types: ["notification.updated"],
+    onEvent: handlePersonalToolsRealtimeUpdate,
   })
 
   const setActiveTab = (tab: PersonalTab) => {
@@ -1612,6 +1672,10 @@ export default function PersonalPage() {
         },
         body: JSON.stringify({
           bindings: payloadBindings,
+          shipDeploymentId: toolBindingsShipDeploymentIdDraft.trim() || null,
+          actingBridgeCrewId: toolBindingsActingBridgeCrewIdDraft.trim() || null,
+          grantRationale: toolBindingsGrantRationaleDraft.trim() || null,
+          revokeReason: toolBindingsRevokeReasonDraft.trim() || null,
         }),
       })
 
@@ -2079,7 +2143,7 @@ export default function PersonalPage() {
     <>
       <PageLayout
         title="Personal"
-        description="Manage personal agents with focused context, permissions, and runtime controls."
+        description="Manage personal agents with focused context, permissions, and runtime controls. Tools live in the selected agent's Tools tab."
         actions={
           activeTab === "personal" ? (
             <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center sm:justify-end">
@@ -2456,6 +2520,10 @@ export default function PersonalPage() {
                           isBindingsLoading={isAgentToolBindingsLoading || isToolImportRunsLoading}
                           isBindingsSaving={isAgentToolBindingsSaving}
                           bindingsDirty={agentToolBindingsDirty}
+                          shipDeploymentIdDraft={toolBindingsShipDeploymentIdDraft}
+                          actingBridgeCrewIdDraft={toolBindingsActingBridgeCrewIdDraft}
+                          grantRationaleDraft={toolBindingsGrantRationaleDraft}
+                          revokeReasonDraft={toolBindingsRevokeReasonDraft}
                           onRefreshCatalog={() => {
                             void loadToolCatalog({ refreshMode: "force", manual: true })
                           }}
@@ -2466,6 +2534,10 @@ export default function PersonalPage() {
                           onImportGithubUrl={() => {
                             void importToolFromGithubUrl()
                           }}
+                          onShipDeploymentIdDraftChange={setToolBindingsShipDeploymentIdDraft}
+                          onActingBridgeCrewIdDraftChange={setToolBindingsActingBridgeCrewIdDraft}
+                          onGrantRationaleDraftChange={setToolBindingsGrantRationaleDraft}
+                          onRevokeReasonDraftChange={setToolBindingsRevokeReasonDraft}
                           onToggleBinding={toggleAgentToolBinding}
                           onSaveBindings={() => {
                             void saveAgentToolBindings()

@@ -131,3 +131,21 @@ test("cloud provider config is normalized from incoming values", () => {
   const tunnelPolicy = cloudProvider.tunnelPolicy as Record<string, unknown>
   assert.equal(tunnelPolicy.localPort, 17443)
 })
+
+test("monitoring config is normalized and preserved in normalized deployment config", () => {
+  const normalized = normalizeDeploymentProfileInput({
+    deploymentProfile: "local_starship_build",
+    config: {
+      monitoring: {
+        grafanaUrl: " https://grafana.ship.local ",
+        prometheusUrl: "invalid-url",
+        kubeviewUrl: "https://kubeview.ship.local",
+      },
+    },
+  })
+
+  const monitoring = normalized.config.monitoring as Record<string, unknown>
+  assert.equal(monitoring.grafanaUrl, "https://grafana.ship.local/")
+  assert.equal(monitoring.prometheusUrl, null)
+  assert.equal(monitoring.kubeviewUrl, "https://kubeview.ship.local/")
+})

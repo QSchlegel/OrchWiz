@@ -14,6 +14,7 @@ export type RealtimeEventType =
   | "bridge.agent-chat.updated"
   | "bridge.comms.updated"
   | "bridge-call.round.updated"
+  | "runtime.node.metrics.updated"
   | "agentsync.updated"
   | "notification.updated"
 

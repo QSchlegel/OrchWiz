@@ -12,6 +12,7 @@ import {
   resolveRagBackend,
 } from "@/lib/memory/rag-backend"
 import { recordRagPerformanceSample } from "@/lib/performance/tracker"
+import { buildShipNotFoundErrorPayload } from "@/lib/ships/errors"
 import {
   parseKnowledgeBackend,
   parseKnowledgeQueryMode,
@@ -66,7 +67,7 @@ export async function POST(
     shipDeploymentId = id
     const owned = await ensureOwnedShip(session.user.id, id)
     if (!owned) {
-      return NextResponse.json({ error: "Ship not found" }, { status: 404 })
+      return NextResponse.json(buildShipNotFoundErrorPayload(), { status: 404 })
     }
 
     const backendResolution = resolveRagBackend({

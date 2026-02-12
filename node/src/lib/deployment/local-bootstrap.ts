@@ -19,6 +19,9 @@ const BASE_REQUIRED_COMMANDS = ["terraform", "kubectl", "ansible-playbook"] as c
 const MAX_OUTPUT_CHARS = 8000
 const CONTEXT_CHECK_TIMEOUT_MS = 60_000
 const DEFAULT_LOCAL_INFRA_TIMEOUT_MS = 600_000
+const DEFAULT_LOCAL_SHIPYARD_APP_IMAGE = "orchwiz:local-dev"
+const DEFAULT_LOCAL_SHIPYARD_DOCKERFILE = "node/Dockerfile.shipyard"
+const DEFAULT_LOCAL_SHIPYARD_DOCKER_CONTEXT = "node"
 
 interface InstallPackageNames {
   brew: string
@@ -129,7 +132,33 @@ type OpenClawContextInjectionResult =
   | { ok: true; summary: OpenClawContextInjectionSummary }
   | LocalBootstrapFailure
 
-const DEFAULT_OPENCLAW_TARGET_DEPLOYMENTS = ["openclaw-gateway", "openclaw-worker"] as const
+interface TerraformOutputEntry {
+  value?: unknown
+}
+
+interface TerraformOutputShape {
+  kubeview_enabled?: TerraformOutputEntry
+  kubeview_ingress_enabled?: TerraformOutputEntry
+  kubeview_url?: TerraformOutputEntry
+}
+
+interface KubeviewBootstrapMetadata {
+  enabled: boolean
+  ingressEnabled: boolean
+  url: string | null
+  source: "terraform_output" | "fallback"
+}
+
+const DEFAULT_OPENCLAW_TARGET_DEPLOYMENTS = [
+  "openclaw-xo",
+  "openclaw-ops",
+  "openclaw-eng",
+  "openclaw-sec",
+  "openclaw-med",
+  "openclaw-cou",
+  "openclaw-gateway",
+  "openclaw-worker",
+] as const
 const OPENCLAW_CONTEXT_ENV_KEY = "ORCHWIZ_BRIDGE_CONTEXT_B64"
 const OPENCLAW_CONTEXT_SCHEMA_ENV_KEY = "ORCHWIZ_BRIDGE_CONTEXT_SCHEMA"
 const OPENCLAW_CONTEXT_SOURCE_ENV_KEY = "ORCHWIZ_BRIDGE_CONTEXT_SOURCE"
@@ -144,12 +173,113 @@ function parseTimeoutMs(value: string | undefined, defaultTimeoutMs: number): nu
   return parsed
 }
 
+function parseBooleanEnv(value: string | undefined, fallback: boolean): boolean {
+  if (value === undefined) {
+    return fallback
+  }
+
+  const normalized = value.trim().toLowerCase()
+  if (normalized === "true") {
+    return true
+  }
+  if (normalized === "false") {
+    return false
+  }
+
+  return fallback
+}
+
+function resolvePathFromRepoRoot(repoRoot: string, value: string): string {
+  const trimmed = value.trim()
+  if (!trimmed) {
+    return repoRoot
+  }
+
+  if (trimmed.startsWith("/") || WINDOWS_ABSOLUTE_PATH_REGEX.test(trimmed)) {
+    return resolve(trimmed)
+  }
+
+  return resolve(repoRoot, trimmed)
+}
+
 function outputTail(result: { stdout?: string; stderr?: string }): string {
   const combined = [result.stdout || "", result.stderr || ""].filter(Boolean).join("\n").trim()
   if (combined.length <= MAX_OUTPUT_CHARS) {
     return combined
   }
   return combined.slice(-MAX_OUTPUT_CHARS)
+}
+
+function asBoolean(value: unknown): boolean | null {
+  if (typeof value !== "boolean") {
+    return null
+  }
+  return value
+}
+
+function asNonEmptyString(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null
+  }
+
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : null
+}
+
+function fallbackLocalKubeviewMetadata(): KubeviewBootstrapMetadata {
+  return {
+    enabled: true,
+    ingressEnabled: false,
+    url: null,
+    source: "fallback",
+  }
+}
+
+async function resolveLocalKubeviewMetadata(args: {
+  runtime: LocalBootstrapRuntime
+  terraformEnvDirAbsolute: string
+  timeoutMs: number
+}): Promise<KubeviewBootstrapMetadata> {
+  const fallback = fallbackLocalKubeviewMetadata()
+  const outputResult = await args.runtime.runCommand(
+    "terraform",
+    ["-chdir", args.terraformEnvDirAbsolute, "output", "-json"],
+    {
+      timeoutMs: args.timeoutMs,
+    },
+  )
+
+  if (!outputResult.ok) {
+    return fallback
+  }
+
+  let parsedOutput: TerraformOutputShape = {}
+  try {
+    parsedOutput = JSON.parse(outputResult.stdout) as TerraformOutputShape
+  } catch {
+    return fallback
+  }
+
+  const hasKubeviewOutputs = (
+    parsedOutput.kubeview_enabled !== undefined
+    || parsedOutput.kubeview_ingress_enabled !== undefined
+    || parsedOutput.kubeview_url !== undefined
+  )
+  if (!hasKubeviewOutputs) {
+    return fallback
+  }
+
+  const enabled = asBoolean(parsedOutput.kubeview_enabled?.value) ?? fallback.enabled
+  const ingressEnabled = asBoolean(parsedOutput.kubeview_ingress_enabled?.value) ?? fallback.ingressEnabled
+  const outputUrl = asNonEmptyString(parsedOutput.kubeview_url?.value)
+  const url = ingressEnabled ? outputUrl : null
+
+  return {
+    enabled,
+    ingressEnabled,
+    url,
+    source: "terraform_output",
+  }
 }
 
 function sanitizeWorkspaceRelativePath(pathValue: string): string {
@@ -820,6 +950,226 @@ async function injectOpenClawContextBundle(
   }
 }
 
+function localShipyardAutoBuildEnabled(input: LocalBootstrapInput, runtime: LocalBootstrapRuntime): boolean {
+  if (input.infrastructure.kind !== "kind") {
+    return false
+  }
+
+  if (!input.saneBootstrap) {
+    return false
+  }
+
+  return parseBooleanEnv(runtime.env.LOCAL_SHIPYARD_AUTO_BUILD_APP_IMAGE, true)
+}
+
+function localShipyardForceRebuildEnabled(runtime: LocalBootstrapRuntime): boolean {
+  return parseBooleanEnv(runtime.env.LOCAL_SHIPYARD_FORCE_REBUILD_APP_IMAGE, false)
+}
+
+function kindClusterNameFromContext(kubeContext: string): string {
+  const trimmed = kubeContext.trim()
+  if (trimmed.startsWith("kind-") && trimmed.length > "kind-".length) {
+    return trimmed.slice("kind-".length)
+  }
+  return trimmed || "orchwiz"
+}
+
+async function prepareLocalKindAppImage(args: {
+  input: LocalBootstrapInput
+  paths: ResolvedInfrastructurePaths
+  runtime: LocalBootstrapRuntime
+  timeoutMs: number
+}): Promise<{ ok: true; image: string; metadata: Record<string, unknown> } | LocalBootstrapFailure> {
+  const imageTag = args.runtime.env.LOCAL_SHIPYARD_APP_IMAGE?.trim() || DEFAULT_LOCAL_SHIPYARD_APP_IMAGE
+  const dockerfilePath = resolvePathFromRepoRoot(
+    args.paths.repoRoot,
+    args.runtime.env.LOCAL_SHIPYARD_DOCKERFILE || DEFAULT_LOCAL_SHIPYARD_DOCKERFILE,
+  )
+  const dockerContextPath = resolvePathFromRepoRoot(
+    args.paths.repoRoot,
+    args.runtime.env.LOCAL_SHIPYARD_DOCKER_CONTEXT || DEFAULT_LOCAL_SHIPYARD_DOCKER_CONTEXT,
+  )
+
+  if (!args.runtime.commandExists("docker")) {
+    return toFailure(
+      "LOCAL_BOOTSTRAP_TOOLS_MISSING",
+      "Docker CLI is required to build the local Ship Yard app image.",
+      {
+        details: {
+          missingCommands: ["docker"],
+          suggestedCommands: ["Install 'docker' and retry launch."],
+        },
+      },
+    )
+  }
+
+  if (!args.runtime.fileExists(dockerfilePath) || !args.runtime.isDirectory(dockerContextPath)) {
+    return toFailure(
+      "LOCAL_BOOTSTRAP_CONFIG_MISSING",
+      "Local Ship Yard docker build configuration is missing.",
+      {
+        details: {
+          missingFiles: [
+            ...(args.runtime.fileExists(dockerfilePath) ? [] : [dockerfilePath]),
+            ...(args.runtime.isDirectory(dockerContextPath) ? [] : [dockerContextPath]),
+          ],
+          suggestedCommands: [
+            "Ensure node/Dockerfile.shipyard exists and LOCAL_SHIPYARD_DOCKER_CONTEXT points to a valid directory.",
+          ],
+        },
+      },
+    )
+  }
+
+  const forceRebuild = localShipyardForceRebuildEnabled(args.runtime)
+  let buildPerformed = false
+
+  if (forceRebuild) {
+    const buildResult = await args.runtime.runCommand(
+      "docker",
+      ["build", "-f", dockerfilePath, "-t", imageTag, dockerContextPath],
+      {
+        cwd: args.paths.repoRoot,
+        timeoutMs: args.timeoutMs,
+      },
+    )
+
+    if (!buildResult.ok) {
+      return toFailure(
+        "LOCAL_PROVISIONING_FAILED",
+        "Failed to build local app image for kind launch.",
+        {
+          details: {
+            suggestedCommands: [
+              `docker build -f ${dockerfilePath} -t ${imageTag} ${dockerContextPath}`,
+            ],
+          },
+          metadata: {
+            appImageBuildOutputTail: outputTail(buildResult),
+          },
+        },
+      )
+    }
+
+    buildPerformed = true
+  } else {
+    const inspectResult = await args.runtime.runCommand("docker", ["image", "inspect", imageTag], {
+      timeoutMs: CONTEXT_CHECK_TIMEOUT_MS,
+    })
+    if (!inspectResult.ok) {
+      const buildResult = await args.runtime.runCommand(
+        "docker",
+        ["build", "-f", dockerfilePath, "-t", imageTag, dockerContextPath],
+        {
+          cwd: args.paths.repoRoot,
+          timeoutMs: args.timeoutMs,
+        },
+      )
+      if (!buildResult.ok) {
+        return toFailure(
+          "LOCAL_PROVISIONING_FAILED",
+          "Failed to build local app image for kind launch.",
+          {
+            details: {
+              suggestedCommands: [
+                `docker build -f ${dockerfilePath} -t ${imageTag} ${dockerContextPath}`,
+              ],
+            },
+            metadata: {
+              appImageBuildOutputTail: outputTail(buildResult),
+            },
+          },
+        )
+      }
+      buildPerformed = true
+    }
+  }
+
+  const clusterName = args.runtime.env.LOCAL_SHIPYARD_KIND_CLUSTER_NAME?.trim()
+    || kindClusterNameFromContext(args.input.infrastructure.kubeContext)
+
+  const loadResult = await args.runtime.runCommand(
+    "kind",
+    ["load", "docker-image", imageTag, "--name", clusterName],
+    {
+      timeoutMs: args.timeoutMs,
+    },
+  )
+
+  if (!loadResult.ok) {
+    return toFailure(
+      "LOCAL_PROVISIONING_FAILED",
+      "Failed to load local app image into kind cluster.",
+      {
+        details: {
+          suggestedCommands: [
+            `kind load docker-image ${imageTag} --name ${clusterName}`,
+          ],
+        },
+        metadata: {
+          appImageLoadOutputTail: outputTail(loadResult),
+        },
+      },
+    )
+  }
+
+  return {
+    ok: true,
+    image: imageTag,
+    metadata: {
+      imageTag,
+      dockerfilePath,
+      dockerContextPath,
+      clusterName,
+      buildPerformed,
+      forceRebuild,
+    },
+  }
+}
+
+function derivedProvisioningSuggestions(args: {
+  baseCommand: string
+  infrastructure: InfrastructureConfig
+  output: string
+}): string[] {
+  const suggestions = [args.baseCommand]
+  const lower = args.output.toLowerCase()
+
+  if (
+    lower.includes("connect: connection refused")
+    && args.infrastructure.kind === "kind"
+    && args.infrastructure.kubeContext === "kind-orchwiz"
+  ) {
+    suggestions.unshift("kind create cluster --name orchwiz")
+    suggestions.unshift("kubectl config use-context kind-orchwiz")
+  }
+
+  if (lower.includes("bitnami/postgresql") && lower.includes("not found")) {
+    suggestions.unshift(
+      "terraform -chdir=infra/terraform/environments/starship-local init -upgrade -backend=false",
+    )
+    suggestions.unshift(
+      "Update infra/terraform/modules/starship-minikube/variables.tf postgres_chart_version to a current release.",
+    )
+  }
+
+  if (lower.includes("could not download chart") && lower.includes("invalid_reference: invalid tag")) {
+    suggestions.unshift(
+      "Set PostgreSQL Helm repository to OCI: repository = \"oci://registry-1.docker.io/bitnamicharts\" in infra/terraform/modules/starship-minikube/main.tf.",
+    )
+    suggestions.unshift(
+      "terraform -chdir=infra/terraform/environments/starship-local init -upgrade -backend=false",
+    )
+  }
+
+  if (lower.includes("imagepullbackoff") || lower.includes("errimagepull")) {
+    suggestions.unshift("kubectl --context kind-orchwiz -n orchwiz-starship get pods")
+    suggestions.unshift("kubectl --context kind-orchwiz -n orchwiz-starship describe pod <pod-name>")
+  }
+
+  return suggestions
+}
+
 export function requiredCommandsForInfrastructureKind(kind: InfrastructureConfig["kind"]): string[] {
   return requiredCommandsForKind(kind)
 }
@@ -980,6 +1330,25 @@ export async function runLocalBootstrap(
   }
 
   const timeoutMs = parseTimeoutMs(runtime.env.LOCAL_INFRA_COMMAND_TIMEOUT_MS, DEFAULT_LOCAL_INFRA_TIMEOUT_MS)
+  if (localShipyardAutoBuildEnabled(input, runtime)) {
+    const imagePreparation = await prepareLocalKindAppImage({
+      input,
+      paths,
+      runtime,
+      timeoutMs,
+    })
+    if (!imagePreparation.ok) {
+      return {
+        ...imagePreparation,
+        metadata: {
+          ...(imagePreparation.metadata || {}),
+          ...installMetadata,
+        },
+      }
+    }
+    installMetadata.localAppImage = imagePreparation.metadata
+  }
+
   const provisionEnv: NodeJS.ProcessEnv = {
     ...runtime.env,
     TF_DIR: paths.terraformEnvDirAbsolute,
@@ -987,6 +1356,11 @@ export async function runLocalBootstrap(
     KUBE_CONTEXT: input.infrastructure.kubeContext,
     ORCHWIZ_NAMESPACE: input.infrastructure.namespace,
     ORCHWIZ_APP_NAME: runtime.env.ORCHWIZ_APP_NAME || "orchwiz",
+    ...(installMetadata.localAppImage
+      ? {
+          TF_VAR_app_image: (installMetadata.localAppImage as { imageTag?: string }).imageTag || "",
+        }
+      : {}),
   }
 
   const provisionCommand = [
@@ -1007,18 +1381,22 @@ export async function runLocalBootstrap(
   )
 
   if (!provisionResult.ok) {
+    const provisionOutput = outputTail(provisionResult)
+    const baseCommand = `TF_DIR=${paths.terraformEnvDirAbsolute} INFRASTRUCTURE_KIND=${input.infrastructure.kind} KUBE_CONTEXT=${input.infrastructure.kubeContext} ORCHWIZ_NAMESPACE=${input.infrastructure.namespace} ORCHWIZ_APP_NAME=${runtime.env.ORCHWIZ_APP_NAME || "orchwiz"}${provisionEnv.TF_VAR_app_image ? ` TF_VAR_app_image=${provisionEnv.TF_VAR_app_image}` : ""} ansible-playbook -i ${paths.ansibleInventoryAbsolute} ${paths.ansiblePlaybookAbsolute}`
     return toFailure(
       "LOCAL_PROVISIONING_FAILED",
       "Local provisioning failed while running ansible playbook.",
       {
         details: {
-          suggestedCommands: [
-            `TF_DIR=${paths.terraformEnvDirAbsolute} INFRASTRUCTURE_KIND=${input.infrastructure.kind} KUBE_CONTEXT=${input.infrastructure.kubeContext} ORCHWIZ_NAMESPACE=${input.infrastructure.namespace} ORCHWIZ_APP_NAME=${runtime.env.ORCHWIZ_APP_NAME || "orchwiz"} ansible-playbook -i ${paths.ansibleInventoryAbsolute} ${paths.ansiblePlaybookAbsolute}`,
-          ],
+          suggestedCommands: derivedProvisioningSuggestions({
+            baseCommand,
+            infrastructure: input.infrastructure,
+            output: provisionOutput,
+          }),
         },
         metadata: {
           ...installMetadata,
-          provisionOutputTail: outputTail(provisionResult),
+          provisionOutputTail: provisionOutput,
           provisionCommand: provisionCommand.join(" "),
           provisionTimeoutMs: timeoutMs,
         },
@@ -1030,6 +1408,12 @@ export async function runLocalBootstrap(
   if (!openClawContextInjection.ok) {
     return openClawContextInjection
   }
+
+  const kubeview = await resolveLocalKubeviewMetadata({
+    runtime,
+    terraformEnvDirAbsolute: paths.terraformEnvDirAbsolute,
+    timeoutMs,
+  })
 
   return {
     ok: true,
@@ -1046,6 +1430,7 @@ export async function runLocalBootstrap(
       },
       provisionOutputTail: outputTail(provisionResult),
       openClawContextInjection: openClawContextInjection.summary,
+      kubeview,
     },
   }
 }

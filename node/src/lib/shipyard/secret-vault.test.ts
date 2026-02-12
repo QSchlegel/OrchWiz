@@ -63,6 +63,34 @@ test("validateShipyardSecretTemplateValues rejects invalid field types and profi
   )
 })
 
+test("validateShipyardSecretTemplateValues allows n8n fields for both deployment profiles", () => {
+  const local = validateShipyardSecretTemplateValues({
+    deploymentProfile: "local_starship_build",
+    values: {
+      n8n_database_url: "postgresql://n8n:secret@localhost:5432/n8n?schema=public",
+      n8n_basic_auth_user: "captain",
+      n8n_basic_auth_password: "secret-pass",
+      n8n_encryption_key: "12345678901234567890123456789012",
+      n8n_public_base_url: "https://n8n.local",
+    },
+  })
+  assert.equal(local.n8n_basic_auth_user, "captain")
+  assert.equal(local.n8n_public_base_url, "https://n8n.local")
+
+  const cloud = validateShipyardSecretTemplateValues({
+    deploymentProfile: "cloud_shipyard",
+    values: {
+      n8n_database_url: "postgresql://n8n:secret@cloud-db:5432/n8n?schema=public",
+      n8n_basic_auth_user: "ops",
+      n8n_basic_auth_password: "secret-pass-2",
+      n8n_encryption_key: "abcdefghijklmnopqrstuvxyz012345",
+      n8n_public_base_url: "https://n8n.example.com",
+    },
+  })
+  assert.equal(cloud.n8n_basic_auth_user, "ops")
+  assert.equal(cloud.n8n_public_base_url, "https://n8n.example.com")
+})
+
 test("storeShipyardSecretTemplateEnvelope falls back to plaintext envelope when encryption is optional", async () => {
   await withEnv(
     {
@@ -230,15 +258,23 @@ test("buildShipyardSetupSnippets produces profile-specific tfvars and determinis
       github_client_secret: "local-gh-secret",
       openai_api_key: "local-openai",
       openclaw_api_key: "local-openclaw",
+      n8n_database_url: "postgresql://n8n:secret@localhost:5432/n8n?schema=public",
+      n8n_basic_auth_user: "captain",
+      n8n_basic_auth_password: "secret-pass",
+      n8n_encryption_key: "12345678901234567890123456789012",
+      n8n_public_base_url: "https://n8n.local",
       postgres_password: "local-postgres",
     },
   })
 
   assert.match(localSnippets.envSnippet, /BETTER_AUTH_SECRET=/)
   assert.match(localSnippets.envSnippet, /OPENAI_API_KEY=/)
-  assert.doesNotMatch(localSnippets.envSnippet, /DATABASE_URL=/)
+  assert.match(localSnippets.envSnippet, /N8N_DATABASE_URL=/)
+  assert.match(localSnippets.envSnippet, /N8N_BASIC_AUTH_USER=/)
+  assert.doesNotMatch(localSnippets.envSnippet, /(^|\n)DATABASE_URL=/)
   assert.match(localSnippets.terraformTfvarsSnippet, /postgres_password =/)
   assert.doesNotMatch(localSnippets.terraformTfvarsSnippet, /database_url =/)
+  assert.doesNotMatch(localSnippets.terraformTfvarsSnippet, /N8N_DATABASE_URL/)
   assert.match(localSnippets.terraformTfvarsSnippet, /app_env = \{/)
 
   const cloudSnippets = buildShipyardSetupSnippets({
@@ -249,11 +285,17 @@ test("buildShipyardSetupSnippets produces profile-specific tfvars and determinis
       github_client_secret: "cloud-gh-secret",
       openai_api_key: "cloud-openai",
       openclaw_api_key: "cloud-openclaw",
+      n8n_database_url: "postgresql://n8n:secret@cloud-db:5432/n8n?schema=public",
+      n8n_basic_auth_user: "ops",
+      n8n_basic_auth_password: "secret-pass-2",
+      n8n_encryption_key: "abcdefghijklmnopqrstuvxyz012345",
+      n8n_public_base_url: "https://n8n.example.com",
       database_url: "postgresql://cloud-db",
     },
   })
 
   assert.match(cloudSnippets.envSnippet, /DATABASE_URL=/)
+  assert.match(cloudSnippets.envSnippet, /N8N_PUBLIC_BASE_URL=/)
   assert.match(cloudSnippets.terraformTfvarsSnippet, /database_url =/)
   assert.doesNotMatch(cloudSnippets.terraformTfvarsSnippet, /postgres_password =/)
 })

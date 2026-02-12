@@ -5,6 +5,11 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } fro
 import { useSession } from "@/lib/auth-client"
 import { useEventStream } from "@/lib/realtime/useEventStream"
 import type { BridgeStationKey } from "@/lib/bridge/stations"
+import {
+  BRIDGE_DISPATCH_DEFAULT_RUNTIME,
+  listBridgeDispatchRuntimeDescriptors,
+  type BridgeDispatchRuntimeId,
+} from "@/lib/bridge/connections/dispatch-runtime"
 import { BridgeDeckScene3D } from "@/components/bridge/BridgeDeckScene3D"
 import { useShipSelection } from "@/lib/shipyard/useShipSelection"
 import {
@@ -12,6 +17,7 @@ import {
   Bot,
   CheckCircle2,
   ChevronDown,
+  ExternalLink,
   Loader2,
   Maximize2,
   MessageSquare,
@@ -20,6 +26,7 @@ import {
   Signal,
   Sparkles,
   Users,
+  X,
 } from "lucide-react"
 
 interface BridgeStation {
@@ -48,6 +55,46 @@ interface SystemStatus {
   label: string
   state: "nominal" | "warning" | "critical"
   detail: string
+  href?: string | null
+  source?: "core" | "ship-monitoring" | "forwarded"
+  service?: "grafana" | "prometheus"
+  observedAt?: string | null
+}
+
+interface MonitoringStatus {
+  label: string
+  service: "grafana" | "prometheus" | "kubeview"
+  state: "nominal" | "warning" | "critical"
+  detail: string
+  href: string | null
+  source: "ship-monitoring" | "forwarded"
+  observedAt: string | null
+}
+
+interface MonitoringSnapshot {
+  grafana: MonitoringStatus
+  prometheus: MonitoringStatus
+  kubeview: MonitoringStatus
+}
+
+interface MonitoringFrameView {
+  title: string
+  href: string
+}
+
+interface RuntimeUiCard {
+  label: string
+  href: string | null
+  source: string
+  instances: RuntimeUiInstanceCard[]
+}
+
+interface RuntimeUiInstanceCard {
+  stationKey: BridgeStationKey
+  callsign: string
+  label: string
+  href: string | null
+  source: string
 }
 
 interface ShipSelectorItem {
@@ -183,6 +230,58 @@ function normalizeSystemState(value: unknown): SystemStatus["state"] {
   return "warning"
 }
 
+function asMonitoringService(value: unknown): SystemStatus["service"] | undefined {
+  if (value === "grafana" || value === "prometheus") {
+    return value
+  }
+  return undefined
+}
+
+function asSystemSource(value: unknown): SystemStatus["source"] | undefined {
+  if (value === "core" || value === "ship-monitoring" || value === "forwarded") {
+    return value
+  }
+  return undefined
+}
+
+function asMonitoringSource(value: unknown): MonitoringStatus["source"] {
+  return value === "forwarded" ? "forwarded" : "ship-monitoring"
+}
+
+function parseMonitoringStatus(
+  value: unknown,
+  service: MonitoringStatus["service"],
+): MonitoringStatus {
+  const payload = asRecord(value)
+  const fallbackLabel =
+    service === "grafana" ? "Grafana" : service === "prometheus" ? "Prometheus" : "KubeView"
+  const fallbackDetail =
+    service === "grafana"
+      ? "Grafana telemetry unresolved. Configure monitoring URL in Ship Yard."
+      : service === "prometheus"
+        ? "Prometheus telemetry unresolved. Configure monitoring URL in Ship Yard."
+        : "KubeView link unresolved. Configure monitoring URL in Ship Yard."
+
+  return {
+    label:
+      typeof payload.label === "string" && payload.label.trim().length > 0
+        ? payload.label
+        : fallbackLabel,
+    service,
+    state: normalizeSystemState(payload.state),
+    detail:
+      typeof payload.detail === "string" && payload.detail.trim().length > 0
+        ? payload.detail
+        : fallbackDetail,
+    href: typeof payload.href === "string" && payload.href.trim().length > 0 ? payload.href : null,
+    source: asMonitoringSource(payload.source),
+    observedAt:
+      typeof payload.observedAt === "string" && payload.observedAt.trim().length > 0
+        ? payload.observedAt
+        : null,
+  }
+}
+
 function compactTelemetryText(value: string, maxLength = 160) {
   const compact = value.replace(/\s+/g, " ").trim()
   if (compact.length <= maxLength) {
@@ -199,6 +298,14 @@ export default function BridgePage() {
   const [stations, setStations] = useState<BridgeStation[]>([])
   const [workItems, setWorkItems] = useState<WorkItem[]>([])
   const [systems, setSystems] = useState<SystemStatus[]>([])
+  const [monitoring, setMonitoring] = useState<MonitoringSnapshot | null>(null)
+  const [monitoringFrame, setMonitoringFrame] = useState<MonitoringFrameView | null>(null)
+  const [openClawRuntimeUi, setOpenClawRuntimeUi] = useState<RuntimeUiCard>({
+    label: "OpenClaw Runtime UI",
+    href: null,
+    source: "unconfigured",
+    instances: [],
+  })
   const [availableShips, setAvailableShips] = useState<ShipSelectorItem[]>([])
 
   const [selectedStationKey, setSelectedStationKey] = useState<BridgeStationKey | null>(null)
@@ -214,6 +321,10 @@ export default function BridgePage() {
   const [error, setError] = useState<string | null>(null)
   const [lastBridgeEventAt, setLastBridgeEventAt] = useState<number | null>(null)
   const [patchComposer, setPatchComposer] = useState("")
+  const [selectedRuntimeId, setSelectedRuntimeId] = useState<BridgeDispatchRuntimeId>(
+    BRIDGE_DISPATCH_DEFAULT_RUNTIME,
+  )
+  const [showRuntimeIframe, setShowRuntimeIframe] = useState(false)
   const [connectionOptions, setConnectionOptions] = useState<BridgeConnectionOption[]>([])
   const [selectedConnectionIds, setSelectedConnectionIds] = useState<string[]>([])
 
@@ -224,6 +335,14 @@ export default function BridgePage() {
 
   const stardate = formatStardate(new Date())
   const operatorLabel = session?.user?.email || "Operator"
+  const runtimeDescriptors = useMemo(() => listBridgeDispatchRuntimeDescriptors(), [])
+  const selectedRuntimeDescriptor = useMemo(
+    () =>
+      runtimeDescriptors.find((runtime) => runtime.id === selectedRuntimeId)
+      || runtimeDescriptors[0]
+      || null,
+    [runtimeDescriptors, selectedRuntimeId],
+  )
 
   const selectedStation = useMemo(() => {
     if (!selectedStationKey) {
@@ -232,6 +351,23 @@ export default function BridgePage() {
 
     return stations.find((station) => station.stationKey === selectedStationKey) || stations[0] || null
   }, [selectedStationKey, stations])
+
+  const selectedOpenClawRuntimeInstance = useMemo(() => {
+    if (openClawRuntimeUi.instances.length === 0) {
+      return null
+    }
+
+    if (selectedStation?.stationKey) {
+      const matched = openClawRuntimeUi.instances.find(
+        (instance) => instance.stationKey === selectedStation.stationKey,
+      )
+      if (matched) {
+        return matched
+      }
+    }
+
+    return openClawRuntimeUi.instances[0]
+  }, [openClawRuntimeUi.instances, selectedStation?.stationKey])
 
   const selectedShip = useMemo(() => {
     if (!selectedShipDeploymentId) {
@@ -356,12 +492,104 @@ export default function BridgePage() {
         : []
 
       const nextSystems: SystemStatus[] = Array.isArray(payload?.systems)
-        ? payload.systems.map((system: Record<string, unknown>) => ({
-            label: typeof system.label === "string" ? system.label : "Subsystem",
-            state: normalizeSystemState(system.state),
-            detail: typeof system.detail === "string" ? system.detail : "No detail",
-          }))
+        ? payload.systems.map((system: Record<string, unknown>) => {
+            const href =
+              typeof system.href === "string" && system.href.trim().length > 0
+                ? system.href
+                : null
+
+            return {
+              label: typeof system.label === "string" ? system.label : "Subsystem",
+              state: normalizeSystemState(system.state),
+              detail: typeof system.detail === "string" ? system.detail : "No detail",
+              href,
+              source: asSystemSource(system.source),
+              service: asMonitoringService(system.service),
+              observedAt:
+                typeof system.observedAt === "string" && system.observedAt.trim().length > 0
+                  ? system.observedAt
+                  : null,
+            }
+          })
         : []
+
+      const monitoringByService = nextSystems.reduce<Partial<Record<MonitoringStatus["service"], SystemStatus>>>(
+        (acc, system) => {
+          if (!system.service) {
+            return acc
+          }
+          if (!acc[system.service]) {
+            acc[system.service] = system
+          }
+          return acc
+        },
+        {},
+      )
+
+      const monitoringPayload = asRecord(payload?.monitoring)
+      const nextMonitoring: MonitoringSnapshot = {
+        grafana: parseMonitoringStatus(
+          monitoringPayload.grafana ?? monitoringByService.grafana ?? {},
+          "grafana",
+        ),
+        prometheus: parseMonitoringStatus(
+          monitoringPayload.prometheus ?? monitoringByService.prometheus ?? {},
+          "prometheus",
+        ),
+        kubeview: parseMonitoringStatus(
+          monitoringPayload.kubeview ?? {},
+          "kubeview",
+        ),
+      }
+
+      const runtimeUiPayload = asRecord(payload?.runtimeUi)
+      const runtimeUiOpenClawPayload = asRecord(runtimeUiPayload.openclaw)
+      const runtimeUiOpenClawInstances = Array.isArray(runtimeUiOpenClawPayload.instances)
+        ? runtimeUiOpenClawPayload.instances
+            .map((entry): RuntimeUiInstanceCard | null => {
+              const record = asRecord(entry)
+              const stationKey = asStationKey(record.stationKey)
+              if (!stationKey) {
+                return null
+              }
+
+              return {
+                stationKey,
+                callsign:
+                  typeof record.callsign === "string" && record.callsign.trim().length > 0
+                    ? record.callsign
+                    : stationKey.toUpperCase(),
+                label:
+                  typeof record.label === "string" && record.label.trim().length > 0
+                    ? record.label
+                    : `${stationKey.toUpperCase()} OpenClaw UI`,
+                href:
+                  typeof record.href === "string" && record.href.trim().length > 0
+                    ? record.href
+                    : null,
+                source:
+                  typeof record.source === "string" && record.source.trim().length > 0
+                    ? record.source
+                    : "unconfigured",
+              }
+            })
+            .filter((entry: RuntimeUiInstanceCard | null): entry is RuntimeUiInstanceCard => entry !== null)
+        : []
+      const nextOpenClawRuntimeUi: RuntimeUiCard = {
+        label:
+          typeof runtimeUiOpenClawPayload.label === "string" && runtimeUiOpenClawPayload.label.trim().length > 0
+            ? runtimeUiOpenClawPayload.label
+            : "OpenClaw Runtime UI",
+        href:
+          typeof runtimeUiOpenClawPayload.href === "string" && runtimeUiOpenClawPayload.href.trim().length > 0
+            ? runtimeUiOpenClawPayload.href
+            : null,
+        source:
+          typeof runtimeUiOpenClawPayload.source === "string" && runtimeUiOpenClawPayload.source.trim().length > 0
+            ? runtimeUiOpenClawPayload.source
+            : "unconfigured",
+        instances: runtimeUiOpenClawInstances,
+      }
 
       const nextShips: ShipSelectorItem[] = Array.isArray(payload?.availableShips)
         ? payload.availableShips
@@ -404,6 +632,8 @@ export default function BridgePage() {
       setStations(nextStations)
       setWorkItems(nextWorkItems)
       setSystems(nextSystems)
+      setMonitoring(nextMonitoring)
+      setOpenClawRuntimeUi(nextOpenClawRuntimeUi)
       setAvailableShips(nextShips)
       setSelectedStationKey((current) => {
         if (current && nextStations.some((station) => station.stationKey === current)) {
@@ -732,6 +962,16 @@ export default function BridgePage() {
           body: JSON.stringify({
             deploymentId: selectedShipDeploymentId,
             message: patchComposer.trim(),
+            runtime: selectedRuntimeId,
+            bridgeContext: {
+              stationKey: selectedStation?.stationKey,
+              callsign: selectedStation?.callsign,
+              ...(selectedStation?.bridgeCrewId
+                ? {
+                    bridgeCrewId: selectedStation.bridgeCrewId,
+                  }
+                : {}),
+            },
             ...(selectedConnectionIds.length > 0 ? { connectionIds: selectedConnectionIds } : {}),
           }),
         })
@@ -755,8 +995,12 @@ export default function BridgePage() {
       isPatchingThrough,
       loadBridgeConnections,
       patchComposer,
+      selectedRuntimeId,
       selectedConnectionIds,
       selectedShipDeploymentId,
+      selectedStation?.bridgeCrewId,
+      selectedStation?.callsign,
+      selectedStation?.stationKey,
     ],
   )
 
@@ -850,6 +1094,10 @@ export default function BridgePage() {
     setSelectedSessionId(ref.id)
     void hydrateSessionThread(ref.id)
   }, [hydrateSessionThread, selectedStation?.stationKey, sessionsByStation])
+
+  useEffect(() => {
+    setShowRuntimeIframe(false)
+  }, [selectedStation?.stationKey, selectedShipDeploymentId])
 
   useEventStream({
     enabled: Boolean(session),
@@ -950,6 +1198,53 @@ export default function BridgePage() {
               Voice Utility
             </Link>
 
+            {(["grafana", "prometheus", "kubeview"] as const).map((service) => {
+              const status = monitoring?.[service] || null
+              const label =
+                service === "grafana"
+                  ? "Open Grafana"
+                  : service === "prometheus"
+                    ? "Open Prometheus"
+                    : "Open KubeView"
+              const configureLabel =
+                service === "grafana"
+                  ? "Configure Grafana"
+                  : service === "prometheus"
+                    ? "Configure Prometheus"
+                    : "Configure KubeView"
+              const shipYardHref = selectedShipDeploymentId
+                ? `/ship-yard?shipDeploymentId=${selectedShipDeploymentId}`
+                : "/ship-yard"
+              if (status?.href) {
+                return (
+                  <button
+                    type="button"
+                    key={service}
+                    onClick={() =>
+                      setMonitoringFrame({
+                        title: label,
+                        href: status.href as string,
+                      })
+                    }
+                    className="inline-flex items-center gap-2 rounded-lg border border-emerald-300/40 bg-emerald-500/12 px-3 py-2 text-sm text-emerald-700 transition hover:bg-emerald-500/22 dark:text-emerald-100"
+                  >
+                    {label}
+                  </button>
+                )
+              }
+
+              return (
+                <Link
+                  key={service}
+                  title={status?.detail || `${label} unavailable`}
+                  href={shipYardHref}
+                  className="inline-flex items-center gap-2 rounded-lg border border-amber-300/40 bg-amber-500/12 px-3 py-2 text-sm text-amber-700 dark:text-amber-100"
+                >
+                  {configureLabel}
+                </Link>
+              )
+            })}
+
             <button
               type="button"
               role="switch"
@@ -992,6 +1287,50 @@ export default function BridgePage() {
             )}
           </div>
         </section>
+
+        {monitoringFrame && (
+          <section className="bridge-cel-panel bridge-cel-outline rounded-2xl p-3">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <div>
+                <p className="text-[11px] uppercase tracking-[0.16em] text-cyan-700/80 dark:text-cyan-200/80">
+                  Embedded Monitoring
+                </p>
+                <h2 className="text-base font-semibold">{monitoringFrame.title}</h2>
+              </div>
+              <div className="flex items-center gap-2">
+                <a
+                  href={monitoringFrame.href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 rounded-md border border-slate-300/70 bg-white/70 px-2.5 py-1 text-xs text-slate-700 dark:border-white/15 dark:bg-slate-900/60 dark:text-slate-200"
+                >
+                  Open in new tab
+                  <ExternalLink className="h-3.5 w-3.5" />
+                </a>
+                <button
+                  type="button"
+                  onClick={() => setMonitoringFrame(null)}
+                  className="inline-flex items-center gap-1 rounded-md border border-slate-300/70 bg-white/70 px-2.5 py-1 text-xs text-slate-700 dark:border-white/15 dark:bg-slate-900/60 dark:text-slate-200"
+                >
+                  <X className="h-3.5 w-3.5" />
+                  Close
+                </button>
+              </div>
+            </div>
+            <div className="overflow-hidden rounded-xl border border-slate-300/70 bg-white dark:border-white/12 dark:bg-slate-900/70">
+              <iframe
+                key={monitoringFrame.href}
+                src={monitoringFrame.href}
+                title={`${monitoringFrame.title} embedded dashboard`}
+                className="h-[640px] w-full bg-white"
+              />
+            </div>
+            <p className="mt-2 text-xs text-slate-600 dark:text-slate-300">
+              If embedding is blocked by browser or dashboard security headers, use{" "}
+              <span className="font-medium">Open in new tab</span>.
+            </p>
+          </section>
+        )}
 
         {showThreeD && (
           <section
@@ -1161,6 +1500,73 @@ export default function BridgePage() {
               </div>
 
               <form onSubmit={handlePatchThrough} className="space-y-2">
+                <div className="space-y-2 rounded-xl border border-slate-300/70 bg-white/80 p-2 dark:border-white/12 dark:bg-slate-900/70">
+                  <p className="text-[11px] uppercase tracking-[0.14em] text-slate-600 dark:text-slate-300">
+                    Runtime Rail
+                  </p>
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    {runtimeDescriptors.map((runtime) => {
+                      const selected = runtime.id === selectedRuntimeId
+                      return (
+                        <button
+                          key={runtime.id}
+                          type="button"
+                          onClick={() => setSelectedRuntimeId(runtime.id)}
+                          className={`rounded-lg border px-3 py-2 text-left transition ${
+                            selected
+                              ? "border-emerald-300/45 bg-emerald-500/14"
+                              : "border-slate-300/70 bg-white/80 hover:border-cyan-300/35 dark:border-white/12 dark:bg-slate-900/65"
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-sm font-medium">{runtime.label}</span>
+                            <span className="text-[10px] uppercase tracking-[0.14em] text-slate-500 dark:text-slate-300">
+                              {runtime.status}
+                            </span>
+                          </div>
+                          <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">{runtime.description}</p>
+                        </button>
+                      )
+                    })}
+                  </div>
+                  {selectedRuntimeId === "openclaw" && (
+                    <div className="rounded-lg border border-slate-300/70 bg-white/80 px-3 py-2 dark:border-white/12 dark:bg-slate-900/70">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-xs text-slate-600 dark:text-slate-300">
+                          Patch through full OpenClaw UI for the selected station source agent.
+                        </p>
+                        <button
+                          type="button"
+                          disabled={!selectedOpenClawRuntimeInstance?.href}
+                          onClick={() => setShowRuntimeIframe((current) => !current)}
+                          className="inline-flex items-center gap-1 rounded-md border border-cyan-300/45 bg-cyan-500/12 px-2 py-1 text-xs text-cyan-700 transition hover:bg-cyan-500/22 disabled:opacity-50 dark:text-cyan-100"
+                        >
+                          {showRuntimeIframe ? "Hide iframe" : "Open full UI"}
+                        </button>
+                      </div>
+                      {!selectedOpenClawRuntimeInstance?.href && (
+                        <p className="mt-1 text-xs text-amber-700 dark:text-amber-200">
+                          Configure station-specific runtime URLs (`OPENCLAW_UI_URLS` or template envs) to enable iframe patch-through.
+                        </p>
+                      )}
+                      {selectedOpenClawRuntimeInstance && (
+                        <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-300">
+                          Active station: {selectedOpenClawRuntimeInstance.callsign} ({selectedOpenClawRuntimeInstance.stationKey.toUpperCase()})
+                        </p>
+                      )}
+                      {showRuntimeIframe && selectedOpenClawRuntimeInstance?.href && (
+                        <div className="mt-2 overflow-hidden rounded-lg border border-slate-300/70 bg-white dark:border-white/12 dark:bg-slate-900/70">
+                          <iframe
+                            src={selectedOpenClawRuntimeInstance.href}
+                            title={selectedOpenClawRuntimeInstance.label}
+                            className="h-[420px] w-full bg-white"
+                          />
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
                 <textarea
                   value={patchComposer}
                   onChange={(event) => setPatchComposer(event.target.value)}
@@ -1197,11 +1603,17 @@ export default function BridgePage() {
                   </div>
                 )}
                 <div className="flex items-center justify-between">
-                  <span className="text-xs text-slate-600 dark:text-slate-300">
-                    {selectedConnectionIds.length > 0
-                      ? `Targeting ${selectedConnectionIds.length} selected connector(s).`
-                      : "No connector selected: sends to all enabled connectors."}
-                  </span>
+                  <div className="space-y-0.5 text-xs text-slate-600 dark:text-slate-300">
+                    <p>
+                      Source agent = {selectedStation?.callsign || "none selected"} · Runtime ={" "}
+                      {selectedRuntimeDescriptor?.label || "OpenClaw Gateway"}
+                    </p>
+                    <p>
+                      {selectedConnectionIds.length > 0
+                        ? `Targeting ${selectedConnectionIds.length} selected connector(s).`
+                        : "No connector selected: sends to all enabled connectors."}
+                    </p>
+                  </div>
                   <button
                     type="submit"
                     disabled={!selectedShipDeploymentId || !patchComposer.trim() || isPatchingThrough}
@@ -1244,13 +1656,48 @@ export default function BridgePage() {
               <ChevronDown className="h-4 w-4 text-slate-500" />
             </summary>
             <div className="mt-3 space-y-2">
-              {systems.map((system) => (
-                <article key={system.label} className="rounded-lg border border-slate-400/30 bg-white/75 px-3 py-2 text-sm dark:bg-slate-900/65">
+              {systems.map((system, index) => (
+                <article key={`${system.label}-${index}`} className="rounded-lg border border-slate-400/30 bg-white/75 px-3 py-2 text-sm dark:bg-slate-900/65">
                   <div className="flex items-center justify-between gap-2">
                     <p className="font-medium">{system.label}</p>
-                    <span className="text-xs uppercase text-slate-600 dark:text-slate-300">{system.state}</span>
+                    <div className="flex items-center gap-2">
+                      {system.href && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setMonitoringFrame({
+                              title: system.label,
+                              href: system.href as string,
+                            })
+                          }
+                          className="inline-flex items-center gap-1 text-[11px] font-medium text-cyan-700 hover:text-cyan-600 dark:text-cyan-200"
+                        >
+                          Open dashboard
+                          <ExternalLink className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+                      {!system.href && system.service && (
+                        <Link
+                          href={
+                            selectedShipDeploymentId
+                              ? `/ship-yard?shipDeploymentId=${selectedShipDeploymentId}`
+                              : "/ship-yard"
+                          }
+                          className="inline-flex items-center gap-1 text-[11px] font-medium text-amber-700 hover:text-amber-600 dark:text-amber-200"
+                        >
+                          Configure URL
+                        </Link>
+                      )}
+                      <span className="text-xs uppercase text-slate-600 dark:text-slate-300">{system.state}</span>
+                    </div>
                   </div>
                   <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">{system.detail}</p>
+                  {(system.service || system.source === "forwarded" || system.observedAt) && (
+                    <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-slate-500 dark:text-slate-400">
+                      {system.source && <span>{system.source}</span>}
+                      {system.observedAt && <span>{new Date(system.observedAt).toLocaleTimeString()}</span>}
+                    </div>
+                  )}
                 </article>
               ))}
 

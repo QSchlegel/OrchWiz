@@ -7,26 +7,14 @@ import {
   drainBridgeDispatchQueueSafely,
   enqueueBridgeDispatchDeliveries,
 } from "@/lib/bridge/connections/dispatch"
-import { isBridgeConnectionIdList } from "@/lib/bridge/connections/validation"
+import { resolveShipNamespace } from "@/lib/bridge/openclaw-runtime"
+import { BridgeDispatchRuntimeValidationError } from "@/lib/bridge/connections/dispatch-runtime"
+import {
+  BridgeDispatchRequestValidationError,
+  parseBridgeDispatchRequestBody,
+} from "./parsing"
 
 export const dynamic = "force-dynamic"
-
-function asNonEmptyString(value: unknown): string | null {
-  if (typeof value !== "string") {
-    return null
-  }
-
-  const trimmed = value.trim()
-  return trimmed.length > 0 ? trimmed : null
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return {}
-  }
-
-  return value as Record<string, unknown>
-}
 
 export async function POST(request: NextRequest) {
   try {
@@ -35,25 +23,18 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
 
-    const body = asRecord(await request.json().catch(() => ({})))
-    const deploymentId = asNonEmptyString(body.deploymentId)
-    const message = asNonEmptyString(body.message)
-
-    if (!deploymentId || !message) {
-      return NextResponse.json(
-        { error: "deploymentId and message are required." },
-        { status: 400 },
-      )
-    }
+    const parsedBody = parseBridgeDispatchRequestBody(await request.json().catch(() => ({})))
 
     const deployment = await prisma.agentDeployment.findFirst({
       where: {
-        id: deploymentId,
+        id: parsedBody.deploymentId,
         userId: session.user.id,
         deploymentType: "ship",
       },
       select: {
         id: true,
+        deploymentProfile: true,
+        config: true,
       },
     })
 
@@ -61,27 +42,41 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Deployment not found" }, { status: 404 })
     }
 
-    const connectionIds = isBridgeConnectionIdList(body.connectionIds)
-      ? body.connectionIds
-      : undefined
+    const shipNamespace = resolveShipNamespace(deployment.config, deployment.deploymentProfile)
 
     const deliveries = await enqueueBridgeDispatchDeliveries({
-      deploymentId,
+      deploymentId: parsedBody.deploymentId,
       source: "manual",
-      message,
+      message: parsedBody.message,
       payload: {
         type: "bridge.connection.manual",
+        runtime: {
+          id: parsedBody.runtime,
+        },
+        shipContext: {
+          deploymentProfile: deployment.deploymentProfile,
+          ...(shipNamespace
+            ? {
+                namespace: shipNamespace,
+              }
+            : {}),
+        },
+        ...(parsedBody.bridgeContext
+          ? {
+              bridgeContext: parsedBody.bridgeContext,
+            }
+          : {}),
       },
       metadata: {
         requestedBy: session.user.email,
       },
-      connectionIds,
+      connectionIds: parsedBody.connectionIds,
       includeDisabled: false,
       autoRelayOnly: false,
     })
 
     await drainBridgeDispatchQueueSafely({
-      deploymentId,
+      deploymentId: parsedBody.deploymentId,
       limit: Math.max(8, deliveries.length * 4),
       label: "bridge-connection.manual-dispatch",
     })
@@ -103,7 +98,7 @@ export async function POST(request: NextRequest) {
     publishNotificationUpdated({
       userId: session.user.id,
       channel: "bridge-connections",
-      entityId: deploymentId,
+      entityId: parsedBody.deploymentId,
     })
 
     return NextResponse.json({
@@ -124,6 +119,20 @@ export async function POST(request: NextRequest) {
       })),
     })
   } catch (error) {
+    if (error instanceof BridgeDispatchRequestValidationError) {
+      return NextResponse.json({ error: error.message }, { status: error.status })
+    }
+
+    if (error instanceof BridgeDispatchRuntimeValidationError) {
+      return NextResponse.json(
+        {
+          error: error.message,
+          supportedRuntimeIds: error.supportedRuntimeIds,
+        },
+        { status: 400 },
+      )
+    }
+
     console.error("Error dispatching bridge patch-through message:", error)
     return NextResponse.json({ error: "Internal server error" }, { status: 500 })
   }

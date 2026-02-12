@@ -1,0 +1,105 @@
+{
+  "id": null,
+  "uid": "orchwiz-overview",
+  "title": "OrchWiz Monitoring Overview",
+  "tags": ["orchwiz", "prometheus", "grafana"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "editable": true,
+  "time": {
+    "from": "now-15m",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Targets Up",
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "sum(up)", "legendFormat": "up"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "orientation": "horizontal"}
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Total Targets",
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "count(up)", "legendFormat": "targets"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "orientation": "horizontal"}
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Down Targets",
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "count(up == 0)", "legendFormat": "down"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "orientation": "horizontal"}
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Prometheus Head Series",
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "prometheus_tsdb_head_series", "legendFormat": "series"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "orientation": "horizontal"}
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Scrape Samples / sec by Job",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "sum by (job) (rate(scrape_samples_scraped[5m]))", "legendFormat": "{{job}}"}]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Prometheus CPU (cores)",
+      "gridPos": {"h": 8, "w": 6, "x": 12, "y": 4},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "rate(process_cpu_seconds_total{job=\"prometheus\"}[5m])", "legendFormat": "prometheus"}]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Prometheus Memory (MB)",
+      "gridPos": {"h": 8, "w": 6, "x": 18, "y": 4},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "process_resident_memory_bytes{job=\"prometheus\"} / 1024 / 1024", "legendFormat": "prometheus"}]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Grafana HTTP Requests / sec",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "sum(rate(grafana_http_request_duration_seconds_count{job=\"grafana\"}[5m]))", "legendFormat": "grafana"}]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Scrape Duration p95 (seconds)",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "histogram_quantile(0.95, sum by (le, job) (rate(scrape_duration_seconds_bucket[5m])))", "legendFormat": "{{job}}"}]
+    },
+    {
+      "id": 10,
+      "type": "table",
+      "title": "Target Health",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 20},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "up", "legendFormat": "{{job}} {{instance}}", "format": "table"}],
+      "options": {
+        "showHeader": true,
+        "footer": {"show": false}
+      }
+    }
+  ]
+}

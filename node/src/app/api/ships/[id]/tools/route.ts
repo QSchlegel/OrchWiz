@@ -20,7 +20,13 @@ function toErrorResponse(error: unknown): NextResponse {
   }
 
   if (error instanceof ShipToolsError) {
-    return NextResponse.json({ error: error.message }, { status: error.status })
+    return NextResponse.json(
+      {
+        error: error.message,
+        ...(typeof error.code === "string" ? { code: error.code } : {}),
+      },
+      { status: error.status },
+    )
   }
 
   console.error("Ship tools route failed:", error)

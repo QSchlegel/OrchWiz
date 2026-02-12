@@ -1,7 +1,13 @@
 import { readFile, readdir } from "node:fs/promises"
 import { basename, join, resolve } from "node:path"
 import { homedir } from "node:os"
-import { Prisma, type SkillCatalogEntry, type SkillCatalogSource, type SkillImportRun } from "@prisma/client"
+import {
+  Prisma,
+  type CatalogActivationStatus,
+  type SkillCatalogEntry,
+  type SkillCatalogSource,
+  type SkillImportRun,
+} from "@prisma/client"
 import { prisma } from "@/lib/prisma"
 import {
   installCuratedSkill,
@@ -334,6 +340,20 @@ function bestEntryBySlug(entries: SkillCatalogEntry[]): Map<string, SkillCatalog
   return map
 }
 
+function defaultActivationStatusForSource(source: SkillCatalogSource): CatalogActivationStatus {
+  switch (source) {
+    case "custom_github":
+    case "local":
+    case "system":
+      return "pending"
+    case "curated":
+    case "experimental":
+      return "approved"
+    default:
+      return "approved"
+  }
+}
+
 function toEntryDto(entry: SkillCatalogEntry): SkillCatalogEntryDto {
   return {
     id: entry.id,
@@ -349,6 +369,12 @@ function toEntryDto(entry: SkillCatalogEntry): SkillCatalogEntryDto {
     isInstalled: entry.isInstalled,
     isSystem: entry.isSystem,
     installedPath: entry.installedPath,
+    activationStatus: entry.activationStatus,
+    activationRationale: entry.activationRationale,
+    activatedAt: entry.activatedAt ? entry.activatedAt.toISOString() : null,
+    activatedByUserId: entry.activatedByUserId,
+    activatedByBridgeCrewId: entry.activatedByBridgeCrewId,
+    activationSecurityReportId: entry.activationSecurityReportId,
     metadata: asObjectJson(entry.metadata),
     ownerUserId: entry.ownerUserId,
     lastSyncedAt: entry.lastSyncedAt.toISOString(),
@@ -477,6 +503,7 @@ async function upsertCatalogEntry(data: {
       isInstalled: data.isInstalled,
       isSystem: data.isSystem,
       installedPath: data.installedPath || null,
+      activationStatus: defaultActivationStatusForSource(data.source),
       metadata: normalizedMetadata,
       lastSyncedAt: data.lastSyncedAt,
     },

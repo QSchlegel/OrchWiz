@@ -3,6 +3,7 @@
 import Link from "next/link"
 import { useCallback, useEffect, useMemo, useRef, useState, type ElementType } from "react"
 import {
+  AppWindow,
   AlertTriangle,
   ChevronDown,
   ChevronUp,
@@ -36,6 +37,10 @@ import {
   type CloudProviderConfig,
 } from "@/lib/shipyard/cloud/types"
 import {
+  readShipMonitoringConfig,
+  SHIP_MONITORING_DEFAULTS,
+} from "@/lib/shipyard/monitoring"
+import {
   BRIDGE_CREW_ROLE_ORDER,
   listBridgeCrewTemplates,
   type BridgeCrewRole,
@@ -62,21 +67,31 @@ import type {
   ShipyardSetupSnippets,
 } from "@/lib/shipyard/secret-vault"
 import {
+  buildDefaultN8NDatabaseUrl,
+  buildDefaultN8NPublicBaseUrl,
+  listMissingRequiredN8NSecrets,
+  N8N_REQUIRED_SECRET_FIELDS,
+} from "@/lib/shipyard/n8n-bootstrap-defaults"
+import {
   summarizeShipDeployments,
   type ShipHealthState,
   type ShipyardClusterSummary,
 } from "@/lib/shipyard/cluster-summary"
+import {
+  SHIP_LATEST_VERSION,
+  resolveShipVersion,
+  shipVersionNeedsUpgrade,
+} from "@/lib/shipyard/versions"
 import { useEventStream } from "@/lib/realtime/useEventStream"
 import { useShipSelection } from "@/lib/shipyard/useShipSelection"
 import { EmptyState, InlineNotice, SurfaceCard } from "@/components/dashboard/PageLayout"
-import { ShipQuartermasterPanel } from "@/components/quartermaster/ShipQuartermasterPanel"
 import { CloudUtilityPanel } from "@/components/shipyard/CloudUtilityPanel"
 import { ShipToolsPanel } from "@/components/shipyard/ShipToolsPanel"
 import { ShipyardApiKeysPanel } from "@/components/shipyard/ShipyardApiKeysPanel"
 
 type InfrastructureKind = InfrastructureConfig["kind"]
 
-type WizardStepId = "mission" | "environment" | "secrets" | "crew" | "review"
+type WizardStepId = "mission" | "environment" | "secrets" | "apps" | "crew" | "review"
 
 type MainTab = "build" | "fleet" | "apiKeys" | "ops"
 
@@ -84,6 +99,12 @@ interface CrewOverrideInput {
   name: string
   description: string
   content: string
+}
+
+interface MonitoringUrlFormInput {
+  grafanaUrl: string
+  prometheusUrl: string
+  kubeviewUrl: string
 }
 
 interface LaunchFormState {
@@ -97,6 +118,7 @@ interface LaunchFormState {
   advancedNodeTypeOverride: boolean
   nodeType: NodeType
   infrastructure: InfrastructureConfig
+  monitoring: MonitoringUrlFormInput
   cloudProvider: CloudProviderConfig
   crewOverrides: Record<BridgeCrewRole, CrewOverrideInput>
 }
@@ -118,6 +140,8 @@ interface ShipDeployment {
   provisioningMode: ProvisioningMode
   config?: Record<string, unknown> | null
   metadata?: ShipDeploymentMetadata | null
+  shipVersion: string | null
+  shipVersionUpdatedAt: string | null
   deployedAt: string | null
   lastHealthCheck: string | null
   healthStatus: string | null
@@ -202,8 +226,6 @@ interface RuntimeSnapshot {
   }
 }
 
-type QuartermasterQuickLaunchTarget = "local" | "cloud"
-
 interface ShipyardSecretTemplateApiPayload {
   deploymentProfile: DeploymentProfile
   exists: boolean
@@ -239,6 +261,7 @@ const steps: { id: WizardStepId; title: string; subtitle: string; icon: ElementT
   { id: "mission", title: "Mission", subtitle: "Ship identity and target", icon: Ship },
   { id: "environment", title: "Environment", subtitle: "Deployment profile setup", icon: Settings2 },
   { id: "secrets", title: "Secrets", subtitle: "Setup templates and snippets", icon: KeyRound },
+  { id: "apps", title: "Apps", subtitle: "n8n bootstrap setup", icon: AppWindow },
   { id: "crew", title: "Bridge Crew", subtitle: "Bootstrap OpenClaw command", icon: Users },
   { id: "review", title: "Launch", subtitle: "Review and deploy", icon: Rocket },
 ]
@@ -332,6 +355,12 @@ const fleetStatusFilterLabels: Record<ShipStatusFilter, string> = {
   failed: "Failed",
 }
 
+const SHIP_UPGRADE_BLOCKED_STATUSES = new Set<ShipDeployment["status"]>([
+  "pending",
+  "deploying",
+  "updating",
+])
+
 const relativeTimeFormatter = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" })
 
 const SHIPYARD_SECRET_FIELDS: ShipyardSecretFieldKey[] = [
@@ -340,6 +369,11 @@ const SHIPYARD_SECRET_FIELDS: ShipyardSecretFieldKey[] = [
   "github_client_secret",
   "openai_api_key",
   "openclaw_api_key",
+  "n8n_database_url",
+  "n8n_basic_auth_user",
+  "n8n_basic_auth_password",
+  "n8n_encryption_key",
+  "n8n_public_base_url",
   "postgres_password",
   "database_url",
 ]
@@ -369,8 +403,18 @@ const LAUNCH_ESSENTIAL_SECRET_FIELDS_BY_PROFILE: Record<DeploymentProfile, Shipy
 }
 
 const OPTIONAL_INTEGRATION_SECRET_FIELDS_BY_PROFILE: Record<DeploymentProfile, ShipyardSecretFieldKey[]> = {
-  local_starship_build: ["openai_api_key", "openclaw_api_key", "github_client_id", "github_client_secret"],
-  cloud_shipyard: ["openai_api_key", "openclaw_api_key", "github_client_id", "github_client_secret"],
+  local_starship_build: [
+    "openai_api_key",
+    "openclaw_api_key",
+    "github_client_id",
+    "github_client_secret",
+  ],
+  cloud_shipyard: [
+    "openai_api_key",
+    "openclaw_api_key",
+    "github_client_id",
+    "github_client_secret",
+  ],
 }
 
 const EMPTY_SECRET_SNIPPETS: ShipyardSetupSnippets = {
@@ -416,6 +460,36 @@ const SECRET_FIELD_DESCRIPTORS: Record<
     placeholder: "OpenClaw gateway key",
     inputType: "password",
     helper: "Optional override; OpenClaw can generate runtime keys automatically.",
+  },
+  n8n_database_url: {
+    label: "N8N_DATABASE_URL",
+    placeholder: "postgresql://user:pass@host:5432/n8n?schema=public",
+    inputType: "password",
+    helper: "Required for initial n8n bootstrap; application-scoped runtime env.",
+  },
+  n8n_basic_auth_user: {
+    label: "N8N_BASIC_AUTH_USER",
+    placeholder: "captain",
+    inputType: "text",
+    helper: "Required n8n basic auth username used for editor access.",
+  },
+  n8n_basic_auth_password: {
+    label: "N8N_BASIC_AUTH_PASSWORD",
+    placeholder: "Strong password",
+    inputType: "password",
+    helper: "Required n8n basic auth password used for editor access.",
+  },
+  n8n_encryption_key: {
+    label: "N8N_ENCRYPTION_KEY",
+    placeholder: "32+ character encryption key",
+    inputType: "password",
+    helper: "Required key for n8n credentials/workflow encryption.",
+  },
+  n8n_public_base_url: {
+    label: "N8N_PUBLIC_BASE_URL",
+    placeholder: "https://n8n.example.com",
+    inputType: "text",
+    helper: "Required public URL used for n8n editor and webhook base.",
   },
   postgres_password: {
     label: "postgres_password",
@@ -496,6 +570,10 @@ function extractApiErrorMessage(payload: unknown): string | null {
   }
   const errorValue = (payload as { error?: unknown }).error
   return typeof errorValue === "string" && errorValue.trim().length > 0 ? errorValue : null
+}
+
+function hasNonEmptySecretValue(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0
 }
 
 function parseTrailingNumber(value: string): number | null {
@@ -600,6 +678,11 @@ function createInitialFormState(): LaunchFormState {
     advancedNodeTypeOverride: false,
     nodeType: deploymentProfile === "cloud_shipyard" ? "cloud" : "local",
     infrastructure: defaultInfrastructureConfig(deploymentProfile),
+    monitoring: {
+      grafanaUrl: SHIP_MONITORING_DEFAULTS.grafanaUrl,
+      prometheusUrl: SHIP_MONITORING_DEFAULTS.prometheusUrl,
+      kubeviewUrl: SHIP_MONITORING_DEFAULTS.kubeviewUrl,
+    },
     cloudProvider: defaultCloudProviderConfig(),
     crewOverrides: createCrewOverrides(),
   }
@@ -852,10 +935,13 @@ export default function ShipYardPage() {
   const [bridgeCrew, setBridgeCrew] = useState<BridgeCrewRecord[]>([])
   const [isLoadingCrew, setIsLoadingCrew] = useState(false)
   const [isLoadingConnectionSummary, setIsLoadingConnectionSummary] = useState(false)
-  const [isQuartermasterQuickLaunching, setIsQuartermasterQuickLaunching] = useState(false)
-  const [quartermasterQuickLaunchTarget, setQuartermasterQuickLaunchTarget] =
-    useState<QuartermasterQuickLaunchTarget | null>(null)
   const [connectionSummary, setConnectionSummary] = useState<BridgeConnectionSummary | null>(null)
+  const [monitoringDraft, setMonitoringDraft] = useState<MonitoringUrlFormInput>({
+    grafanaUrl: SHIP_MONITORING_DEFAULTS.grafanaUrl,
+    prometheusUrl: SHIP_MONITORING_DEFAULTS.prometheusUrl,
+    kubeviewUrl: SHIP_MONITORING_DEFAULTS.kubeviewUrl,
+  })
+  const [isSavingMonitoring, setIsSavingMonitoring] = useState(false)
   const [crewDrafts, setCrewDrafts] = useState<Record<string, CrewOverrideInput & { status: "active" | "inactive" }>>(
     {},
   )
@@ -863,6 +949,7 @@ export default function ShipYardPage() {
   const [transferShipDeploymentId, setTransferShipDeploymentId] = useState("")
   const [transferTargetOwnerEmail, setTransferTargetOwnerEmail] = useState("")
   const [isTransferringOwnership, setIsTransferringOwnership] = useState(false)
+  const [isUpgradingShip, setIsUpgradingShip] = useState(false)
   const [fleetSearchQuery, setFleetSearchQuery] = useState("")
   const [fleetStatusFilter, setFleetStatusFilter] = useState<ShipStatusFilter>("all")
   const [secretValuesByProfile, setSecretValuesByProfile] =
@@ -909,6 +996,43 @@ export default function ShipYardPage() {
   const selectedShip = useMemo(
     () => shipsWithInfrastructure.find((ship) => ship.id === selectedShipDeploymentId) || null,
     [selectedShipDeploymentId, shipsWithInfrastructure],
+  )
+
+  useEffect(() => {
+    if (!selectedShip) {
+      setMonitoringDraft({
+        grafanaUrl: SHIP_MONITORING_DEFAULTS.grafanaUrl,
+        prometheusUrl: SHIP_MONITORING_DEFAULTS.prometheusUrl,
+        kubeviewUrl: SHIP_MONITORING_DEFAULTS.kubeviewUrl,
+      })
+      return
+    }
+
+    const monitoring = readShipMonitoringConfig(selectedShip.config || {})
+    setMonitoringDraft({
+      grafanaUrl: monitoring.grafanaUrl || SHIP_MONITORING_DEFAULTS.grafanaUrl,
+      prometheusUrl: monitoring.prometheusUrl || SHIP_MONITORING_DEFAULTS.prometheusUrl,
+      kubeviewUrl: monitoring.kubeviewUrl || SHIP_MONITORING_DEFAULTS.kubeviewUrl,
+    })
+  }, [selectedShip?.id, selectedShip?.updatedAt, selectedShip?.config])
+
+  const selectedShipCurrentVersion = useMemo(
+    () => resolveShipVersion(selectedShip?.shipVersion),
+    [selectedShip?.shipVersion],
+  )
+
+  const selectedShipNeedsUpgrade = useMemo(
+    () => (selectedShip ? shipVersionNeedsUpgrade(selectedShip.shipVersion) : false),
+    [selectedShip],
+  )
+
+  const selectedShipUpgradeDisabled = useMemo(
+    () =>
+      !selectedShip
+      || !selectedShipNeedsUpgrade
+      || isUpgradingShip
+      || SHIP_UPGRADE_BLOCKED_STATUSES.has(selectedShip.status),
+    [isUpgradingShip, selectedShip, selectedShipNeedsUpgrade],
   )
   const resolvedTransferShipDeploymentId = useMemo(() => {
     const manualShipId = transferShipDeploymentId.trim()
@@ -1145,13 +1269,26 @@ export default function ShipYardPage() {
     () => OPTIONAL_INTEGRATION_SECRET_FIELDS_BY_PROFILE[form.deploymentProfile],
     [form.deploymentProfile],
   )
+  const visibleSecretPopulatedFieldCount = useMemo(
+    () =>
+      visibleSecretFields.filter((field) => activeSecretSummary.fields[field]?.hasValue === true).length,
+    [activeSecretSummary.fields, visibleSecretFields],
+  )
   const missingLaunchEssentialSecretFields = useMemo(
     () =>
       launchEssentialSecretFields.filter((field) => {
         const value = activeSecretValues[field]
-        return typeof value !== "string" || value.trim().length === 0
+        return !hasNonEmptySecretValue(value)
       }),
     [activeSecretValues, launchEssentialSecretFields],
+  )
+  const missingRequiredN8NSecretFields = useMemo(
+    () => listMissingRequiredN8NSecrets(activeSecretValues),
+    [activeSecretValues],
+  )
+  const n8nSecretPopulatedFieldCount = useMemo(
+    () => N8N_REQUIRED_SECRET_FIELDS.filter((field) => hasNonEmptySecretValue(activeSecretValues[field])).length,
+    [activeSecretValues],
   )
 
   const fetchShips = useCallback(async () => {
@@ -1175,6 +1312,14 @@ export default function ShipYardPage() {
       setIsLoadingShips(false)
     }
   }, [selectedShipDeploymentId, setSelectedShipDeploymentId])
+
+  const handlePanelShipNotFound = useCallback(async () => {
+    await fetchShips()
+    setMessage({
+      type: "info",
+      text: "The selected ship is no longer available. Ship selection was refreshed.",
+    })
+  }, [fetchShips])
 
   const fetchRuntimeSnapshot = useCallback(async () => {
     setIsLoadingRuntime(true)
@@ -1254,6 +1399,61 @@ export default function ShipYardPage() {
       fetchConnectionSummary(),
     ])
   }, [fetchBridgeCrew, fetchConnectionSummary, fetchRuntimeSnapshot, fetchShips])
+
+  const saveSelectedShipMonitoring = useCallback(async () => {
+    if (!selectedShip) {
+      return
+    }
+
+    setIsSavingMonitoring(true)
+    try {
+      const existingConfig =
+        selectedShip.config && typeof selectedShip.config === "object" && !Array.isArray(selectedShip.config)
+          ? (selectedShip.config as Record<string, unknown>)
+          : {}
+
+      const response = await fetch(`/api/ships/${selectedShip.id}`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          config: {
+            ...existingConfig,
+            monitoring: {
+              grafanaUrl: monitoringDraft.grafanaUrl,
+              prometheusUrl: monitoringDraft.prometheusUrl,
+              kubeviewUrl: monitoringDraft.kubeviewUrl,
+            },
+          },
+        }),
+      })
+
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        throw new Error(
+          typeof payload?.error === "string" ? payload.error : `Unable to save monitoring URLs (${response.status})`,
+        )
+      }
+
+      setMessage({ type: "success", text: "Monitoring URLs saved for selected ship." })
+      await refreshFleetView()
+    } catch (error) {
+      console.error("Failed to save monitoring URLs:", error)
+      setMessage({
+        type: "error",
+        text: error instanceof Error ? error.message : "Unable to save monitoring URLs.",
+      })
+    } finally {
+      setIsSavingMonitoring(false)
+    }
+  }, [
+    monitoringDraft.grafanaUrl,
+    monitoringDraft.prometheusUrl,
+    monitoringDraft.kubeviewUrl,
+    refreshFleetView,
+    selectedShip,
+  ])
 
   const refreshRefueling = useCallback(
     async (forceRefresh = false) => {
@@ -1415,6 +1615,86 @@ export default function ShipYardPage() {
     },
     [],
   )
+
+  const autoFillN8NSetup = useCallback(() => {
+    const deploymentProfile = form.deploymentProfile
+    let localDbSkipped = false
+    let cloudDbSkipped = false
+    let changed = false
+    const existingValues = secretValuesByProfile[deploymentProfile] || {}
+    const nextValues: ShipyardSecretTemplateValues = {
+      ...existingValues,
+    }
+
+    const setIfMissing = (
+      field: ShipyardSecretFieldKey,
+      buildValue: () => string | null,
+    ) => {
+      if (hasNonEmptySecretValue(nextValues[field])) {
+        return
+      }
+      const candidate = buildValue()
+      if (!candidate || candidate.trim().length === 0) {
+        if (field === "n8n_database_url" && deploymentProfile === "local_starship_build") {
+          localDbSkipped = true
+        }
+        if (field === "n8n_database_url" && deploymentProfile === "cloud_shipyard") {
+          cloudDbSkipped = true
+        }
+        return
+      }
+      nextValues[field] = candidate
+      changed = true
+    }
+
+    setIfMissing("n8n_basic_auth_user", () => "captain")
+    setIfMissing("n8n_basic_auth_password", () => generateRandomSecret(32))
+    setIfMissing("n8n_encryption_key", () => generateRandomSecret(32))
+    setIfMissing("n8n_database_url", () =>
+      buildDefaultN8NDatabaseUrl({
+        deploymentProfile,
+        namespace: form.infrastructure.namespace,
+        postgresPassword: nextValues.postgres_password || null,
+        databaseUrl: nextValues.database_url || null,
+      }),
+    )
+    setIfMissing("n8n_public_base_url", () =>
+      buildDefaultN8NPublicBaseUrl({
+        deploymentProfile,
+        nodeUrl: form.nodeUrl,
+      }),
+    )
+
+    if (changed) {
+      setSecretValuesByProfile((current) => ({
+        ...current,
+        [deploymentProfile]: nextValues,
+      }))
+      setMessage({
+        type: "info",
+        text: localDbSkipped
+          ? "Applied n8n defaults to empty fields. Local DB URL still needs postgres_password to derive automatically."
+          : cloudDbSkipped
+            ? "Applied n8n defaults to empty fields. Cloud DB URL still needs database_url in Secrets to derive automatically."
+          : "Applied n8n defaults to empty fields. Review and save template when ready.",
+      })
+      return
+    }
+
+    setMessage({
+      type: "info",
+      text: localDbSkipped
+        ? "No n8n defaults applied. Add postgres_password first to derive a local N8N_DATABASE_URL."
+        : cloudDbSkipped
+          ? "No n8n defaults applied. Add database_url in Secrets to derive a cloud N8N_DATABASE_URL."
+        : "No n8n defaults applied because required fields are already populated.",
+    })
+  }, [
+    form.deploymentProfile,
+    form.infrastructure.namespace,
+    form.nodeUrl,
+    secretValuesByProfile,
+  ])
 
   const saveSecretTemplate = useCallback(async () => {
     const deploymentProfile = form.deploymentProfile
@@ -1606,7 +1886,7 @@ export default function ShipYardPage() {
   }, [launchPanelPreferenceLocked, ships.length])
 
   useEffect(() => {
-    if (currentStep.id !== "secrets") {
+    if (currentStep.id !== "secrets" && currentStep.id !== "apps") {
       return
     }
     fetchSecretTemplate(form.deploymentProfile, true)
@@ -1717,6 +1997,11 @@ export default function ShipYardPage() {
           nodeType: form.nodeType,
           config: {
             infrastructure: form.infrastructure,
+            monitoring: {
+              grafanaUrl: form.monitoring.grafanaUrl,
+              prometheusUrl: form.monitoring.prometheusUrl,
+              kubeviewUrl: form.monitoring.kubeviewUrl,
+            },
             ...(form.deploymentProfile === "cloud_shipyard"
               ? {
                   cloudProvider: form.cloudProvider,
@@ -1757,7 +2042,43 @@ export default function ShipYardPage() {
         setSelectedShipDeploymentId(payload.deployment.id)
       }
 
-      setMessage({ type: "success", text: "Ship launched. Bridge crew bootstrap complete." })
+      const bootstrapN8N = payload?.bootstrap?.n8n
+      if (
+        bootstrapN8N
+        && typeof bootstrapN8N === "object"
+        && typeof bootstrapN8N.status === "string"
+        && bootstrapN8N.status !== "ready"
+      ) {
+        const warningLines = Array.isArray(bootstrapN8N.warnings)
+          ? bootstrapN8N.warnings.filter(
+              (warning: unknown): warning is string =>
+                typeof warning === "string" && warning.trim().length > 0,
+            )
+          : []
+        const errorLines = Array.isArray(bootstrapN8N.errors)
+          ? bootstrapN8N.errors
+              .map((entry: unknown) => {
+                if (!entry || typeof entry !== "object") {
+                  return null
+                }
+                const messageValue = (entry as { message?: unknown }).message
+                return typeof messageValue === "string" && messageValue.trim().length > 0
+                  ? messageValue
+                  : null
+              })
+              .filter((value: string | null): value is string => Boolean(value))
+          : []
+
+        const suggestedCommands = [...warningLines, ...errorLines].slice(0, 4)
+
+        setMessage({
+          type: "info",
+          text: `Ship launched. Bridge crew bootstrap complete. n8n bootstrap is ${bootstrapN8N.status}.`,
+          ...(suggestedCommands.length > 0 ? { suggestedCommands } : {}),
+        })
+      } else {
+        setMessage({ type: "success", text: "Ship launched. Bridge crew bootstrap complete." })
+      }
       setStepIndex(0)
       setForm(createInitialFormState())
       setCloudSshKeyFingerprint(null)
@@ -1808,6 +2129,75 @@ export default function ShipYardPage() {
       setMessage({ type: "error", text: "Failed to save bridge crew update" })
     } finally {
       setSavingCrewId(null)
+    }
+  }
+
+  const handleUpgradeShip = async () => {
+    if (!selectedShip) {
+      setMessage({
+        type: "info",
+        text: "Select a ship to run an upgrade.",
+      })
+      return
+    }
+
+    if (!shipVersionNeedsUpgrade(selectedShip.shipVersion)) {
+      setMessage({
+        type: "info",
+        text: `${selectedShip.name} is already on the latest release (${SHIP_LATEST_VERSION}).`,
+      })
+      return
+    }
+
+    if (SHIP_UPGRADE_BLOCKED_STATUSES.has(selectedShip.status)) {
+      setMessage({
+        type: "error",
+        text: `Cannot upgrade while ship status is ${selectedShip.status}. Wait for it to settle.`,
+      })
+      return
+    }
+
+    setIsUpgradingShip(true)
+    try {
+      const response = await fetch(`/api/ship-yard/ships/${selectedShip.id}/upgrade`, {
+        method: "POST",
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        setMessage({
+          type: "error",
+          text: extractApiErrorMessage(payload) || `Ship upgrade failed (HTTP ${response.status}).`,
+        })
+        await refreshFleetView()
+        return
+      }
+
+      if (payload?.upgraded === false || payload?.code === "ALREADY_LATEST") {
+        const latestVersion = resolveShipVersion(
+          (payload?.deployment as Record<string, unknown> | undefined)?.shipVersion,
+        )
+        setMessage({
+          type: "info",
+          text: `${selectedShip.name} is already on release ${latestVersion}.`,
+        })
+      } else {
+        const fromVersion = resolveShipVersion(payload?.fromVersion)
+        const toVersion = resolveShipVersion(payload?.toVersion)
+        setMessage({
+          type: "success",
+          text: `${selectedShip.name} upgraded from ${fromVersion} to ${toVersion}.`,
+        })
+      }
+
+      await refreshFleetView()
+    } catch (error) {
+      console.error("Ship upgrade failed:", error)
+      setMessage({
+        type: "error",
+        text: error instanceof Error ? error.message : "Ship upgrade failed.",
+      })
+    } finally {
+      setIsUpgradingShip(false)
     }
   }
 
@@ -1895,103 +2285,6 @@ export default function ShipYardPage() {
       })
     } finally {
       setIsTransferringOwnership(false)
-    }
-  }
-
-  const handleQuartermasterQuickLaunch = async (target: QuartermasterQuickLaunchTarget) => {
-    if (!selectedShipDeploymentId) {
-      setMessage({ type: "error", text: "Select a ship before using Quartermaster Quick Launch." })
-      return
-    }
-
-    if (CLOUD_DEPLOY_ONLY && target === "local") {
-      setMessage({
-        type: "error",
-        text: "Local Quick Launch is disabled because CLOUD_DEPLOY_ONLY=true.",
-      })
-      return
-    }
-
-    if (isQuartermasterQuickLaunching) {
-      return
-    }
-
-    const targetProfile = target === "local" ? "local_starship_build" : "cloud_shipyard"
-    const targetLabel = target === "local" ? "Local Starship Build" : "Cloud Shipyard"
-    const targetGuidance =
-      target === "local"
-        ? "Target posture: local-first diagnostics (kind/minikube tooling and local node assumptions)."
-        : "Target posture: cloud-first diagnostics (existing_k8s context and cloud node assumptions)."
-
-    const quickLaunchPrompt = [
-      "Run a Ship Yard quick launch readiness pass for this ship.",
-      `Target deployment profile: ${targetProfile} (${targetLabel}).`,
-      targetGuidance,
-      "Return a concise response with:",
-      "1) readiness verdict (ready / blocked),",
-      "2) required setup actions (highest priority first),",
-      "3) maintenance checkpoints for the first hour after launch,",
-      "4) explicit risks and operator stop conditions.",
-      "Constrain recommendations to read-only diagnostics plus operator action steps.",
-    ].join("\n")
-
-    setIsQuartermasterQuickLaunching(true)
-    setQuartermasterQuickLaunchTarget(target)
-    setMessage({
-      type: "info",
-      text: `Quartermaster Quick Launch (${targetLabel}) in progress. Reviewing readiness and maintenance posture...`,
-    })
-
-    try {
-      const provisionResponse = await fetch(`/api/ships/${selectedShipDeploymentId}/quartermaster/provision`, {
-        method: "POST",
-      })
-      const provisionPayload = await provisionResponse.json().catch(() => ({}))
-      if (!provisionResponse.ok) {
-        throw new Error(
-          typeof provisionPayload?.error === "string"
-            ? provisionPayload.error
-            : `Provision failed (HTTP ${provisionResponse.status})`,
-        )
-      }
-
-      const promptResponse = await fetch(`/api/ships/${selectedShipDeploymentId}/quartermaster`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          prompt: quickLaunchPrompt,
-        }),
-      })
-      const promptPayload = await promptResponse.json().catch(() => ({}))
-      if (!promptResponse.ok) {
-        throw new Error(
-          typeof promptPayload?.error === "string"
-            ? promptPayload.error
-            : `Quick launch failed (HTTP ${promptResponse.status})`,
-        )
-      }
-
-      const providerLabel =
-        typeof promptPayload?.provider === "string" && promptPayload.provider.trim()
-          ? ` Provider: ${promptPayload.provider}.`
-          : ""
-      const fallbackLabel =
-        promptPayload?.fallbackUsed === true ? " Fallback runtime was used." : ""
-      setMessage({
-        type: "success",
-        text: `Quartermaster Quick Launch (${targetLabel}) complete. Review the Quartermaster transcript for the full checklist.${providerLabel}${fallbackLabel}`,
-      })
-    } catch (error) {
-      console.error("Quartermaster Quick Launch failed:", error)
-      setMessage({
-        type: "error",
-        text: error instanceof Error ? error.message : "Quartermaster Quick Launch failed.",
-      })
-    } finally {
-      setIsQuartermasterQuickLaunching(false)
-      setQuartermasterQuickLaunchTarget(null)
     }
   }
 
@@ -2293,7 +2586,7 @@ export default function ShipYardPage() {
               <p className="readout text-amber-700 dark:text-amber-400">Launch New Ship</p>
               <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-50">Deployment Wizard</h2>
               <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
-                Configure mission, environment, secrets, and bridge crew for a new deployment.
+                Configure mission, environment, secrets, apps, and bridge crew for a new deployment.
               </p>
             </div>
           </div>
@@ -2385,6 +2678,63 @@ export default function ShipYardPage() {
                     value={form.nodeUrl}
                     onChange={(e) => setForm((current) => ({ ...current, nodeUrl: e.target.value }))}
                     placeholder="https://ship.example.com"
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
+                  />
+                </label>
+
+                <label>
+                  <span className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">Grafana URL (optional)</span>
+                  <input
+                    type="url"
+                    value={form.monitoring.grafanaUrl}
+                    onChange={(e) =>
+                      setForm((current) => ({
+                        ...current,
+                        monitoring: {
+                          ...current.monitoring,
+                          grafanaUrl: e.target.value,
+                        },
+                      }))
+                    }
+                    placeholder="https://grafana.example.com/d/..."
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
+                  />
+                </label>
+
+                <label>
+                  <span className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">Prometheus URL (optional)</span>
+                  <input
+                    type="url"
+                    value={form.monitoring.prometheusUrl}
+                    onChange={(e) =>
+                      setForm((current) => ({
+                        ...current,
+                        monitoring: {
+                          ...current.monitoring,
+                          prometheusUrl: e.target.value,
+                        },
+                      }))
+                    }
+                    placeholder="https://prometheus.example.com/graph"
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
+                  />
+                </label>
+
+                <label>
+                  <span className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">KubeView URL (optional)</span>
+                  <input
+                    type="url"
+                    value={form.monitoring.kubeviewUrl}
+                    onChange={(e) =>
+                      setForm((current) => ({
+                        ...current,
+                        monitoring: {
+                          ...current.monitoring,
+                          kubeviewUrl: e.target.value,
+                        },
+                      }))
+                    }
+                    placeholder="http://kubeview.orchwiz-starship.localhost:18080/"
                     className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
                   />
                 </label>
@@ -2634,7 +2984,7 @@ export default function ShipYardPage() {
                   <div className="rounded-lg border border-slate-300/70 bg-white/75 px-3 py-2 dark:border-white/12 dark:bg-white/[0.04]">
                     <p className="text-[11px] uppercase tracking-wide text-slate-500 dark:text-slate-400">Populated Fields</p>
                     <p className="mt-1 text-xs font-medium text-slate-800 dark:text-slate-100">
-                      {activeSecretSummary.populatedFieldCount}/{visibleSecretFields.length}
+                      {visibleSecretPopulatedFieldCount}/{visibleSecretFields.length}
                     </p>
                   </div>
                   <div className="rounded-lg border border-slate-300/70 bg-white/75 px-3 py-2 dark:border-white/12 dark:bg-white/[0.04]">
@@ -2828,6 +3178,167 @@ export default function ShipYardPage() {
               </div>
             )}
 
+            {currentStep.id === "apps" && (
+              <div className="space-y-3">
+                <div className="rounded-lg border border-cyan-400/35 bg-cyan-500/10 px-3 py-2 text-xs text-cyan-700 dark:text-cyan-200">
+                  <p className="font-medium">n8n bootstrap setup assistant.</p>
+                  <p className="mt-1">
+                    Use auto-fill to prepare missing n8n fields, then save the profile template. Launch remains fail-open if n8n bootstrap degrades.
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-1 gap-2 md:grid-cols-4">
+                  <div className="rounded-lg border border-slate-300/70 bg-white/75 px-3 py-2 dark:border-white/12 dark:bg-white/[0.04]">
+                    <p className="text-[11px] uppercase tracking-wide text-slate-500 dark:text-slate-400">n8n Readiness</p>
+                    <p className="mt-1 text-xs font-medium text-slate-800 dark:text-slate-100">
+                      {missingRequiredN8NSecretFields.length === 0
+                        ? "Ready"
+                        : `${missingRequiredN8NSecretFields.length} required field(s) missing`}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border border-slate-300/70 bg-white/75 px-3 py-2 dark:border-white/12 dark:bg-white/[0.04]">
+                    <p className="text-[11px] uppercase tracking-wide text-slate-500 dark:text-slate-400">Populated Required Fields</p>
+                    <p className="mt-1 text-xs font-medium text-slate-800 dark:text-slate-100">
+                      {n8nSecretPopulatedFieldCount}/{N8N_REQUIRED_SECRET_FIELDS.length}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border border-slate-300/70 bg-white/75 px-3 py-2 dark:border-white/12 dark:bg-white/[0.04]">
+                    <p className="text-[11px] uppercase tracking-wide text-slate-500 dark:text-slate-400">Default Public URL</p>
+                    <p className="mt-1 break-all text-xs font-medium text-slate-800 dark:text-slate-100">
+                      {buildDefaultN8NPublicBaseUrl({
+                        deploymentProfile: form.deploymentProfile,
+                        nodeUrl: form.nodeUrl,
+                      })}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border border-slate-300/70 bg-white/75 px-3 py-2 dark:border-white/12 dark:bg-white/[0.04]">
+                    <p className="text-[11px] uppercase tracking-wide text-slate-500 dark:text-slate-400">Last Saved</p>
+                    <p className="mt-1 text-xs font-medium text-slate-800 dark:text-slate-100">
+                      {activeSecretUpdatedAt ? formatRelativeTimestamp(activeSecretUpdatedAt) : "Not saved yet"}
+                    </p>
+                  </div>
+                </div>
+
+                {missingRequiredN8NSecretFields.length > 0 ? (
+                  <div className="rounded-lg border border-amber-400/35 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-200">
+                    Missing required n8n fields:{" "}
+                    {missingRequiredN8NSecretFields.map((field) => SECRET_FIELD_DESCRIPTORS[field].label).join(", ")}
+                  </div>
+                ) : (
+                  <div className="rounded-lg border border-emerald-400/35 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-700 dark:text-emerald-200">
+                    n8n bootstrap fields are complete for {deploymentProfileLabels[form.deploymentProfile]}.
+                  </div>
+                )}
+
+                <div className="rounded-lg border border-slate-300/70 bg-white/75 px-3 py-2 text-xs text-slate-700 dark:border-white/12 dark:bg-white/[0.03] dark:text-slate-200">
+                  <p>
+                    Required fields:{" "}
+                    {N8N_REQUIRED_SECRET_FIELDS.map((field) => SECRET_FIELD_DESCRIPTORS[field].label).join(", ")}
+                  </p>
+                  <p className="mt-1">
+                    Full ready state also requires server-side curated tool URI (`N8N_TOOL_URI`) for bridge import/grant.
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                  {N8N_REQUIRED_SECRET_FIELDS.map((field) => {
+                    const descriptor = SECRET_FIELD_DESCRIPTORS[field]
+                    const maskedValue = activeSecretSummary.fields[field]?.maskedValue || null
+                    const hasSavedValue = activeSecretSummary.fields[field]?.hasValue === true
+                    const value = activeSecretValues[field] || ""
+
+                    const showGenerate =
+                      field === "n8n_basic_auth_password" || field === "n8n_encryption_key"
+
+                    return (
+                      <label
+                        key={field}
+                        className="rounded-lg border border-slate-300/70 bg-white/75 p-3 dark:border-white/10 dark:bg-white/[0.03]"
+                      >
+                        <div className="mb-1 flex items-center justify-between gap-2">
+                          <span className="text-sm font-medium text-slate-700 dark:text-slate-300">
+                            {descriptor.label}
+                          </span>
+                          {showGenerate && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                updateSecretField(
+                                  form.deploymentProfile,
+                                  field,
+                                  generateRandomSecret(32),
+                                )
+                              }
+                              className="inline-flex items-center gap-1 rounded-md border border-cyan-500/40 bg-cyan-500/10 px-2 py-1 text-[10px] font-medium text-cyan-700 dark:text-cyan-200"
+                            >
+                              <KeyRound className="h-3 w-3" />
+                              Generate
+                            </button>
+                          )}
+                        </div>
+                        <input
+                          type={descriptor.inputType}
+                          autoComplete="off"
+                          spellCheck={false}
+                          value={value}
+                          onChange={(event) =>
+                            updateSecretField(form.deploymentProfile, field, event.target.value)
+                          }
+                          placeholder={descriptor.placeholder}
+                          className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
+                        />
+                        <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">{descriptor.helper}</p>
+                        {field === "n8n_database_url" && form.deploymentProfile === "local_starship_build" && !hasNonEmptySecretValue(activeSecretValues.postgres_password) && (
+                          <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-300">
+                            Set <code>postgres_password</code> in Secrets to auto-derive this URL.
+                          </p>
+                        )}
+                        {field === "n8n_database_url" && form.deploymentProfile === "cloud_shipyard" && !hasNonEmptySecretValue(activeSecretValues.database_url) && (
+                          <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-300">
+                            Set <code>database_url</code> in Secrets to auto-derive this URL.
+                          </p>
+                        )}
+                        {hasSavedValue && maskedValue && (
+                          <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
+                            Saved: {maskedValue}
+                          </p>
+                        )}
+                      </label>
+                    )
+                  })}
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={autoFillN8NSetup}
+                    className="inline-flex items-center gap-2 rounded-md border border-cyan-500/45 bg-cyan-500/12 px-3 py-1.5 text-xs font-medium text-cyan-700 dark:border-cyan-300/45 dark:text-cyan-200"
+                  >
+                    <AppWindow className="h-3.5 w-3.5" />
+                    Auto-fill n8n setup
+                  </button>
+                  <button
+                    type="button"
+                    onClick={saveSecretTemplate}
+                    disabled={isSavingSecrets}
+                    className="inline-flex items-center gap-2 rounded-md border border-cyan-500/45 bg-cyan-500/12 px-3 py-1.5 text-xs font-medium text-cyan-700 disabled:opacity-50 dark:border-cyan-300/45 dark:text-cyan-200"
+                  >
+                    {isSavingSecrets ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <KeyRound className="h-3.5 w-3.5" />}
+                    Save Template
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => fetchSecretTemplate(form.deploymentProfile, true)}
+                    disabled={isLoadingSecrets}
+                    className="inline-flex items-center gap-2 rounded-md border border-slate-300/70 bg-white/70 px-3 py-1.5 text-xs font-medium text-slate-700 disabled:opacity-50 dark:border-white/12 dark:bg-white/[0.04] dark:text-slate-200"
+                  >
+                    {isLoadingSecrets ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                    Reload Template
+                  </button>
+                </div>
+              </div>
+            )}
+
             {currentStep.id === "crew" && (
               <div className="space-y-3">
                 <div className="rounded-lg border border-cyan-500/35 bg-cyan-500/10 px-3 py-2 text-xs text-cyan-700 dark:text-cyan-200">
@@ -2943,6 +3454,11 @@ export default function ShipYardPage() {
                   <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
                     Ansible {form.infrastructure.ansibleInventory} • {form.infrastructure.ansiblePlaybook}
                   </p>
+                  <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
+                    Grafana {form.monitoring.grafanaUrl.trim() || "not set"} • Prometheus{" "}
+                    {form.monitoring.prometheusUrl.trim() || "not set"} • KubeView{" "}
+                    {form.monitoring.kubeviewUrl.trim() || "not set"}
+                  </p>
                   {form.deploymentProfile === "cloud_shipyard" && (
                     <>
                       <p className="mt-2 text-xs text-slate-600 dark:text-slate-300">
@@ -2968,6 +3484,29 @@ export default function ShipYardPage() {
                       </p>
                     </>
                   )}
+                </div>
+
+                <div
+                  className={`rounded-lg border px-3 py-2 text-xs ${
+                    missingRequiredN8NSecretFields.length === 0
+                      ? "border-emerald-400/35 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200"
+                      : "border-amber-400/35 bg-amber-500/10 text-amber-700 dark:text-amber-200"
+                  }`}
+                >
+                  <p className="font-medium">n8n bootstrap preparation</p>
+                  {missingRequiredN8NSecretFields.length === 0 ? (
+                    <p className="mt-1">
+                      Required n8n fields are configured for this launch profile.
+                    </p>
+                  ) : (
+                    <p className="mt-1">
+                      Missing n8n fields:{" "}
+                      {missingRequiredN8NSecretFields.map((field) => SECRET_FIELD_DESCRIPTORS[field].label).join(", ")}.
+                    </p>
+                  )}
+                  <p className="mt-1">
+                    Launch remains fail-open. If n8n setup degrades, ship launch still succeeds with warnings.
+                  </p>
                 </div>
 
                 {form.deploymentProfile === "cloud_shipyard" && (
@@ -3362,6 +3901,8 @@ export default function ShipYardPage() {
             <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-2">
               {filteredShips.map((ship) => {
                 const healthState = normalizeHealthStatus(ship.healthStatus)
+                const shipCurrentVersion = resolveShipVersion(ship.shipVersion)
+                const shipNeedsUpgrade = shipVersionNeedsUpgrade(ship.shipVersion)
                 return (
                   <button
                     key={ship.id}
@@ -3387,6 +3928,15 @@ export default function ShipYardPage() {
                         <span className={`rounded-md border px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide ${healthClasses[healthState]}`}>
                           {healthState}
                         </span>
+                        <span
+                          className={`rounded-md border px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide ${
+                            shipNeedsUpgrade
+                              ? "border-amber-400/45 bg-amber-500/10 text-amber-700 dark:text-amber-200"
+                              : "border-slate-300/70 bg-white/70 text-slate-600 dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-300"
+                          }`}
+                        >
+                          {shipNeedsUpgrade ? `Upgrade ${shipCurrentVersion} -> ${SHIP_LATEST_VERSION}` : `Version ${shipCurrentVersion}`}
+                        </span>
                       </div>
                     </div>
                     <p className="mt-1 text-xs text-slate-600 dark:text-slate-400">
@@ -3399,6 +3949,10 @@ export default function ShipYardPage() {
                     </p>
                     <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
                       {provisioningModeLabels[ship.provisioningMode]}
+                    </p>
+                    <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
+                      Release {shipCurrentVersion}
+                      {shipNeedsUpgrade ? ` • Upgrade available (${SHIP_LATEST_VERSION})` : " • Latest"}
                     </p>
                     <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
                       Updated {formatRelativeTimestamp(ship.updatedAt)} ({new Date(ship.updatedAt).toLocaleString()})
@@ -3414,86 +3968,6 @@ export default function ShipYardPage() {
               })}
             </div>
           )}
-        </SurfaceCard>)}
-
-        {mainTab === "ops" && selectedShipDeploymentId && (<SurfaceCard className="border-slate-300/70 bg-white/80 dark:border-white/12 dark:bg-white/[0.03]">
-          <div className="rounded-xl border border-rose-400/35 bg-rose-500/8 p-3 dark:border-rose-300/35">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div>
-                <div className="flex items-center gap-2">
-                  <p className="text-[11px] uppercase tracking-wide text-rose-700 dark:text-rose-300">
-                    Ownership Transfer Utility
-                  </p>
-                  <span className="rounded-md border border-rose-400/45 bg-rose-500/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-rose-700 dark:text-rose-200">
-                    Ship + Apps
-                  </span>
-                </div>
-                <p className="mt-1 text-sm text-slate-800 dark:text-slate-100">
-                  Transfer a ship and linked applications into another user&apos;s fleet.
-                </p>
-                <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
-                  Owners can transfer their own ships. Admins can transfer any ship by deployment ID.
-                </p>
-              </div>
-              <div className="inline-flex items-center gap-1.5 rounded-md border border-slate-300/70 bg-white/70 px-2 py-1 text-[11px] text-slate-600 dark:border-white/12 dark:bg-white/[0.04] dark:text-slate-300">
-                <Shield className="h-3.5 w-3.5" />
-                {selectedShip
-                  ? `Selected: ${selectedShip.name}`
-                  : "No ship selected (manual ID transfer available)"}
-              </div>
-            </div>
-
-            <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
-              <label className="space-y-1">
-                <span className="text-[11px] uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                  Ship Deployment ID
-                </span>
-                <input
-                  type="text"
-                  value={transferShipDeploymentId}
-                  onChange={(event) => setTransferShipDeploymentId(event.target.value)}
-                  placeholder="cmlgpdu7w0000r2zt2r81rbar"
-                  className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
-                />
-              </label>
-
-              <label className="space-y-1">
-                <span className="text-[11px] uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                  Target Owner Email
-                </span>
-                <input
-                  type="email"
-                  value={transferTargetOwnerEmail}
-                  onChange={(event) => setTransferTargetOwnerEmail(event.target.value)}
-                  placeholder="captain@fleet.example"
-                  className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
-                />
-              </label>
-            </div>
-
-            <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
-              <p className="text-xs text-slate-600 dark:text-slate-300">
-                Quartermaster provisioning runs after transfer and reports warnings if reprovision fails.
-              </p>
-              <button
-                type="button"
-                onClick={handleOwnershipTransfer}
-                disabled={
-                  isTransferringOwnership ||
-                  transferTargetOwnerEmail.trim().length === 0 ||
-                  resolvedTransferShipDeploymentId.length === 0
-                }
-                className="inline-flex items-center gap-1.5 rounded-md border border-rose-500/45 bg-rose-500/12 px-3 py-1.5 text-xs font-medium text-rose-700 disabled:opacity-50 dark:border-rose-300/45 dark:text-rose-200"
-              >
-                {isTransferringOwnership ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <Users className="h-3.5 w-3.5" />
-                )}
-                Transfer Ownership
-              </button>
-            </div>
-          </div>
         </SurfaceCard>)}
 
         {mainTab === "ops" && selectedShipDeploymentId && (
@@ -3526,14 +4000,32 @@ export default function ShipYardPage() {
                     >
                       {normalizeHealthStatus(selectedShip.healthStatus)}
                     </span>
+                    <span className="rounded-md border border-slate-300/70 bg-white/70 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-slate-600 dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-300">
+                      Version {selectedShipCurrentVersion}
+                    </span>
+                    {selectedShipNeedsUpgrade && (
+                      <span className="rounded-md border border-amber-400/45 bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-700 dark:text-amber-200">
+                        Upgrade available
+                      </span>
+                    )}
                   </div>
                 </div>
 
-                <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-4">
+                <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-5">
                   <div className="rounded-md border border-slate-300/70 bg-white/75 px-2 py-1.5 dark:border-white/12 dark:bg-white/[0.04]">
                     <p className="text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400">Provisioning</p>
                     <p className="mt-1 text-xs text-slate-700 dark:text-slate-200">
                       {provisioningModeLabels[selectedShip.provisioningMode]}
+                    </p>
+                  </div>
+                  <div className="rounded-md border border-slate-300/70 bg-white/75 px-2 py-1.5 dark:border-white/12 dark:bg-white/[0.04]">
+                    <p className="text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400">Release</p>
+                    <p className="mt-1 text-xs text-slate-700 dark:text-slate-200">
+                      {selectedShipCurrentVersion}
+                      {selectedShipNeedsUpgrade ? ` -> ${SHIP_LATEST_VERSION}` : " (latest)"}
+                    </p>
+                    <p className="text-xs text-slate-500 dark:text-slate-400">
+                      Updated {selectedShip.shipVersionUpdatedAt ? formatRelativeTimestamp(selectedShip.shipVersionUpdatedAt) : "unknown"}
                     </p>
                   </div>
                   <div className="rounded-md border border-slate-300/70 bg-white/75 px-2 py-1.5 dark:border-white/12 dark:bg-white/[0.04]">
@@ -3569,6 +4061,40 @@ export default function ShipYardPage() {
                       {new Date(selectedShip.updatedAt).toLocaleString()}
                     </p>
                   </div>
+                </div>
+              </div>
+            )}
+
+            {selectedShip && (
+              <div className="mb-4 rounded-xl border border-indigo-400/35 bg-indigo-500/8 p-3 dark:border-indigo-300/35">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="text-[11px] uppercase tracking-wide text-indigo-700 dark:text-indigo-300">
+                      Ship Release Upgrade
+                    </p>
+                    <p className="mt-1 text-sm text-slate-800 dark:text-slate-100">
+                      Current {selectedShipCurrentVersion} {selectedShipNeedsUpgrade ? `-> Latest ${SHIP_LATEST_VERSION}` : "(latest)"}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
+                      {selectedShip.shipVersionUpdatedAt
+                        ? `Last version change ${new Date(selectedShip.shipVersionUpdatedAt).toLocaleString()}`
+                        : "No recorded version change timestamp yet."}
+                    </p>
+                    {SHIP_UPGRADE_BLOCKED_STATUSES.has(selectedShip.status) && selectedShipNeedsUpgrade && (
+                      <p className="mt-1 text-xs text-amber-700 dark:text-amber-200">
+                        Upgrade is blocked while status is {selectedShip.status}.
+                      </p>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleUpgradeShip}
+                    disabled={selectedShipUpgradeDisabled}
+                    className="inline-flex items-center gap-2 rounded-md border border-indigo-500/45 bg-indigo-500/12 px-3 py-1.5 text-xs font-medium text-indigo-700 disabled:opacity-50 dark:border-indigo-300/45 dark:text-indigo-200"
+                  >
+                    {isUpgradingShip ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                    {selectedShipNeedsUpgrade ? "Upgrade to latest" : "Already latest"}
+                  </button>
                 </div>
               </div>
             )}
@@ -3632,6 +4158,78 @@ export default function ShipYardPage() {
               </div>
             )}
 
+            {selectedShip && (
+              <div className="mb-4 rounded-xl border border-cyan-400/35 bg-cyan-500/8 p-3 dark:border-cyan-300/35">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                      Monitoring URLs
+                    </h2>
+                    <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
+                      Per-ship Grafana, Prometheus, and KubeView links used by Bridge quick actions and telemetry.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void saveSelectedShipMonitoring()}
+                    disabled={isSavingMonitoring}
+                    className="inline-flex items-center gap-1.5 rounded-md border border-cyan-500/45 bg-cyan-500/12 px-3 py-1.5 text-xs font-medium text-cyan-700 disabled:opacity-50 dark:border-cyan-300/45 dark:text-cyan-200"
+                  >
+                    {isSavingMonitoring ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
+                    Save Monitoring
+                  </button>
+                </div>
+
+                <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-3">
+                  <label>
+                    <span className="mb-1 block text-xs font-medium text-slate-700 dark:text-slate-300">Grafana URL</span>
+                    <input
+                      type="url"
+                      value={monitoringDraft.grafanaUrl}
+                      onChange={(event) =>
+                        setMonitoringDraft((current) => ({
+                          ...current,
+                          grafanaUrl: event.target.value,
+                        }))
+                      }
+                      placeholder="https://grafana.example.com/d/..."
+                      className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
+                    />
+                  </label>
+                  <label>
+                    <span className="mb-1 block text-xs font-medium text-slate-700 dark:text-slate-300">Prometheus URL</span>
+                    <input
+                      type="url"
+                      value={monitoringDraft.prometheusUrl}
+                      onChange={(event) =>
+                        setMonitoringDraft((current) => ({
+                          ...current,
+                          prometheusUrl: event.target.value,
+                        }))
+                      }
+                      placeholder="https://prometheus.example.com/graph"
+                      className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
+                    />
+                  </label>
+                  <label>
+                    <span className="mb-1 block text-xs font-medium text-slate-700 dark:text-slate-300">KubeView URL</span>
+                    <input
+                      type="url"
+                      value={monitoringDraft.kubeviewUrl}
+                      onChange={(event) =>
+                        setMonitoringDraft((current) => ({
+                          ...current,
+                          kubeviewUrl: event.target.value,
+                        }))
+                      }
+                      placeholder="http://kubeview.orchwiz-starship.localhost:18080/"
+                      className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
+                    />
+                  </label>
+                </div>
+              </div>
+            )}
+
             <div className="mb-4 rounded-xl border border-slate-300/70 bg-white/75 p-3 dark:border-white/12 dark:bg-white/[0.04]">
               <div className="flex items-center justify-between gap-3">
                 <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
@@ -3679,47 +4277,6 @@ export default function ShipYardPage() {
               )}
             </div>
 
-            <div className="mb-4 rounded-xl border border-cyan-500/35 bg-cyan-500/10 p-3">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <p className="text-[11px] uppercase tracking-wide text-cyan-700 dark:text-cyan-300">
-                    Quartermaster Assist
-                  </p>
-                  <p className="text-sm text-slate-800 dark:text-slate-100">
-                    Run a one-click Quick Launch readiness + maintenance pass for the selected ship profile.
-                  </p>
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => handleQuartermasterQuickLaunch("local")}
-                    disabled={isQuartermasterQuickLaunching || CLOUD_DEPLOY_ONLY}
-                    className="inline-flex items-center gap-2 rounded-md border border-violet-500/45 bg-violet-500/12 px-3 py-1.5 text-xs font-medium text-violet-700 disabled:opacity-50 dark:border-violet-300/45 dark:text-violet-200"
-                  >
-                    {isQuartermasterQuickLaunching && quartermasterQuickLaunchTarget === "local" ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <Server className="h-3.5 w-3.5" />
-                    )}
-                    Quick Launch Local
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleQuartermasterQuickLaunch("cloud")}
-                    disabled={isQuartermasterQuickLaunching}
-                    className="inline-flex items-center gap-2 rounded-md border border-cyan-500/45 bg-cyan-500/12 px-3 py-1.5 text-xs font-medium text-cyan-700 disabled:opacity-50 dark:border-cyan-300/45 dark:text-cyan-200"
-                  >
-                    {isQuartermasterQuickLaunching && quartermasterQuickLaunchTarget === "cloud" ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <Cloud className="h-3.5 w-3.5" />
-                    )}
-                    Quick Launch Cloud
-                  </button>
-                </div>
-              </div>
-            </div>
-
             <div className="mb-4 rounded-xl border border-amber-500/35 bg-amber-500/10 p-3">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
@@ -3741,16 +4298,11 @@ export default function ShipYardPage() {
               </div>
             </div>
 
-            <ShipQuartermasterPanel
-              shipDeploymentId={selectedShipDeploymentId}
-              shipName={selectedShip?.name || undefined}
-              className="mb-4"
-            />
-
             <ShipToolsPanel
               shipDeploymentId={selectedShipDeploymentId}
               shipName={selectedShip?.name || undefined}
               className="mb-4"
+              onShipNotFound={handlePanelShipNotFound}
             />
 
             <div className="flex items-center justify-between">
@@ -3870,6 +4422,86 @@ export default function ShipYardPage() {
             )}
           </SurfaceCard>
         )}
+
+        {mainTab === "ops" && selectedShipDeploymentId && (<SurfaceCard className="border-slate-300/70 bg-white/80 dark:border-white/12 dark:bg-white/[0.03]">
+          <div className="rounded-xl border border-rose-400/35 bg-rose-500/8 p-3 dark:border-rose-300/35">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <div className="flex items-center gap-2">
+                  <p className="text-[11px] uppercase tracking-wide text-rose-700 dark:text-rose-300">
+                    Ownership Transfer Utility
+                  </p>
+                  <span className="rounded-md border border-rose-400/45 bg-rose-500/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-rose-700 dark:text-rose-200">
+                    Ship + Apps
+                  </span>
+                </div>
+                <p className="mt-1 text-sm text-slate-800 dark:text-slate-100">
+                  Transfer a ship and linked applications into another user&apos;s fleet.
+                </p>
+                <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
+                  Owners can transfer their own ships. Admins can transfer any ship by deployment ID.
+                </p>
+              </div>
+              <div className="inline-flex items-center gap-1.5 rounded-md border border-slate-300/70 bg-white/70 px-2 py-1 text-[11px] text-slate-600 dark:border-white/12 dark:bg-white/[0.04] dark:text-slate-300">
+                <Shield className="h-3.5 w-3.5" />
+                {selectedShip
+                  ? `Selected: ${selectedShip.name}`
+                  : "No ship selected (manual ID transfer available)"}
+              </div>
+            </div>
+
+            <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
+              <label className="space-y-1">
+                <span className="text-[11px] uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                  Ship Deployment ID
+                </span>
+                <input
+                  type="text"
+                  value={transferShipDeploymentId}
+                  onChange={(event) => setTransferShipDeploymentId(event.target.value)}
+                  placeholder="cmlgpdu7w0000r2zt2r81rbar"
+                  className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
+                />
+              </label>
+
+              <label className="space-y-1">
+                <span className="text-[11px] uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                  Target Owner Email
+                </span>
+                <input
+                  type="email"
+                  value={transferTargetOwnerEmail}
+                  onChange={(event) => setTransferTargetOwnerEmail(event.target.value)}
+                  placeholder="captain@fleet.example"
+                  className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
+                />
+              </label>
+            </div>
+
+            <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+              <p className="text-xs text-slate-600 dark:text-slate-300">
+                Quartermaster provisioning runs after transfer and reports warnings if reprovision fails.
+              </p>
+              <button
+                type="button"
+                onClick={handleOwnershipTransfer}
+                disabled={
+                  isTransferringOwnership ||
+                  transferTargetOwnerEmail.trim().length === 0 ||
+                  resolvedTransferShipDeploymentId.length === 0
+                }
+                className="inline-flex items-center gap-1.5 rounded-md border border-rose-500/45 bg-rose-500/12 px-3 py-1.5 text-xs font-medium text-rose-700 disabled:opacity-50 dark:border-rose-300/45 dark:text-rose-200"
+              >
+                {isTransferringOwnership ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Users className="h-3.5 w-3.5" />
+                )}
+                Transfer Ownership
+              </button>
+            </div>
+          </div>
+        </SurfaceCard>)}
       </div>
     </div>
   </div>

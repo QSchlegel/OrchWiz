@@ -339,13 +339,18 @@ export function formatBridgeTelemetry(args: {
     if (priority !== 0) return priority
     return compareStrings(a.label || "", b.label || "")
   })
+  const monitoringLabels = new Set(["prometheus", "grafana"])
+  const prioritizedSystems = [
+    ...sortedSystems.filter((system) => monitoringLabels.has(String(system.label || "").trim().toLowerCase())),
+    ...sortedSystems.filter((system) => !monitoringLabels.has(String(system.label || "").trim().toLowerCase())),
+  ]
 
   const systemsLines =
-    sortedSystems.length === 0
+    prioritizedSystems.length === 0
       ? ["NO LIVE SYSTEMS"]
       : [
           sanitizeLine(`ALERTS CRIT:${criticalCount} WARN:${warningCount}`),
-          ...sortedSystems.slice(0, 4).map((system) => {
+          ...prioritizedSystems.slice(0, 4).map((system) => {
             const state = toUpperToken(String(system.state || "nominal"), "NOMINAL")
             const detail = system.detail ? ` ${system.detail}` : ""
             return sanitizeLine(`${state} ${system.label}${detail}`)

@@ -1,5 +1,6 @@
 import type { AccessActor } from "@/lib/security/access-control"
 import { AccessControlError, requireAccessActor } from "@/lib/security/access-control"
+import { LOCAL_SCHEMA_SYNC_GUIDANCE, isPrismaSchemaUnavailableError } from "@/lib/prisma-errors"
 import {
   getToolCatalogForUser,
   importCuratedToolForUser,
@@ -86,6 +87,16 @@ function handleToolApiError(error: unknown): ToolApiResponse {
       status: error.status,
       body: {
         error: error.message,
+      },
+    }
+  }
+
+  if (isPrismaSchemaUnavailableError(error)) {
+    return {
+      status: 503,
+      body: {
+        error: LOCAL_SCHEMA_SYNC_GUIDANCE,
+        code: "SCHEMA_UNAVAILABLE",
       },
     }
   }

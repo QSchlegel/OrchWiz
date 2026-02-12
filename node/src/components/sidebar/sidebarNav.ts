@@ -23,6 +23,8 @@ import {
   Database,
   Video,
   Gauge,
+  Wrench,
+  Settings2,
 } from "lucide-react"
 // Github is imported from lucide-react as "Github"
 import { Github } from "lucide-react"
@@ -77,6 +79,7 @@ export const sidebarNav: NavGroup[] = [
     icon: Bot,
     items: [
       navItem("/personal", "Agents", Bot),
+      navItem("/personal/tools", "Tools", Wrench),
       navItem("/skills", "Skills", ShieldCheck),
     ],
   },
@@ -101,6 +104,7 @@ export const sidebarNav: NavGroup[] = [
       navItem("/performance", "Performance", Gauge),
       navItem("/verification", "Verification", BadgeCheck),
       navItem("/security", "Security", ShieldCheck),
+      navItem("/settings", "Settings", Settings2),
       navItem("/hooks", "Hooks", Webhook),
       navItem("/github/prs", "GitHub PRs", Github),
       navItem("/docs/claude", "Docs", BookOpen),
@@ -122,6 +126,9 @@ export function matchesPath(pathname: string | null, href: string): boolean {
   if (!pathname) return false
   if (href === "/sessions") {
     return pathname === "/sessions" || pathname.startsWith("/sessions/")
+  }
+  if (href === "/personal") {
+    return pathname === "/personal"
   }
   if (href === "/projects") {
     return pathname === "/projects" || pathname.startsWith("/projects/")

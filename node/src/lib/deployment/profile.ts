@@ -2,6 +2,7 @@ import {
   normalizeCloudProviderConfig,
   type CloudProviderConfig,
 } from "@/lib/shipyard/cloud/types"
+import { normalizeShipMonitoringConfig } from "@/lib/shipyard/monitoring"
 
 export type NodeType = "local" | "cloud" | "hybrid"
 
@@ -181,12 +182,14 @@ export function normalizeInfrastructureInConfig(
     profile === "cloud_shipyard"
       ? normalizeCloudProviderConfig(config.cloudProvider)
       : undefined
+  const monitoring = normalizeShipMonitoringConfig(config.monitoring)
 
   return {
     infrastructure,
     config: {
       ...config,
       infrastructure,
+      monitoring,
       ...(cloudProvider ? { cloudProvider } : {}),
     },
   }

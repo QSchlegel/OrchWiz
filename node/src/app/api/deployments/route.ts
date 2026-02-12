@@ -12,6 +12,7 @@ import {
   normalizeInfrastructureInConfig,
   parseDeploymentType,
 } from "@/lib/deployment/profile"
+import { SHIP_BASELINE_VERSION, SHIP_LATEST_VERSION } from "@/lib/shipyard/versions"
 
 export const dynamic = 'force-dynamic'
 // Deprecated alias route: prefer /api/ships for ship operations.
@@ -133,6 +134,10 @@ export async function POST(request: NextRequest) {
     } = body
     const resolvedDeploymentType =
       deploymentType === "agent" || deploymentType === "ship" ? deploymentType : "ship"
+    const nextShipVersion =
+      resolvedDeploymentType === "ship" ? SHIP_LATEST_VERSION : SHIP_BASELINE_VERSION
+    const nextShipVersionUpdatedAt =
+      resolvedDeploymentType === "ship" ? new Date() : null
 
     const normalizedProfile = normalizeDeploymentProfileInput({
       deploymentProfile,
@@ -153,6 +158,8 @@ export async function POST(request: NextRequest) {
         deploymentProfile: normalizedProfile.deploymentProfile,
         provisioningMode: normalizedProfile.provisioningMode,
         nodeUrl: nodeUrl || null,
+        shipVersion: nextShipVersion,
+        shipVersionUpdatedAt: nextShipVersionUpdatedAt,
         config: normalizedProfile.config as Prisma.InputJsonValue,
         metadata: metadata || {},
         userId: session.user.id,

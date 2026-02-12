@@ -115,3 +115,63 @@ variable "app_env" {
   description = "Additional app environment variables"
   default     = {}
 }
+
+variable "enable_kubeview" {
+  type        = bool
+  description = "Whether to deploy kubeview for cluster visualization"
+  default     = true
+}
+
+variable "kubeview_chart_version" {
+  type        = string
+  description = "Bundled kubeview chart version from infra/vendor/kubeview/deploy/helm"
+  default     = "2.0.6"
+}
+
+variable "kubeview_single_namespace" {
+  type        = bool
+  description = "Whether kubeview should limit visibility to one namespace"
+  default     = false
+}
+
+variable "kubeview_ingress_enabled" {
+  type        = bool
+  description = "Whether to expose kubeview via ingress"
+  default     = true
+}
+
+variable "kubeview_ingress_host" {
+  type        = string
+  description = "Ingress host for kubeview; defaults to ingress_host when empty"
+  default     = ""
+}
+
+variable "kubeview_ingress_path" {
+  type        = string
+  description = "Ingress path prefix for kubeview"
+  default     = "/kubeview"
+}
+
+variable "kubeview_ingress_class_name" {
+  type        = string
+  description = "Ingress class for kubeview ingress"
+  default     = "nginx"
+}
+
+variable "kubeview_ingress_annotations" {
+  type        = map(string)
+  description = "Additional ingress annotations for kubeview"
+  default     = {}
+}
+
+variable "kubeview_ingress_auth_required" {
+  type        = bool
+  description = "Whether kubeview ingress requires explicit auth annotations"
+  default     = true
+}
+
+variable "kubeview_ingress_auth_annotations" {
+  type        = map(string)
+  description = "Auth-related ingress annotations required for cloud kubeview access"
+  default     = {}
+}

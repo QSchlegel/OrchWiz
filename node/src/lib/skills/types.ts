@@ -1,6 +1,7 @@
 export type SkillCatalogSourceValue = "curated" | "experimental" | "custom_github" | "local" | "system"
 export type SkillImportStatusValue = "running" | "succeeded" | "failed"
 export type SkillCatalogRefreshMode = "auto" | "force" | "none"
+export type CatalogActivationStatusValue = "pending" | "approved" | "denied"
 
 export type SkillGraphGroupId = "installed" | "curated" | "experimental" | "custom" | "system"
 
@@ -18,6 +19,12 @@ export interface SkillCatalogEntryDto {
   isInstalled: boolean
   isSystem: boolean
   installedPath: string | null
+  activationStatus: CatalogActivationStatusValue
+  activationRationale: string | null
+  activatedAt: string | null
+  activatedByUserId: string | null
+  activatedByBridgeCrewId: string | null
+  activationSecurityReportId: string | null
   metadata: Record<string, unknown> | null
   ownerUserId: string
   lastSyncedAt: string

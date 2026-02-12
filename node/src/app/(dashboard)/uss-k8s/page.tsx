@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent } from "react"
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent } from "react"
 import { useSession } from "@/lib/auth-client"
 import {
   Activity,
@@ -27,6 +27,7 @@ import {
 } from "lucide-react"
 import { OrchestrationSurface } from "@/components/orchestration/OrchestrationSurface"
 import { FlowCanvas } from "@/components/flow/FlowCanvas"
+import { useNotifications } from "@/components/notifications"
 import {
   K8sNode,
   ObservabilityNode,
@@ -46,27 +47,37 @@ import {
   GROUP_ORDER,
   SUBSYSTEM_GROUP_CONFIG,
   USS_K8S_COMMAND_HIERARCHY,
-  USS_K8S_COMMAND_TIER_BY_NODE,
   USS_K8S_COMPONENTS,
   USS_K8S_EDGES,
+  type CommandHierarchyTier,
   type EdgeType,
+  type SubsystemEdge,
   type SubsystemGroup,
   type TopologyComponent,
 } from "@/lib/uss-k8s/topology"
+import {
+  parseUssK8sTopologyResponse,
+  type KubeviewAccess,
+  type ShipSelectorItem,
+} from "@/lib/uss-k8s/topology-contract"
+import {
+  WINDOW_HEADER_HEIGHT,
+  captureWindowSnapshot,
+  dockWindowState,
+  maximizeWindowState,
+  restoreDockedWindowState,
+  restoreWindowStateFromSnapshot,
+  toggleWindowBodyCollapsed,
+} from "@/lib/uss-k8s/window-state"
 import { useSelectionHistory } from "@/lib/uss-k8s/useSelectionHistory"
 import { useShipSelection } from "@/lib/shipyard/useShipSelection"
 import { LoadingSkeleton } from "@/components/uss-k8s/LoadingSkeleton"
 import { BridgeCrewCard } from "@/components/uss-k8s/BridgeCrewCard"
-import {
-  ComponentDetailPanel,
-  DEFAULT_NODE_DRILLDOWN_CONFIG,
-  type NodeDrilldownConfig,
-} from "@/components/uss-k8s/ComponentDetailPanel"
+import { ComponentDetailPanel } from "@/components/uss-k8s/ComponentDetailPanel"
 import { TopologyControls } from "@/components/uss-k8s/TopologyControls"
 import { DockableWindow } from "@/components/uss-k8s/DockableWindow"
 import { FocusModeDock } from "@/components/uss-k8s/FocusModeDock"
 import { FocusModeDrawer } from "@/components/uss-k8s/FocusModeDrawer"
-import { ShipQuartermasterPanel } from "@/components/quartermaster/ShipQuartermasterPanel"
 import {
   addDockWindow,
   readDockWindows,
@@ -77,6 +88,8 @@ import {
   type DockRestoreEventDetail,
   type DockScope,
 } from "@/lib/window-dock"
+import { useEventStream } from "@/lib/realtime/useEventStream"
+import { asNotificationUpdatedPayload } from "@/lib/types/notifications"
 import type { Node, NodeChange, ReactFlowInstance, XYPosition } from "reactflow"
 
 const nodeTypes = {
@@ -86,6 +99,9 @@ const nodeTypes = {
   k8sNode: K8sNode,
   runtimeNode: RuntimeNode,
 }
+
+const MemoizedFlowCanvas = memo(FlowCanvas)
+MemoizedFlowCanvas.displayName = "MemoizedFlowCanvas"
 
 const groupIcons: Record<SubsystemGroup, React.ElementType> = {
   users: MessageSquare,
@@ -119,10 +135,6 @@ const componentIcons: Record<string, React.ElementType> = {
 
 const ALL_EDGE_TYPES = new Set<EdgeType>(["control", "data", "telemetry", "alert"])
 
-const EDGE_TYPE_BY_LINK = new Map(
-  USS_K8S_EDGES.map((edge) => [`${edge.source}->${edge.target}`, edge.edgeType] as const),
-)
-
 const COMMAND_TIER_CLASSES: Record<number, string> = {
   1: "border-amber-500/45 bg-amber-500/12 text-amber-700 dark:border-amber-300/45 dark:text-amber-100",
   2: "border-cyan-500/45 bg-cyan-500/12 text-cyan-700 dark:border-cyan-300/45 dark:text-cyan-100",
@@ -145,20 +157,12 @@ interface DesktopWindowState {
   minHeight: number
   z: number
   collapsed: boolean
+  bodyCollapsed: boolean
 }
 
 interface DesktopWindowMeta {
   subtitle: string
   title: string
-}
-
-interface ShipSelectorItem {
-  id: string
-  name: string
-  status: "pending" | "deploying" | "active" | "inactive" | "failed" | "updating"
-  nodeId: string
-  nodeType: "local" | "cloud" | "hybrid"
-  deploymentProfile: "local_starship_build" | "cloud_shipyard"
 }
 
 const MOBILE_SECTIONS: { key: MobileSection; label: string; icon: React.ElementType }[] = [
@@ -169,6 +173,13 @@ const MOBILE_SECTIONS: { key: MobileSection; label: string; icon: React.ElementT
 ]
 
 const WINDOW_DOCK_SCOPE: DockScope = "uss-k8s"
+const DEFAULT_KUBEVIEW_ACCESS: KubeviewAccess = {
+  enabled: false,
+  ingressEnabled: false,
+  url: null,
+  source: "unavailable",
+  reason: "KubeView data unavailable.",
+}
 
 const DESKTOP_WINDOW_META: Record<DesktopWindowId, DesktopWindowMeta> = {
   hierarchy: { subtitle: "Command Context", title: "Command Hierarchy" },
@@ -198,10 +209,34 @@ function createInitialDesktopWindows(stageWidth: number, stageHeight: number): R
   const legendWidth = Math.max(420, Math.min(700, stageWidth - 120))
 
   return {
-    hierarchy: { x: 16, y: 16, width: hierarchyWidth, minHeight: 120, z: 3, collapsed: false },
-    operator: { x: Math.max(16, stageWidth - operatorWidth - 16), y: 16, width: operatorWidth, minHeight: 220, z: 4, collapsed: false },
-    crew: { x: 16, y: 160, width: crewWidth, minHeight: Math.max(320, stageHeight - 176), z: 5, collapsed: false },
-    detail: { x: Math.max(16, stageWidth - detailWidth - 16), y: 250, width: detailWidth, minHeight: Math.max(320, stageHeight - 266), z: 6, collapsed: false },
+    hierarchy: { x: 16, y: 16, width: hierarchyWidth, minHeight: 120, z: 3, collapsed: false, bodyCollapsed: false },
+    operator: {
+      x: Math.max(16, stageWidth - operatorWidth - 16),
+      y: 16,
+      width: operatorWidth,
+      minHeight: 220,
+      z: 4,
+      collapsed: false,
+      bodyCollapsed: false,
+    },
+    crew: {
+      x: 16,
+      y: 160,
+      width: crewWidth,
+      minHeight: Math.max(320, stageHeight - 176),
+      z: 5,
+      collapsed: false,
+      bodyCollapsed: false,
+    },
+    detail: {
+      x: Math.max(16, stageWidth - detailWidth - 16),
+      y: 250,
+      width: detailWidth,
+      minHeight: Math.max(320, stageHeight - 266),
+      z: 6,
+      collapsed: false,
+      bodyCollapsed: false,
+    },
     legend: {
       x: Math.max(16, (stageWidth - legendWidth) / 2),
       y: Math.max(16, stageHeight - 72),
@@ -209,6 +244,7 @@ function createInitialDesktopWindows(stageWidth: number, stageHeight: number): R
       minHeight: 64,
       z: 2,
       collapsed: false,
+      bodyCollapsed: false,
     },
   }
 }
@@ -222,16 +258,22 @@ function formatStardate(date: Date) {
 
 export default function UssK8sPage() {
   const { data: session } = useSession()
+  const { registerActiveChannels } = useNotifications()
   const { selectedShipDeploymentId, setSelectedShipDeploymentId } = useShipSelection()
   const selectionHistory = useSelectionHistory()
   const [components, setComponents] = useState<TopologyComponent[]>(USS_K8S_COMPONENTS)
+  const [topologyEdgesSource, setTopologyEdgesSource] = useState<SubsystemEdge[]>(USS_K8S_EDGES)
+  const [subsystemGroupConfig, setSubsystemGroupConfig] = useState(SUBSYSTEM_GROUP_CONFIG)
+  const [groupOrder, setGroupOrder] = useState<SubsystemGroup[]>(GROUP_ORDER)
+  const [commandHierarchy, setCommandHierarchy] = useState<CommandHierarchyTier[]>(USS_K8S_COMMAND_HIERARCHY)
   const [availableShips, setAvailableShips] = useState<ShipSelectorItem[]>([])
+  const [kubeview, setKubeview] = useState<KubeviewAccess>(DEFAULT_KUBEVIEW_ACCESS)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   const [highlightNodeId, setHighlightNodeId] = useState<string | null>(null)
-  const [visibleEdgeTypes, setVisibleEdgeTypes] = useState<Set<EdgeType>>(ALL_EDGE_TYPES)
+  const [visibleEdgeTypes, setVisibleEdgeTypes] = useState<Set<EdgeType>>(() => new Set(ALL_EDGE_TYPES))
   const [nodePositionOverrides, setNodePositionOverrides] = useState<Record<string, XYPosition>>(() =>
     typeof window !== "undefined" ? readNodePositions() : {},
   )
@@ -245,8 +287,11 @@ export default function UssK8sPage() {
     return window.localStorage.getItem("orchwiz:uss-k8s-focus-mode") === "true"
   })
   const [focusDrawerId, setFocusDrawerId] = useState<DesktopWindowId | null>(null)
+  const [maximizedWindowId, setMaximizedWindowId] = useState<DesktopWindowId | null>(null)
+  const [draggingWindowId, setDraggingWindowId] = useState<DesktopWindowId | null>(null)
   const reactFlowRef = useRef<ReactFlowInstance | null>(null)
   const desktopStageRef = useRef<HTMLDivElement | null>(null)
+  const topologyReloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const draggingWindowRef = useRef<{
     id: DesktopWindowId
     startX: number
@@ -254,6 +299,10 @@ export default function UssK8sPage() {
     originX: number
     originY: number
   } | null>(null)
+  const draggingPointerRef = useRef<{ x: number; y: number } | null>(null)
+  const dragAnimationFrameRef = useRef<number | null>(null)
+  const maximizedWindowIdRef = useRef<DesktopWindowId | null>(null)
+  const maximizedWindowSnapshotsRef = useRef<Partial<Record<DesktopWindowId, ReturnType<typeof captureWindowSnapshot>>>>({})
   const dockSyncedRef = useRef(false)
   const windowsSeededRef = useRef(false)
   const [desktopStageSize, setDesktopStageSize] = useState({ width: 1360, height: 820 })
@@ -262,9 +311,12 @@ export default function UssK8sPage() {
   )
   const [activeWindowId, setActiveWindowId] = useState<DesktopWindowId>("detail")
 
-  const loadTopology = useCallback(async () => {
-    setIsLoading(true)
-    setError(null)
+  const loadTopology = useCallback(async (options?: { background?: boolean }) => {
+    const background = options?.background === true
+    if (!background) {
+      setIsLoading(true)
+      setError(null)
+    }
 
     try {
       const params = new URLSearchParams()
@@ -276,45 +328,16 @@ export default function UssK8sPage() {
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
 
       const data = await res.json()
-      if (Array.isArray(data.components)) {
-        setComponents(data.components)
-      }
-      const nextAvailableShips: ShipSelectorItem[] = Array.isArray(data.availableShips)
-        ? data.availableShips
-            .map((ship: Record<string, unknown>) => {
-              if (typeof ship.id !== "string" || typeof ship.name !== "string") return null
-              if (
-                ship.status !== "pending" &&
-                ship.status !== "deploying" &&
-                ship.status !== "active" &&
-                ship.status !== "inactive" &&
-                ship.status !== "failed" &&
-                ship.status !== "updating"
-              ) {
-                return null
-              }
-              if (ship.nodeType !== "local" && ship.nodeType !== "cloud" && ship.nodeType !== "hybrid") {
-                return null
-              }
-              if (ship.deploymentProfile !== "local_starship_build" && ship.deploymentProfile !== "cloud_shipyard") {
-                return null
-              }
+      const parsed = parseUssK8sTopologyResponse(data)
+      setComponents(parsed.components)
+      setTopologyEdgesSource(parsed.edges)
+      setSubsystemGroupConfig(parsed.groups)
+      setGroupOrder(parsed.groupOrder)
+      setCommandHierarchy(parsed.commandHierarchy)
+      setAvailableShips(parsed.availableShips)
+      setKubeview(parsed.kubeview)
 
-              return {
-                id: ship.id,
-                name: ship.name,
-                status: ship.status,
-                nodeId: typeof ship.nodeId === "string" ? ship.nodeId : "",
-                nodeType: ship.nodeType,
-                deploymentProfile: ship.deploymentProfile,
-              } satisfies ShipSelectorItem
-            })
-            .filter((ship: ShipSelectorItem | null): ship is ShipSelectorItem => ship !== null)
-        : []
-      setAvailableShips(nextAvailableShips)
-
-      const resolvedShipDeploymentId =
-        typeof data.selectedShipDeploymentId === "string" ? data.selectedShipDeploymentId : null
+      const resolvedShipDeploymentId = parsed.selectedShipDeploymentId
       if (resolvedShipDeploymentId !== selectedShipDeploymentId) {
         setSelectedShipDeploymentId(resolvedShipDeploymentId)
       }
@@ -322,18 +345,92 @@ export default function UssK8sPage() {
       console.error("Failed to load uss-k8s topology:", err)
       setError("Failed to load topology data")
     } finally {
-      setIsLoading(false)
+      if (!background) {
+        setIsLoading(false)
+      }
     }
   }, [selectedShipDeploymentId, setSelectedShipDeploymentId])
 
   useEffect(() => {
-    loadTopology()
+    void loadTopology()
   }, [loadTopology])
+
+  useEffect(() => {
+    return registerActiveChannels(["uss-k8s"])
+  }, [registerActiveChannels])
+
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow
+    const previousOverscrollBehavior = document.body.style.overscrollBehavior
+    document.body.style.overflow = "hidden"
+    document.body.style.overscrollBehavior = "none"
+
+    return () => {
+      document.body.style.overflow = previousOverflow
+      document.body.style.overscrollBehavior = previousOverscrollBehavior
+    }
+  }, [])
+
+  const queueTopologyReload = useCallback(() => {
+    if (topologyReloadTimerRef.current) {
+      clearTimeout(topologyReloadTimerRef.current)
+    }
+    topologyReloadTimerRef.current = setTimeout(() => {
+      topologyReloadTimerRef.current = null
+      void loadTopology({ background: true })
+    }, 320)
+  }, [loadTopology])
+
+  useEffect(() => {
+    return () => {
+      if (topologyReloadTimerRef.current) {
+        clearTimeout(topologyReloadTimerRef.current)
+        topologyReloadTimerRef.current = null
+      }
+    }
+  }, [])
+
+  const handleRealtimeNotification = useCallback((event: { type: string; payload: unknown }) => {
+    if (event.type !== "notification.updated") {
+      return
+    }
+
+    const payload = asNotificationUpdatedPayload(event.payload)
+    if (!payload || payload.channel !== "uss-k8s") {
+      return
+    }
+
+    queueTopologyReload()
+  }, [queueTopologyReload])
+
+  useEventStream({
+    enabled: Boolean(session?.user?.id),
+    types: ["notification.updated"],
+    onEvent: handleRealtimeNotification,
+  })
+
+  useEffect(() => {
+    maximizedWindowIdRef.current = maximizedWindowId
+  }, [maximizedWindowId])
 
   const selectedShip = useMemo(() => {
     if (!selectedShipDeploymentId) return null
     return availableShips.find((ship) => ship.id === selectedShipDeploymentId) || null
   }, [availableShips, selectedShipDeploymentId])
+
+  const kubeviewUnavailableReason = useMemo(() => {
+    if (kubeview.url) {
+      return null
+    }
+    return kubeview.reason || "KubeView URL is unavailable for the selected ship."
+  }, [kubeview.reason, kubeview.url])
+
+  const openKubeview = useCallback(() => {
+    if (!kubeview.url) {
+      return
+    }
+    window.open(kubeview.url, "_blank", "noopener,noreferrer")
+  }, [kubeview.url])
 
   const focusDesktopWindow = useCallback((id: DesktopWindowId) => {
     setDesktopWindows((previous) => {
@@ -355,8 +452,7 @@ export default function UssK8sPage() {
       return {
         ...previous,
         [id]: {
-          ...previous[id],
-          collapsed: false,
+          ...restoreDockedWindowState(previous[id]),
           z: maxZ + 1,
         },
       }
@@ -365,21 +461,105 @@ export default function UssK8sPage() {
     removeDockWindow(WINDOW_DOCK_SCOPE, id)
   }, [])
 
-  const collapseDesktopWindow = useCallback((id: string) => {
+  const dockDesktopWindow = useCallback((id: string) => {
     if (!isDesktopWindowId(id)) return
-    setDesktopWindows((previous) => ({
-      ...previous,
-      [id]: {
-        ...previous[id],
-        collapsed: true,
-      },
-    }))
+
+    const wasMaximized = maximizedWindowIdRef.current === id
+    setDesktopWindows((previous) => {
+      const currentWindow = previous[id]
+      const restoredWindow = wasMaximized
+        ? restoreWindowStateFromSnapshot(currentWindow, maximizedWindowSnapshotsRef.current[id])
+        : currentWindow
+
+      return {
+        ...previous,
+        [id]: {
+          ...dockWindowState(restoredWindow),
+        },
+      }
+    })
+
+    if (wasMaximized) {
+      delete maximizedWindowSnapshotsRef.current[id]
+      maximizedWindowIdRef.current = null
+      setMaximizedWindowId(null)
+    }
+
     addDockWindow({
       scope: WINDOW_DOCK_SCOPE,
       id,
       label: DESKTOP_WINDOW_META[id].title,
     })
   }, [])
+
+  const toggleDesktopWindowBody = useCallback((id: string) => {
+    if (!isDesktopWindowId(id)) return
+    setDesktopWindows((previous) => ({
+      ...previous,
+      [id]: {
+        ...toggleWindowBodyCollapsed(previous[id]),
+      },
+    }))
+  }, [])
+
+  const toggleDesktopWindowMaximize = useCallback((id: string) => {
+    if (!isDesktopWindowId(id)) return
+    if (!desktopWindows[id]) return
+
+    const currentMaximizedId = maximizedWindowIdRef.current
+    const nextMaximizedId: DesktopWindowId | null = currentMaximizedId === id ? null : id
+    const restoreSnapshot = currentMaximizedId
+      ? maximizedWindowSnapshotsRef.current[currentMaximizedId]
+      : undefined
+    const nextSnapshot = nextMaximizedId
+      ? captureWindowSnapshot(desktopWindows[nextMaximizedId])
+      : undefined
+
+    maximizedWindowIdRef.current = nextMaximizedId
+    setMaximizedWindowId(nextMaximizedId)
+
+    if (currentMaximizedId) {
+      delete maximizedWindowSnapshotsRef.current[currentMaximizedId]
+    }
+    if (nextMaximizedId && nextSnapshot) {
+      maximizedWindowSnapshotsRef.current[nextMaximizedId] = nextSnapshot
+    }
+
+    setDesktopWindows((previous) => {
+      let next = { ...previous }
+
+      if (currentMaximizedId) {
+        next[currentMaximizedId] = {
+          ...restoreWindowStateFromSnapshot(
+            next[currentMaximizedId],
+            restoreSnapshot,
+          ),
+        }
+      }
+
+      if (nextMaximizedId) {
+        const targetWindow = next[nextMaximizedId]
+        if (!targetWindow) {
+          return previous
+        }
+
+        const maxZ = Math.max(...Object.values(next).map((windowState) => windowState.z))
+        next[nextMaximizedId] = {
+          ...maximizeWindowState(targetWindow, desktopStageSize),
+          z: maxZ + 1,
+        }
+      }
+
+      return next
+    })
+
+    if (nextMaximizedId) {
+      removeDockWindow(WINDOW_DOCK_SCOPE, nextMaximizedId)
+      setActiveWindowId(nextMaximizedId)
+    } else {
+      setActiveWindowId(id)
+    }
+  }, [desktopStageSize, desktopWindows])
 
   const toggleFocusMode = useCallback(() => {
     setFocusMode((prev) => {
@@ -392,8 +572,8 @@ export default function UssK8sPage() {
 
   const hideAllWindows = useCallback(() => {
     const ids: DesktopWindowId[] = ["hierarchy", "operator", "crew", "detail", "legend"]
-    for (const id of ids) collapseDesktopWindow(id)
-  }, [collapseDesktopWindow])
+    for (const id of ids) dockDesktopWindow(id)
+  }, [dockDesktopWindow])
 
   const showAllWindows = useCallback(() => {
     const ids: DesktopWindowId[] = ["hierarchy", "operator", "crew", "detail", "legend"]
@@ -403,10 +583,13 @@ export default function UssK8sPage() {
   const handleWindowDragStart = useCallback((id: string, event: PointerEvent<HTMLDivElement>) => {
     if (!isDesktopWindowId(id)) return
     if (event.button !== 0) return
+    if (maximizedWindowIdRef.current === id) return
+    if ((event.target as HTMLElement).closest("[data-window-control=\"true\"]")) return
 
     const windowState = desktopWindows[id]
     if (!windowState) return
 
+    event.preventDefault()
     focusDesktopWindow(id)
     draggingWindowRef.current = {
       id,
@@ -415,6 +598,11 @@ export default function UssK8sPage() {
       originX: windowState.x,
       originY: windowState.y,
     }
+    draggingPointerRef.current = { x: event.clientX, y: event.clientY }
+    setDraggingWindowId(id)
+
+    document.body.style.userSelect = "none"
+    document.body.style.cursor = "grabbing"
   }, [desktopWindows, focusDesktopWindow])
 
   const handleWindowFocus = useCallback((id: string) => {
@@ -441,7 +629,7 @@ export default function UssK8sPage() {
           const persisted = readWindowPositions(WINDOW_DOCK_SCOPE)
           if (persisted) {
             seed = { ...seed }
-            for (const [id, pos] of Object.entries(persisted)) {
+            for (const [id, pos] of Object.entries(persisted as Record<string, { x: number; y: number; width: number }>)) {
               if (id in seed) {
                 seed[id as DesktopWindowId] = {
                   ...seed[id as DesktopWindowId],
@@ -457,6 +645,13 @@ export default function UssK8sPage() {
         const next = { ...seed }
 
         ;(Object.keys(next) as DesktopWindowId[]).forEach((id) => {
+          if (maximizedWindowIdRef.current === id) {
+            next[id] = {
+              ...maximizeWindowState(next[id], { width, height }),
+            }
+            return
+          }
+
           const maxWidth = Math.max(280, width - 32)
           const boundedWidth = Math.min(next[id].width, maxWidth)
           const maxX = Math.max(16, width - boundedWidth - 16)
@@ -495,8 +690,7 @@ export default function UssK8sPage() {
       for (const dockItem of dockedWindows) {
         if (isDesktopWindowId(dockItem.id)) {
           next[dockItem.id] = {
-            ...next[dockItem.id],
-            collapsed: true,
+            ...dockWindowState(next[dockItem.id]),
           }
         }
       }
@@ -520,12 +714,13 @@ export default function UssK8sPage() {
   }, [restoreDesktopWindow])
 
   useEffect(() => {
-    const handleWindowDragMove = (event: globalThis.PointerEvent) => {
+    const applyDragPosition = () => {
       const dragState = draggingWindowRef.current
-      if (!dragState) return
+      const pointer = draggingPointerRef.current
+      if (!dragState || !pointer) return
 
-      const deltaX = event.clientX - dragState.startX
-      const deltaY = event.clientY - dragState.startY
+      const deltaX = pointer.x - dragState.startX
+      const deltaY = pointer.y - dragState.startY
       setDesktopWindows((previous) => {
         const current = previous[dragState.id]
         if (!current) return previous
@@ -547,7 +742,27 @@ export default function UssK8sPage() {
       })
     }
 
+    const handleWindowDragMove = (event: globalThis.PointerEvent) => {
+      if (!draggingWindowRef.current) return
+      draggingPointerRef.current = { x: event.clientX, y: event.clientY }
+
+      if (dragAnimationFrameRef.current !== null) {
+        return
+      }
+
+      dragAnimationFrameRef.current = window.requestAnimationFrame(() => {
+        dragAnimationFrameRef.current = null
+        applyDragPosition()
+      })
+    }
+
     const handleWindowDragEnd = () => {
+      if (dragAnimationFrameRef.current !== null) {
+        window.cancelAnimationFrame(dragAnimationFrameRef.current)
+        dragAnimationFrameRef.current = null
+      }
+      applyDragPosition()
+
       if (draggingWindowRef.current) {
         // Persist window positions after drag
         setDesktopWindows((current) => {
@@ -559,7 +774,12 @@ export default function UssK8sPage() {
           return current
         })
       }
+
       draggingWindowRef.current = null
+      draggingPointerRef.current = null
+      setDraggingWindowId(null)
+      document.body.style.userSelect = ""
+      document.body.style.cursor = ""
     }
 
     window.addEventListener("pointermove", handleWindowDragMove)
@@ -570,6 +790,13 @@ export default function UssK8sPage() {
       window.removeEventListener("pointermove", handleWindowDragMove)
       window.removeEventListener("pointerup", handleWindowDragEnd)
       window.removeEventListener("pointercancel", handleWindowDragEnd)
+
+      if (dragAnimationFrameRef.current !== null) {
+        window.cancelAnimationFrame(dragAnimationFrameRef.current)
+        dragAnimationFrameRef.current = null
+      }
+      document.body.style.userSelect = ""
+      document.body.style.cursor = ""
     }
   }, [desktopStageSize.height, desktopStageSize.width])
 
@@ -592,7 +819,7 @@ export default function UssK8sPage() {
   }, [components, searchTerm, activeGroupFilter])
 
   const topologyNodes = useMemo(() => {
-    const mappedNodes = GROUP_ORDER.flatMap((groupKey) =>
+    const mappedNodes = groupOrder.flatMap((groupKey) =>
       mapSubsystemToNodes(
         filteredComponents.filter((component) => component.group === groupKey).map((component) => ({
           ...component,
@@ -605,15 +832,25 @@ export default function UssK8sPage() {
 
     const layouted = layoutUssK8sTopology(mappedNodes)
     return mergeCustomPositions(layouted, nodePositionOverrides)
-  }, [filteredComponents, selectedId, nodePositionOverrides])
+  }, [filteredComponents, selectedId, nodePositionOverrides, groupOrder])
+
+  const edgeTypeByLink = useMemo(
+    () => new Map(topologyEdgesSource.map((edge) => [`${edge.source}->${edge.target}`, edge.edgeType] as const)),
+    [topologyEdgesSource],
+  )
+
+  const commandTierByNode = useMemo(
+    () => Object.fromEntries(commandHierarchy.flatMap((tier) => tier.nodeIds.map((nodeId) => [nodeId, tier.tier]))),
+    [commandHierarchy],
+  )
 
   const topologyEdges = useMemo(() => {
-    const edges = buildSubsystemEdgesFiltered(USS_K8S_EDGES, visibleEdgeTypes, highlightNodeId)
+    const edges = buildSubsystemEdgesFiltered(topologyEdgesSource, visibleEdgeTypes, highlightNodeId)
 
     return edges.map((edge) => {
-      const edgeType = EDGE_TYPE_BY_LINK.get(`${edge.source}->${edge.target}`)
-      const sourceTier = USS_K8S_COMMAND_TIER_BY_NODE[edge.source]
-      const targetTier = USS_K8S_COMMAND_TIER_BY_NODE[edge.target]
+      const edgeType = edgeTypeByLink.get(`${edge.source}->${edge.target}`)
+      const sourceTier = commandTierByNode[edge.source]
+      const targetTier = commandTierByNode[edge.target]
       const isConnected = !highlightNodeId || edge.source === highlightNodeId || edge.target === highlightNodeId
       const isHierarchyControlEdge =
         edgeType === "control" &&
@@ -634,13 +871,13 @@ export default function UssK8sPage() {
         },
       }
     })
-  }, [visibleEdgeTypes, highlightNodeId])
+  }, [visibleEdgeTypes, highlightNodeId, topologyEdgesSource, edgeTypeByLink, commandTierByNode])
 
-  const handleNodeClick = (_: unknown, node: Node) => {
+  const handleNodeClick = useCallback((_: unknown, node: Node) => {
     setSelectedId(node.id)
     setHighlightNodeId(node.id)
     restoreDesktopWindow("detail")
-  }
+  }, [restoreDesktopWindow])
 
   const handlePaneClick = useCallback(() => {
     setSelectedId(null)
@@ -663,8 +900,12 @@ export default function UssK8sPage() {
       setNodePositionOverrides((prev) => {
         const next = { ...prev }
         for (const change of positionChanges) {
-          if (change.position) {
-            next[change.id] = change.position
+          if (
+            change.position &&
+            Number.isFinite(change.position.x) &&
+            Number.isFinite(change.position.y)
+          ) {
+            next[change.id] = { x: change.position.x, y: change.position.y }
           }
         }
         return next
@@ -694,6 +935,9 @@ export default function UssK8sPage() {
     if (!instance) return
     const targetNode = instance.getNodes().find((n) => n.id === nodeId)
     if (!targetNode) return
+    if (!Number.isFinite(targetNode.position.x) || !Number.isFinite(targetNode.position.y)) {
+      return
+    }
     // Delay pan by one frame so React can render the selection highlight first
     requestAnimationFrame(() => {
       instance.setCenter(
@@ -730,33 +974,33 @@ export default function UssK8sPage() {
 
   const subsystemCounts = useMemo(
     () =>
-      GROUP_ORDER.map((groupKey) => {
+      groupOrder.map((groupKey) => {
         const count = components.filter((component) => component.group === groupKey).length
         return { groupKey, count }
       }),
-    [components],
+    [components, groupOrder],
   )
 
   const connectionCounts = useMemo(() => {
     const counts: Record<string, number> = {}
 
-    for (const edge of USS_K8S_EDGES) {
+    for (const edge of topologyEdgesSource) {
       counts[edge.source] = (counts[edge.source] || 0) + 1
       counts[edge.target] = (counts[edge.target] || 0) + 1
     }
 
     return counts
-  }, [])
+  }, [topologyEdgesSource])
 
   const adjacency = useMemo(() => {
     const incoming: Record<string, string[]> = {}
     const outgoing: Record<string, string[]> = {}
-    for (const edge of USS_K8S_EDGES) {
+    for (const edge of topologyEdgesSource) {
       ;(incoming[edge.target] ??= []).push(edge.source)
       ;(outgoing[edge.source] ??= []).push(edge.target)
     }
     return { incoming, outgoing }
-  }, [])
+  }, [topologyEdgesSource])
 
   const stardate = formatStardate(new Date())
   const operatorLabel = session?.user?.email || "Operator"
@@ -764,14 +1008,14 @@ export default function UssK8sPage() {
   const hasActiveSearch = Boolean(searchTerm.trim())
 
   const activeHierarchyTier = useMemo(() => {
-    if (highlightNodeId && USS_K8S_COMMAND_TIER_BY_NODE[highlightNodeId]) {
-      return USS_K8S_COMMAND_TIER_BY_NODE[highlightNodeId]
+    if (highlightNodeId && commandTierByNode[highlightNodeId]) {
+      return commandTierByNode[highlightNodeId]
     }
-    if (selectedId && USS_K8S_COMMAND_TIER_BY_NODE[selectedId]) {
-      return USS_K8S_COMMAND_TIER_BY_NODE[selectedId]
+    if (selectedId && commandTierByNode[selectedId]) {
+      return commandTierByNode[selectedId]
     }
     return null
-  }, [highlightNodeId, selectedId])
+  }, [highlightNodeId, selectedId, commandTierByNode])
 
   const selectAndHighlight = useCallback((id: string) => {
     setSelectedId(id)
@@ -803,7 +1047,7 @@ export default function UssK8sPage() {
 
   const handleResetAll = useCallback(() => {
     setSearchTerm("")
-    setVisibleEdgeTypes(ALL_EDGE_TYPES)
+    setVisibleEdgeTypes(new Set(ALL_EDGE_TYPES))
     setHighlightNodeId(null)
     setSelectedId(null)
     setActiveGroupFilter(null)
@@ -848,7 +1092,7 @@ export default function UssK8sPage() {
           if (ws.collapsed) {
             restoreDesktopWindow(windowId)
           } else {
-            collapseDesktopWindow(windowId)
+            dockDesktopWindow(windowId)
           }
         }
         return
@@ -907,7 +1151,7 @@ export default function UssK8sPage() {
     }
     window.addEventListener("keydown", handleKeyDown)
     return () => window.removeEventListener("keydown", handleKeyDown)
-  }, [focusMode, focusDrawerId, desktopWindows, collapseDesktopWindow, restoreDesktopWindow, toggleFocusMode, selectedId, adjacency, selectionHistory, selectAndHighlight, components])
+  }, [focusMode, focusDrawerId, desktopWindows, dockDesktopWindow, restoreDesktopWindow, toggleFocusMode, selectedId, adjacency, selectionHistory, selectAndHighlight, components])
 
   const hierarchyPanel = (
     <div className="rounded-lg border border-slate-300/75 bg-white/72 px-3 py-3 dark:border-white/12 dark:bg-white/[0.03]">
@@ -918,9 +1162,12 @@ export default function UssK8sPage() {
         </span>
       </div>
       <div className="flex flex-nowrap gap-2 overflow-x-auto pb-1.5 sm:flex-wrap sm:overflow-visible sm:pb-0">
-        {USS_K8S_COMMAND_HIERARCHY.map((tier) => {
+        {commandHierarchy.map((tier) => {
           const isActive = activeHierarchyTier === tier.tier
           const anchorNodeId = tier.nodeIds[0]
+          const tierClass =
+            COMMAND_TIER_CLASSES[tier.tier] ||
+            "border-slate-500/45 bg-slate-500/12 text-slate-700 dark:border-slate-300/45 dark:text-slate-100"
 
           return (
             <button
@@ -929,12 +1176,12 @@ export default function UssK8sPage() {
               onClick={() => selectAndHighlight(anchorNodeId)}
               className={`flex min-h-[34px] shrink-0 items-center gap-2 rounded-md border px-2.5 py-1.5 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500/60 dark:focus-visible:ring-cyan-400/60 ${
                 isActive
-                  ? COMMAND_TIER_CLASSES[tier.tier]
+                  ? tierClass
                   : "border-slate-300/75 bg-white/70 text-slate-700 hover:border-slate-400 hover:bg-white dark:border-white/12 dark:bg-transparent dark:text-slate-300 dark:hover:border-white/25 dark:hover:bg-white/[0.06]"
               }`}
               title={tier.description}
             >
-              <span className={`readout rounded border px-1 py-0.5 ${COMMAND_TIER_CLASSES[tier.tier]}`}>
+              <span className={`readout rounded border px-1 py-0.5 ${tierClass}`}>
                 C{tier.tier}
               </span>
               <span className="text-[12px] font-medium">{tier.label}</span>
@@ -947,8 +1194,8 @@ export default function UssK8sPage() {
 
   const groupLegend = (
     <div className="flex items-center gap-3 overflow-x-auto pb-1.5 sm:flex-wrap sm:overflow-visible sm:pb-0">
-      {GROUP_ORDER.map((groupKey) => {
-        const config = SUBSYSTEM_GROUP_CONFIG[groupKey]
+      {groupOrder.map((groupKey) => {
+        const config = subsystemGroupConfig[groupKey]
         const isActive = activeGroupFilter === groupKey
 
         return (
@@ -1062,20 +1309,40 @@ export default function UssK8sPage() {
   )
 
   const desktopWindowStyles = useMemo<Record<DesktopWindowId, CSSProperties>>(() => {
-    const crewHeight = Math.max(desktopWindows.crew.minHeight, desktopStageSize.height - desktopWindows.crew.y - 16)
-    const detailHeight = Math.max(desktopWindows.detail.minHeight, desktopStageSize.height - desktopWindows.detail.y - 16)
+    const resolveExpandedHeight = (id: DesktopWindowId) =>
+      Math.max(desktopWindows[id].minHeight, desktopStageSize.height - desktopWindows[id].y - 16)
+
+    const hierarchyHeight = desktopWindows.hierarchy.bodyCollapsed
+      ? WINDOW_HEADER_HEIGHT
+      : maximizedWindowId === "hierarchy"
+        ? resolveExpandedHeight("hierarchy")
+        : undefined
+    const operatorHeight = desktopWindows.operator.bodyCollapsed
+      ? WINDOW_HEADER_HEIGHT
+      : maximizedWindowId === "operator"
+        ? resolveExpandedHeight("operator")
+        : undefined
+    const crewHeight = desktopWindows.crew.bodyCollapsed ? WINDOW_HEADER_HEIGHT : resolveExpandedHeight("crew")
+    const detailHeight = desktopWindows.detail.bodyCollapsed ? WINDOW_HEADER_HEIGHT : resolveExpandedHeight("detail")
+    const legendHeight = desktopWindows.legend.bodyCollapsed
+      ? WINDOW_HEADER_HEIGHT
+      : maximizedWindowId === "legend"
+        ? resolveExpandedHeight("legend")
+        : undefined
 
     return {
       hierarchy: {
         left: desktopWindows.hierarchy.x,
         top: desktopWindows.hierarchy.y,
         width: desktopWindows.hierarchy.width,
+        ...(hierarchyHeight ? { height: hierarchyHeight } : {}),
         zIndex: desktopWindows.hierarchy.z,
       },
       operator: {
         left: desktopWindows.operator.x,
         top: desktopWindows.operator.y,
         width: desktopWindows.operator.width,
+        ...(operatorHeight ? { height: operatorHeight } : {}),
         zIndex: desktopWindows.operator.z,
       },
       crew: {
@@ -1096,17 +1363,18 @@ export default function UssK8sPage() {
         left: desktopWindows.legend.x,
         top: desktopWindows.legend.y,
         width: desktopWindows.legend.width,
+        ...(legendHeight ? { height: legendHeight } : {}),
         zIndex: desktopWindows.legend.z,
       },
     }
-  }, [desktopStageSize.height, desktopWindows])
+  }, [desktopStageSize.height, desktopWindows, maximizedWindowId])
 
   if (isLoading) {
     return <LoadingSkeleton />
   }
 
   return (
-    <main className="uss-k8s-page relative flex min-h-[calc(100dvh-var(--theme-footer-height)-3.5rem)] flex-col overflow-y-auto overflow-x-hidden xl:h-full xl:min-h-0 xl:overflow-hidden">
+    <main className="uss-k8s-page relative flex h-[calc(100dvh-var(--theme-footer-height)-3.5rem)] min-h-0 flex-col overflow-y-auto overflow-x-hidden xl:overflow-hidden">
       <div className="pointer-events-none absolute inset-0 overflow-hidden">
         <div className="uss-orb-cyan orb-breathe absolute -left-16 -top-24 h-80 w-80 rounded-full blur-[100px]" />
         <div className="uss-orb-violet orb-breathe-alt absolute -right-24 top-1/2 h-96 w-96 rounded-full blur-[120px]" />
@@ -1156,6 +1424,24 @@ export default function UssK8sPage() {
               {selectedShip && (
                 <span className="hidden rounded-md border border-slate-300/70 bg-white/70 px-2 py-1 text-[11px] text-slate-700 sm:inline-flex dark:border-white/12 dark:bg-white/[0.04] dark:text-slate-200">
                   {selectedShip.name}
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={openKubeview}
+                disabled={!kubeview.url}
+                className={`readout inline-flex h-7 items-center rounded-md border px-2 text-[11px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500/60 dark:focus-visible:ring-cyan-400/60 ${
+                  kubeview.url
+                    ? "border-cyan-500/45 bg-cyan-500/12 text-cyan-700 hover:bg-cyan-500/20 dark:border-cyan-300/45 dark:text-cyan-100"
+                    : "cursor-not-allowed border-slate-300/70 bg-slate-100/80 text-slate-500 dark:border-white/12 dark:bg-white/[0.04] dark:text-slate-400"
+                }`}
+                title={kubeview.url ? "Open KubeView in a new tab" : (kubeviewUnavailableReason || "KubeView unavailable")}
+              >
+                Open KubeView
+              </button>
+              {!kubeview.url && kubeviewUnavailableReason && (
+                <span className="max-w-[260px] truncate text-[11px] text-amber-700 dark:text-amber-300">
+                  {kubeviewUnavailableReason}
                 </span>
               )}
 
@@ -1228,7 +1514,9 @@ export default function UssK8sPage() {
               </div>
               <button
                 type="button"
-                onClick={loadTopology}
+                onClick={() => {
+                  void loadTopology()
+                }}
                 className="readout flex items-center gap-1.5 rounded-md border border-rose-400/50 bg-rose-500/10 px-3 py-1.5 text-rose-700 transition-colors hover:bg-rose-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-400/60 dark:border-rose-300/35 dark:text-rose-100"
               >
                 <RefreshCw className="h-3 w-3" />
@@ -1242,7 +1530,7 @@ export default function UssK8sPage() {
               <div className="relative h-full min-h-0">
                 <div className="absolute inset-0 overflow-hidden">
                   {hasFilteredResults ? (
-                    <FlowCanvas
+                    <MemoizedFlowCanvas
                       nodes={topologyNodes}
                       edges={topologyEdges}
                       nodeTypes={nodeTypes}
@@ -1277,7 +1565,9 @@ export default function UssK8sPage() {
                           )}
                           <button
                             type="button"
-                            onClick={loadTopology}
+                            onClick={() => {
+                              void loadTopology()
+                            }}
                             className="readout rounded-md border border-slate-400/45 bg-white/70 px-3 py-1.5 text-slate-700 transition-colors hover:bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400/60 dark:border-white/20 dark:bg-white/[0.04] dark:text-slate-200"
                           >
                             Reload Topology
@@ -1313,7 +1603,7 @@ export default function UssK8sPage() {
                             <div className="bridge-divider my-3" />
                             <div className="space-y-2">
                               {subsystemCounts.map(({ groupKey, count }) => {
-                                const config = SUBSYSTEM_GROUP_CONFIG[groupKey]
+                                const config = subsystemGroupConfig[groupKey]
                                 const Icon = groupIcons[groupKey]
                                 return (
                                   <div
@@ -1329,12 +1619,6 @@ export default function UssK8sPage() {
                                 )
                               })}
                             </div>
-                            <ShipQuartermasterPanel
-                              shipDeploymentId={selectedShipDeploymentId}
-                              shipName={selectedShip?.name || undefined}
-                              className="mt-3"
-                              compact
-                            />
                           </>
                         )}
                         {focusDrawerId === "crew" && (
@@ -1356,7 +1640,7 @@ export default function UssK8sPage() {
                             <ComponentDetailPanel
                               component={selected}
                               components={components}
-                              edges={USS_K8S_EDGES}
+                              edges={topologyEdgesSource}
                               componentIcons={componentIcons}
                               onHighlightNode={selectAndHighlight}
                             />
@@ -1375,8 +1659,13 @@ export default function UssK8sPage() {
                       style={desktopWindowStyles.hierarchy}
                       bodyClassName="p-3"
                       collapsed={desktopWindows.hierarchy.collapsed}
+                      bodyCollapsed={desktopWindows.hierarchy.bodyCollapsed}
+                      maximized={maximizedWindowId === "hierarchy"}
+                      isDragging={draggingWindowId === "hierarchy"}
                       onDragStart={handleWindowDragStart}
-                      onCollapse={collapseDesktopWindow}
+                      onDock={dockDesktopWindow}
+                      onToggleBody={toggleDesktopWindowBody}
+                      onToggleMaximize={toggleDesktopWindowMaximize}
                       onFocus={handleWindowFocus}
                       isActive={activeWindowId === "hierarchy"}
                     >
@@ -1390,8 +1679,13 @@ export default function UssK8sPage() {
                       style={desktopWindowStyles.operator}
                       bodyClassName="p-4"
                       collapsed={desktopWindows.operator.collapsed}
+                      bodyCollapsed={desktopWindows.operator.bodyCollapsed}
+                      maximized={maximizedWindowId === "operator"}
+                      isDragging={draggingWindowId === "operator"}
                       onDragStart={handleWindowDragStart}
-                      onCollapse={collapseDesktopWindow}
+                      onDock={dockDesktopWindow}
+                      onToggleBody={toggleDesktopWindowBody}
+                      onToggleMaximize={toggleDesktopWindowMaximize}
                       onFocus={handleWindowFocus}
                       isActive={activeWindowId === "operator"}
                     >
@@ -1405,7 +1699,7 @@ export default function UssK8sPage() {
 
                       <div className="space-y-2">
                         {subsystemCounts.map(({ groupKey, count }) => {
-                          const config = SUBSYSTEM_GROUP_CONFIG[groupKey]
+                          const config = subsystemGroupConfig[groupKey]
                           const Icon = groupIcons[groupKey]
 
                           return (
@@ -1422,12 +1716,6 @@ export default function UssK8sPage() {
                           )
                         })}
                       </div>
-                      <ShipQuartermasterPanel
-                        shipDeploymentId={selectedShipDeploymentId}
-                        shipName={selectedShip?.name || undefined}
-                        className="mt-3"
-                        compact
-                      />
                     </DockableWindow>
 
                     <DockableWindow
@@ -1437,8 +1725,13 @@ export default function UssK8sPage() {
                       style={desktopWindowStyles.crew}
                       bodyClassName="h-[calc(100%-3rem)] overflow-y-auto p-4"
                       collapsed={desktopWindows.crew.collapsed}
+                      bodyCollapsed={desktopWindows.crew.bodyCollapsed}
+                      maximized={maximizedWindowId === "crew"}
+                      isDragging={draggingWindowId === "crew"}
                       onDragStart={handleWindowDragStart}
-                      onCollapse={collapseDesktopWindow}
+                      onDock={dockDesktopWindow}
+                      onToggleBody={toggleDesktopWindowBody}
+                      onToggleMaximize={toggleDesktopWindowMaximize}
                       onFocus={handleWindowFocus}
                       isActive={activeWindowId === "crew"}
                     >
@@ -1487,8 +1780,13 @@ export default function UssK8sPage() {
                       style={desktopWindowStyles.detail}
                       bodyClassName="h-[calc(100%-3rem)] overflow-y-auto p-4"
                       collapsed={desktopWindows.detail.collapsed}
+                      bodyCollapsed={desktopWindows.detail.bodyCollapsed}
+                      maximized={maximizedWindowId === "detail"}
+                      isDragging={draggingWindowId === "detail"}
                       onDragStart={handleWindowDragStart}
-                      onCollapse={collapseDesktopWindow}
+                      onDock={dockDesktopWindow}
+                      onToggleBody={toggleDesktopWindowBody}
+                      onToggleMaximize={toggleDesktopWindowMaximize}
                       onFocus={handleWindowFocus}
                       isActive={activeWindowId === "detail"}
                     >
@@ -1500,14 +1798,14 @@ export default function UssK8sPage() {
                           </h2>
                         </div>
                         <span className="readout text-slate-700 dark:text-slate-300">
-                          {selected ? SUBSYSTEM_GROUP_CONFIG[selected.group]?.label : "Select a node"}
+                          {selected ? subsystemGroupConfig[selected.group]?.label : "Select a node"}
                         </span>
                       </div>
 
                       <ComponentDetailPanel
                         component={selected}
                         components={components}
-                        edges={USS_K8S_EDGES}
+                        edges={topologyEdgesSource}
                         componentIcons={componentIcons}
                         onHighlightNode={selectAndHighlight}
                       />
@@ -1546,8 +1844,13 @@ export default function UssK8sPage() {
                       style={desktopWindowStyles.legend}
                       bodyClassName="px-4 py-2.5"
                       collapsed={desktopWindows.legend.collapsed || !hasFilteredResults}
+                      bodyCollapsed={desktopWindows.legend.bodyCollapsed}
+                      maximized={maximizedWindowId === "legend"}
+                      isDragging={draggingWindowId === "legend"}
                       onDragStart={handleWindowDragStart}
-                      onCollapse={collapseDesktopWindow}
+                      onDock={dockDesktopWindow}
+                      onToggleBody={toggleDesktopWindowBody}
+                      onToggleMaximize={toggleDesktopWindowMaximize}
                       onFocus={handleWindowFocus}
                       isActive={activeWindowId === "legend"}
                     >
@@ -1580,7 +1883,7 @@ export default function UssK8sPage() {
 
               <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
                 {subsystemCounts.map(({ groupKey, count }) => {
-                  const config = SUBSYSTEM_GROUP_CONFIG[groupKey]
+                  const config = subsystemGroupConfig[groupKey]
                   const Icon = groupIcons[groupKey]
                   return (
                     <div
@@ -1616,12 +1919,6 @@ export default function UssK8sPage() {
                   </button>
                 )}
               </div>
-              <ShipQuartermasterPanel
-                shipDeploymentId={selectedShipDeploymentId}
-                shipName={selectedShip?.name || undefined}
-                className="mt-3"
-                compact
-              />
             </OrchestrationSurface>
 
             <div className="z-20">
@@ -1662,7 +1959,7 @@ export default function UssK8sPage() {
                 {hasFilteredResults ? (
                   <>
                     <div className="overflow-hidden">
-                      <FlowCanvas
+                      <MemoizedFlowCanvas
                         nodes={topologyNodes}
                         edges={topologyEdges}
                         nodeTypes={nodeTypes}
@@ -1702,7 +1999,9 @@ export default function UssK8sPage() {
                       )}
                       <button
                         type="button"
-                        onClick={loadTopology}
+                        onClick={() => {
+                          void loadTopology()
+                        }}
                         className="readout rounded-md border border-slate-400/45 bg-white/70 px-3 py-1.5 text-slate-700 transition-colors hover:bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400/60 dark:border-white/20 dark:bg-white/[0.04] dark:text-slate-200"
                       >
                         Reload Topology
@@ -1726,14 +2025,14 @@ export default function UssK8sPage() {
                     </h2>
                   </div>
                   <span className="readout text-slate-700 dark:text-slate-300">
-                    {selected ? SUBSYSTEM_GROUP_CONFIG[selected.group]?.label : "Select a node"}
+                    {selected ? subsystemGroupConfig[selected.group]?.label : "Select a node"}
                   </span>
                 </div>
 
                 <ComponentDetailPanel
                   component={selected}
                   components={components}
-                  edges={USS_K8S_EDGES}
+                  edges={topologyEdgesSource}
                   componentIcons={componentIcons}
                   onHighlightNode={selectAndHighlightMobile}
                 />

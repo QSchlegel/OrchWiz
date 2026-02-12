@@ -5,6 +5,7 @@ import {
   getShipToolsStateForOwner,
   ShipToolsError,
 } from "@/lib/tools/requests"
+import { publishNotificationUpdated } from "@/lib/realtime/notifications"
 
 export const dynamic = "force-dynamic"
 
@@ -76,6 +77,12 @@ export async function handlePostShipToolRequest(
     const state = await deps.getState({
       ownerUserId: actor.userId,
       shipDeploymentId,
+    })
+
+    publishNotificationUpdated({
+      userId: actor.userId,
+      channel: "ship-yard",
+      entityId: shipDeploymentId,
     })
 
     return NextResponse.json({ request: created, state }, { status: 201 })

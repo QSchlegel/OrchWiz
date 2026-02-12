@@ -47,13 +47,21 @@ model User {
   ownedNodeSources      NodeSource[]          @relation("NodeSourceOwner")
   skillCatalogEntries   SkillCatalogEntry[]
   skillImportRuns       SkillImportRun[]
+  activatedSkillCatalogEntries SkillCatalogEntry[] @relation("SkillCatalogEntryActivatedByUser")
   toolCatalogEntries    ToolCatalogEntry[]
   toolImportRuns        ToolImportRun[]
+  activatedToolCatalogEntries ToolCatalogEntry[] @relation("ToolCatalogEntryActivatedByUser")
   shipToolGrants        ShipToolGrant[]       @relation("ToolGrantOwner")
   grantedShipToolGrants ShipToolGrant[]       @relation("ToolGrantGrantedBy")
   shipToolAccessRequestsOwned ShipToolAccessRequest[] @relation("ToolAccessRequestOwner")
   shipToolAccessRequestsRequested ShipToolAccessRequest[] @relation("ToolAccessRequestRequestedBy")
   shipToolAccessRequestsReviewed ShipToolAccessRequest[] @relation("ToolAccessRequestReviewedBy")
+  bridgeCrewSubagentAssignmentsOwned BridgeCrewSubagentAssignment[] @relation("BridgeCrewSubagentAssignmentOwner")
+  bridgeCrewSubagentAssignmentsGranted BridgeCrewSubagentAssignment[] @relation("BridgeCrewSubagentAssignmentAssignedByUser")
+  governanceSecurityReportsOwned GovernanceSecurityReport[] @relation("GovernanceSecurityReportOwner")
+  governanceSecurityReportsCreated GovernanceSecurityReport[] @relation("GovernanceSecurityReportCreatedByUser")
+  governanceGrantEventsOwned GovernanceGrantEvent[] @relation("GovernanceGrantEventOwner")
+  governanceGrantEventsCreated GovernanceGrantEvent[] @relation("GovernanceGrantEventCreatedByUser")
   shipyardSecretTemplates ShipyardSecretTemplate[]
   shipyardCloudCredentials ShipyardCloudCredential[]
   shipyardCloudSshKeys   ShipyardCloudSshKey[]
@@ -568,6 +576,8 @@ model Subagent {
   permissions Permission[]
   permissionPolicies SubagentPermissionPolicy[]
   toolBindings SubagentToolBinding[]
+  bridgeCrewAssignments BridgeCrewSubagentAssignment[] @relation("BridgeCrewSubagentAssignmentSubagent")
+  governanceGrantEvents GovernanceGrantEvent[] @relation("GovernanceGrantEventSubagent")
   commandExecutions CommandExecution[]
   agentSyncSignals AgentSyncSignal[]
   agentSyncRuns AgentSyncRun[]
@@ -892,6 +902,23 @@ enum ShipToolRequestScopePreference {
   ship
 }
 
+enum CatalogActivationStatus {
+  pending
+  approved
+  denied
+}
+
+enum GovernanceEventType {
+  ship_tool_grant_approved
+  ship_tool_grant_revoked
+  subagent_tool_granted
+  subagent_tool_revoked
+  tool_activation_approved
+  tool_activation_denied
+  skill_activation_approved
+  skill_activation_denied
+}
+
 model SkillCatalogEntry {
   id           String           @id @default(cuid())
   ownerUserId  String
@@ -907,12 +934,22 @@ model SkillCatalogEntry {
   isInstalled  Boolean          @default(false)
   isSystem     Boolean          @default(false)
   installedPath String?
+  activationStatus CatalogActivationStatus @default(approved)
+  activationRationale String?
+  activatedAt   DateTime?
+  activatedByUserId String?
+  activatedByBridgeCrewId String?
+  activationSecurityReportId String?
   metadata     Json?
   lastSyncedAt DateTime         @default(now())
   createdAt    DateTime         @default(now())
   updatedAt    DateTime         @updatedAt
 
   owner       User             @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+  activatedByUser User?        @relation("SkillCatalogEntryActivatedByUser", fields: [activatedByUserId], references: [id], onDelete: SetNull)
+  activatedByBridgeCrew BridgeCrew? @relation("SkillCatalogEntryActivatedByBridgeCrew", fields: [activatedByBridgeCrewId], references: [id], onDelete: SetNull)
+  activationSecurityReport GovernanceSecurityReport? @relation("SkillCatalogEntryActivationSecurityReport", fields: [activationSecurityReportId], references: [id], onDelete: SetNull)
+  governanceGrantEvents GovernanceGrantEvent[] @relation("GovernanceGrantEventSkillCatalogEntry")
   importRuns  SkillImportRun[]
 
   @@unique([ownerUserId, sourceKey])
@@ -920,6 +957,7 @@ model SkillCatalogEntry {
   @@index([ownerUserId, isInstalled])
   @@index([ownerUserId, slug])
   @@index([ownerUserId, updatedAt])
+  @@index([ownerUserId, activationStatus])
 }
 
 model SkillImportRun {
@@ -966,12 +1004,22 @@ model ToolCatalogEntry {
   isInstalled   Boolean           @default(false)
   isSystem      Boolean           @default(false)
   installedPath String?
+  activationStatus CatalogActivationStatus @default(approved)
+  activationRationale String?
+  activatedAt   DateTime?
+  activatedByUserId String?
+  activatedByBridgeCrewId String?
+  activationSecurityReportId String?
   metadata      Json?
   lastSyncedAt  DateTime          @default(now())
   createdAt     DateTime          @default(now())
   updatedAt     DateTime          @updatedAt
 
   owner         User              @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+  activatedByUser User?           @relation("ToolCatalogEntryActivatedByUser", fields: [activatedByUserId], references: [id], onDelete: SetNull)
+  activatedByBridgeCrew BridgeCrew? @relation("ToolCatalogEntryActivatedByBridgeCrew", fields: [activatedByBridgeCrewId], references: [id], onDelete: SetNull)
+  activationSecurityReport GovernanceSecurityReport? @relation("ToolCatalogEntryActivationSecurityReport", fields: [activationSecurityReportId], references: [id], onDelete: SetNull)
+  governanceGrantEvents GovernanceGrantEvent[] @relation("GovernanceGrantEventToolCatalogEntry")
   importRuns    ToolImportRun[]
   subagentBindings SubagentToolBinding[]
   shipGrants    ShipToolGrant[]
@@ -982,6 +1030,7 @@ model ToolCatalogEntry {
   @@index([ownerUserId, isInstalled])
   @@index([ownerUserId, slug])
   @@index([ownerUserId, updatedAt])
+  @@index([ownerUserId, activationStatus])
 }
 
 model SubagentToolBinding {
@@ -1082,6 +1131,92 @@ model ShipToolAccessRequest {
   @@index([requesterBridgeCrewId])
   @@index([catalogEntryId])
   @@index([approvedGrantId])
+}
+
+model BridgeCrewSubagentAssignment {
+  id                     String   @id @default(cuid())
+  ownerUserId            String
+  shipDeploymentId       String
+  bridgeCrewId           String
+  subagentId             String
+  assignedByUserId       String
+  assignedByBridgeCrewId String?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  owner                  User            @relation("BridgeCrewSubagentAssignmentOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
+  shipDeployment         AgentDeployment @relation(fields: [shipDeploymentId], references: [id], onDelete: Cascade)
+  bridgeCrew             BridgeCrew      @relation("BridgeCrewSubagentAssignmentBridgeCrew", fields: [bridgeCrewId], references: [id], onDelete: Cascade)
+  subagent               Subagent        @relation("BridgeCrewSubagentAssignmentSubagent", fields: [subagentId], references: [id], onDelete: Cascade)
+  assignedByUser         User            @relation("BridgeCrewSubagentAssignmentAssignedByUser", fields: [assignedByUserId], references: [id], onDelete: Cascade)
+  assignedByBridgeCrew   BridgeCrew?     @relation("BridgeCrewSubagentAssignmentAssignedByBridgeCrew", fields: [assignedByBridgeCrewId], references: [id], onDelete: SetNull)
+
+  @@unique([bridgeCrewId, subagentId])
+  @@index([ownerUserId, shipDeploymentId])
+  @@index([shipDeploymentId, bridgeCrewId])
+  @@index([subagentId])
+}
+
+model GovernanceSecurityReport {
+  id                    String              @id @default(cuid())
+  ownerUserId           String
+  eventType             GovernanceEventType
+  rationale             String
+  reportPathMd          String
+  reportPathJson        String
+  createdByUserId       String
+  createdByBridgeCrewId String?
+  createdAt             DateTime            @default(now())
+  updatedAt             DateTime            @updatedAt
+
+  owner                 User                @relation("GovernanceSecurityReportOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
+  createdByUser         User                @relation("GovernanceSecurityReportCreatedByUser", fields: [createdByUserId], references: [id], onDelete: Cascade)
+  createdByBridgeCrew   BridgeCrew?         @relation("GovernanceSecurityReportCreatedByBridgeCrew", fields: [createdByBridgeCrewId], references: [id], onDelete: SetNull)
+  governanceGrantEvents GovernanceGrantEvent[] @relation("GovernanceGrantEventSecurityReport")
+  toolCatalogActivations ToolCatalogEntry[] @relation("ToolCatalogEntryActivationSecurityReport")
+  skillCatalogActivations SkillCatalogEntry[] @relation("SkillCatalogEntryActivationSecurityReport")
+
+  @@index([ownerUserId, createdAt(sort: Desc)])
+  @@index([eventType, createdAt(sort: Desc)])
+  @@index([createdByBridgeCrewId])
+}
+
+model GovernanceGrantEvent {
+  id                String              @id @default(cuid())
+  ownerUserId       String
+  eventType         GovernanceEventType
+  toolCatalogEntryId String?
+  skillCatalogEntryId String?
+  shipDeploymentId  String?
+  bridgeCrewId      String?
+  subagentId        String?
+  actorBridgeCrewId String?
+  securityReportId  String?
+  rationale         String?
+  metadata          Json?
+  createdByUserId   String
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+
+  owner             User                @relation("GovernanceGrantEventOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
+  createdByUser     User                @relation("GovernanceGrantEventCreatedByUser", fields: [createdByUserId], references: [id], onDelete: Cascade)
+  toolCatalogEntry  ToolCatalogEntry?   @relation("GovernanceGrantEventToolCatalogEntry", fields: [toolCatalogEntryId], references: [id], onDelete: SetNull)
+  skillCatalogEntry SkillCatalogEntry?  @relation("GovernanceGrantEventSkillCatalogEntry", fields: [skillCatalogEntryId], references: [id], onDelete: SetNull)
+  shipDeployment    AgentDeployment?    @relation("GovernanceGrantEventShipDeployment", fields: [shipDeploymentId], references: [id], onDelete: SetNull)
+  bridgeCrew        BridgeCrew?         @relation("GovernanceGrantEventBridgeCrew", fields: [bridgeCrewId], references: [id], onDelete: SetNull)
+  subagent          Subagent?           @relation("GovernanceGrantEventSubagent", fields: [subagentId], references: [id], onDelete: SetNull)
+  actorBridgeCrew   BridgeCrew?         @relation("GovernanceGrantEventActorBridgeCrew", fields: [actorBridgeCrewId], references: [id], onDelete: SetNull)
+  securityReport    GovernanceSecurityReport? @relation("GovernanceGrantEventSecurityReport", fields: [securityReportId], references: [id], onDelete: SetNull)
+
+  @@index([ownerUserId, createdAt(sort: Desc)])
+  @@index([eventType, createdAt(sort: Desc)])
+  @@index([toolCatalogEntryId])
+  @@index([skillCatalogEntryId])
+  @@index([shipDeploymentId])
+  @@index([bridgeCrewId])
+  @@index([subagentId])
+  @@index([actorBridgeCrewId])
+  @@index([securityReportId])
 }
 
 model AgentAction {
@@ -1219,6 +1354,8 @@ model AgentDeployment {
   provisioningMode ProvisioningMode @default(terraform_ansible)
   nodeUrl       String?
   status        DeploymentStatus    @default(pending)
+  shipVersion   String              @default("v1")
+  shipVersionUpdatedAt DateTime?
   config        Json?
   metadata      Json?
   deployedAt    DateTime?
@@ -1240,6 +1377,8 @@ model AgentDeployment {
   bridgeAgentChatReplyJobs BridgeAgentChatReplyJob[]
   shipToolGrants ShipToolGrant[]
   shipToolAccessRequests ShipToolAccessRequest[]
+  bridgeCrewSubagentAssignments BridgeCrewSubagentAssignment[]
+  governanceGrantEvents GovernanceGrantEvent[] @relation("GovernanceGrantEventShipDeployment")
   ragPerformanceSamples RagPerformanceSample[] @relation("RagPerformanceSampleShipDeployment")
 
   @@index([nodeId])
@@ -1688,6 +1827,13 @@ model BridgeCrew {
   bridgeAgentChatReplyJobs BridgeAgentChatReplyJob[] @relation("BridgeAgentChatReplyRecipient")
   shipToolGrants ShipToolGrant[] @relation("ShipToolGrantBridgeCrew")
   shipToolAccessRequests ShipToolAccessRequest[] @relation("ShipToolAccessRequestRequesterBridgeCrew")
+  bridgeCrewSubagentAssignments BridgeCrewSubagentAssignment[] @relation("BridgeCrewSubagentAssignmentBridgeCrew")
+  bridgeCrewSubagentAssignmentsGranted BridgeCrewSubagentAssignment[] @relation("BridgeCrewSubagentAssignmentAssignedByBridgeCrew")
+  governanceSecurityReportsCreated GovernanceSecurityReport[] @relation("GovernanceSecurityReportCreatedByBridgeCrew")
+  governanceGrantEventsAsTarget GovernanceGrantEvent[] @relation("GovernanceGrantEventBridgeCrew")
+  governanceGrantEventsAsActor GovernanceGrantEvent[] @relation("GovernanceGrantEventActorBridgeCrew")
+  activatedToolCatalogEntries ToolCatalogEntry[] @relation("ToolCatalogEntryActivatedByBridgeCrew")
+  activatedSkillCatalogEntries SkillCatalogEntry[] @relation("SkillCatalogEntryActivatedByBridgeCrew")
 
   @@unique([deploymentId, role])
   @@index([deploymentId])
@@ -1781,6 +1927,7 @@ enum ApplicationType {
   nodejs
   python
   static
+  n8n
   custom
 }
 

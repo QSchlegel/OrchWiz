@@ -159,3 +159,22 @@ test("formatBridgeTelemetry keeps station screen defaults when fields are missin
   assert.ok(xo.lines[3].includes("QUEUE CLEAR"))
   assert.ok(xo.lines[4].includes("Standing by"))
 })
+
+test("formatBridgeTelemetry pins Prometheus and Grafana into systems screen", () => {
+  const input = buildTelemetryInput()
+  input.systems = [
+    { label: "Core Systems", state: "critical", detail: "Thermal spike detected" },
+    { label: "Comms Array", state: "warning", detail: "Packet jitter elevated" },
+    { label: "Sensor Grid", state: "warning", detail: "Live feed unstable" },
+    { label: "Navigation Matrix", state: "warning", detail: "Drift calibration pending" },
+    { label: "Prometheus", state: "nominal", detail: "Scrapes healthy" },
+    { label: "Grafana", state: "nominal", detail: "Alert queue clear" },
+  ]
+
+  const telemetry = formatBridgeTelemetry(input)
+  const systemLines = telemetry.systemsScreen.lines.slice(1)
+
+  assert.ok(systemLines.some((line) => line.includes("Prometheus")))
+  assert.ok(systemLines.some((line) => line.includes("Grafana")))
+  assert.ok(telemetry.systemsScreen.lines.length <= 5)
+})

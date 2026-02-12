@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server"
 import { headers } from "next/headers"
 import { auth } from "@/lib/auth"
 import { publishNotificationUpdated } from "@/lib/realtime/notifications"
-import { ensureShipQuartermaster } from "@/lib/quartermaster/service"
+import { ensureShipQuartermaster, getShipQuartermasterState } from "@/lib/quartermaster/service"
+import { buildShipNotFoundErrorPayload } from "@/lib/ships/errors"
 
 export const dynamic = "force-dynamic"
 
@@ -17,9 +18,18 @@ export async function POST(
     }
 
     const { id } = await params
+    const state = await getShipQuartermasterState({
+      userId: session.user.id,
+      shipDeploymentId: id,
+    })
+    if (!state) {
+      return NextResponse.json(buildShipNotFoundErrorPayload(), { status: 404 })
+    }
+
     const quartermaster = await ensureShipQuartermaster({
       userId: session.user.id,
       shipDeploymentId: id,
+      shipName: state.ship.name,
     })
 
     publishNotificationUpdated({
@@ -32,6 +42,13 @@ export async function POST(
       quartermaster,
     })
   } catch (error) {
+    if (
+      error instanceof Error
+      && error.message.includes("Ship deployment not found for Quartermaster provisioning")
+    ) {
+      return NextResponse.json(buildShipNotFoundErrorPayload(), { status: 404 })
+    }
+
     console.error("Quartermaster provisioning failed:", error)
     return NextResponse.json({ error: "Internal server error" }, { status: 500 })
   }

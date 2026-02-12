@@ -3,6 +3,7 @@ import test from "node:test"
 import type { NextRequest } from "next/server"
 import { handleGetSubagentToolBindingsRoute, handlePutSubagentToolBindingsRoute } from "./route"
 import { SubagentToolBindingError } from "@/lib/tools/agent-bindings"
+import { GovernanceAccessError } from "@/lib/governance/chain-of-command"
 
 function requestFor(url: string, init?: RequestInit): NextRequest {
   const request = new Request(url, init)
@@ -37,6 +38,12 @@ const sampleBindings = [
       source: "curated" as const,
       isInstalled: true,
       isSystem: false,
+      activationStatus: "approved" as const,
+      activationRationale: null,
+      activatedAt: null,
+      activatedByUserId: null,
+      activatedByBridgeCrewId: null,
+      activationSecurityReportId: null,
       sourceUrl: "https://github.com/example/wallet-enclave-tool",
       metadata: {
         source: "curated_manifest",
@@ -70,8 +77,39 @@ test("/api/subagents/[id]/tool-bindings GET returns bindings for owner", async (
   assert.equal(payload.bindings.length, 1)
 })
 
+test("/api/subagents/[id]/tool-bindings GET returns 503 when schema is unavailable", async () => {
+  const response = await handleGetSubagentToolBindingsRoute(
+    requestFor("http://localhost/api/subagents/sub-1/tool-bindings"),
+    {
+      params: Promise.resolve({ id: "sub-1" }),
+    },
+    {
+      requireActor: async () => actor,
+      loadSubagent: async () => ({
+        id: "sub-1",
+        ownerUserId: "user-1",
+        isShared: false,
+      }),
+      listSubagentToolBindings: async () => {
+        throw { code: "P2022" }
+      },
+      replaceSubagentToolBindings: async () => sampleBindings,
+      publishNotificationUpdated: () => null,
+    },
+  )
+
+  assert.equal(response.status, 503)
+  const payload = await response.json() as Record<string, unknown>
+  assert.equal(payload.code, "SCHEMA_UNAVAILABLE")
+  assert.equal(String(payload.error).includes("npm run db:migrate"), true)
+})
+
 test("/api/subagents/[id]/tool-bindings PUT stores bindings for owner", async () => {
   let capturedBindings: unknown = null
+  let capturedShipDeploymentId: string | null | undefined
+  let capturedActingBridgeCrewId: string | null | undefined
+  let capturedGrantRationale: string | null | undefined
+  let capturedRevokeReason: string | null | undefined
   let published = false
 
   const response = await handlePutSubagentToolBindingsRoute(
@@ -87,6 +125,10 @@ test("/api/subagents/[id]/tool-bindings PUT stores bindings for owner", async ()
             enabled: true,
           },
         ],
+        shipDeploymentId: "ship-1",
+        actingBridgeCrewId: "crew-1",
+        grantRationale: "OPS assigned to this subagent",
+        revokeReason: "cleanup",
       }),
     }),
     {
@@ -100,8 +142,18 @@ test("/api/subagents/[id]/tool-bindings PUT stores bindings for owner", async ()
         isShared: false,
       }),
       listSubagentToolBindings: async () => sampleBindings,
-      replaceSubagentToolBindings: async ({ bindings }) => {
+      replaceSubagentToolBindings: async ({
+        bindings,
+        shipDeploymentId,
+        actingBridgeCrewId,
+        grantRationale,
+        revokeReason,
+      }) => {
         capturedBindings = bindings
+        capturedShipDeploymentId = shipDeploymentId
+        capturedActingBridgeCrewId = actingBridgeCrewId
+        capturedGrantRationale = grantRationale
+        capturedRevokeReason = revokeReason
         return sampleBindings
       },
       publishNotificationUpdated: () => {
@@ -118,6 +170,10 @@ test("/api/subagents/[id]/tool-bindings PUT stores bindings for owner", async ()
       enabled: true,
     },
   ])
+  assert.equal(capturedShipDeploymentId, "ship-1")
+  assert.equal(capturedActingBridgeCrewId, "crew-1")
+  assert.equal(capturedGrantRationale, "OPS assigned to this subagent")
+  assert.equal(capturedRevokeReason, "cleanup")
   assert.equal(published, true)
 })
 
@@ -193,4 +249,40 @@ test("/api/subagents/[id]/tool-bindings PUT rejects non-imported tool binding", 
   assert.equal(response.status, 404)
   const payload = await response.json() as Record<string, unknown>
   assert.equal(payload.error, "toolCatalogEntryId is not imported or not owned: tool-missing")
+})
+
+test("/api/subagents/[id]/tool-bindings PUT surfaces governance assignment errors", async () => {
+  const response = await handlePutSubagentToolBindingsRoute(
+    requestFor("http://localhost/api/subagents/sub-1/tool-bindings", {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        bindings: [],
+        shipDeploymentId: "ship-1",
+        actingBridgeCrewId: "crew-unassigned",
+      }),
+    }),
+    {
+      params: Promise.resolve({ id: "sub-1" }),
+    },
+    {
+      requireActor: async () => actor,
+      loadSubagent: async () => ({
+        id: "sub-1",
+        ownerUserId: "user-1",
+        isShared: false,
+      }),
+      listSubagentToolBindings: async () => sampleBindings,
+      replaceSubagentToolBindings: async () => {
+        throw new GovernanceAccessError("Acting bridge crew member is not assigned to this subagent", 403, "SUBAGENT_ASSIGNMENT_REQUIRED")
+      },
+      publishNotificationUpdated: () => null,
+    },
+  )
+
+  assert.equal(response.status, 403)
+  const payload = await response.json() as Record<string, unknown>
+  assert.equal(payload.code, "SUBAGENT_ASSIGNMENT_REQUIRED")
 })

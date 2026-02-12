@@ -1,20 +1,35 @@
 import { Prisma } from "@prisma/client"
 import { prisma } from "@/lib/prisma"
+import {
+  assertOwnerOrXo,
+  resolveGovernanceActorContext,
+} from "@/lib/governance/chain-of-command"
+import {
+  createGovernanceGrantEvent,
+  createGovernanceSecurityReportRecord,
+  listRecentGovernanceGrantEvents,
+} from "@/lib/governance/events"
+import { writeGovernanceSecurityReport } from "@/lib/governance/reports"
+import { listBridgeCrewSubagentAssignmentsForShip } from "@/lib/governance/subagent-assignments"
+import { SHIP_NOT_FOUND_CODE } from "@/lib/ships/errors"
 import type {
   ShipToolAccessRequestDto,
   ShipToolBridgeCrewOptionDto,
   ShipToolGrantDto,
+  ShipToolsGovernanceEventDto,
   ShipToolsStateDto,
   ToolCatalogEntryDto,
 } from "@/lib/tools/types"
 
 export class ShipToolsError extends Error {
   status: number
+  code?: string
 
-  constructor(message: string, status = 400) {
+  constructor(message: string, status = 400, code?: string) {
     super(message)
     this.name = "ShipToolsError"
     this.status = status
+    this.code = code
   }
 }
 
@@ -55,6 +70,12 @@ function toToolCatalogEntryDto(entry: {
   isInstalled: boolean
   isSystem: boolean
   installedPath: string | null
+  activationStatus: "pending" | "approved" | "denied"
+  activationRationale: string | null
+  activatedAt: Date | null
+  activatedByUserId: string | null
+  activatedByBridgeCrewId: string | null
+  activationSecurityReportId: string | null
   metadata: Prisma.JsonValue | null
   ownerUserId: string
   lastSyncedAt: Date
@@ -75,6 +96,12 @@ function toToolCatalogEntryDto(entry: {
     isInstalled: entry.isInstalled,
     isSystem: entry.isSystem,
     installedPath: entry.installedPath,
+    activationStatus: entry.activationStatus,
+    activationRationale: entry.activationRationale,
+    activatedAt: entry.activatedAt ? entry.activatedAt.toISOString() : null,
+    activatedByUserId: entry.activatedByUserId,
+    activatedByBridgeCrewId: entry.activatedByBridgeCrewId,
+    activationSecurityReportId: entry.activationSecurityReportId,
     metadata: asObjectJson(entry.metadata),
     ownerUserId: entry.ownerUserId,
     lastSyncedAt: entry.lastSyncedAt.toISOString(),
@@ -108,6 +135,12 @@ function toShipToolGrantDto(grant: {
     isInstalled: boolean
     isSystem: boolean
     installedPath: string | null
+    activationStatus: "pending" | "approved" | "denied"
+    activationRationale: string | null
+    activatedAt: Date | null
+    activatedByUserId: string | null
+    activatedByBridgeCrewId: string | null
+    activationSecurityReportId: string | null
     metadata: Prisma.JsonValue | null
     ownerUserId: string
     lastSyncedAt: Date
@@ -174,6 +207,12 @@ function toShipToolAccessRequestDto(request: {
     isInstalled: boolean
     isSystem: boolean
     installedPath: string | null
+    activationStatus: "pending" | "approved" | "denied"
+    activationRationale: string | null
+    activatedAt: Date | null
+    activatedByUserId: string | null
+    activatedByBridgeCrewId: string | null
+    activationSecurityReportId: string | null
     metadata: Prisma.JsonValue | null
     ownerUserId: string
     lastSyncedAt: Date
@@ -215,6 +254,44 @@ function toShipToolAccessRequestDto(request: {
   }
 }
 
+function toShipToolsGovernanceEventDto(event: {
+  id: string
+  eventType: string
+  toolCatalogEntryId: string | null
+  skillCatalogEntryId: string | null
+  bridgeCrewId: string | null
+  subagentId: string | null
+  actorBridgeCrewId: string | null
+  rationale: string | null
+  metadata: Prisma.JsonValue | null
+  createdAt: Date
+  securityReport: {
+    id: string
+    reportPathMd: string
+    reportPathJson: string
+  } | null
+}): ShipToolsGovernanceEventDto {
+  return {
+    id: event.id,
+    eventType: event.eventType,
+    toolCatalogEntryId: event.toolCatalogEntryId,
+    skillCatalogEntryId: event.skillCatalogEntryId,
+    bridgeCrewId: event.bridgeCrewId,
+    subagentId: event.subagentId,
+    actorBridgeCrewId: event.actorBridgeCrewId,
+    rationale: event.rationale,
+    metadata: asObjectJson(event.metadata),
+    createdAt: event.createdAt.toISOString(),
+    securityReport: event.securityReport
+      ? {
+          id: event.securityReport.id,
+          reportPathMd: event.securityReport.reportPathMd,
+          reportPathJson: event.securityReport.reportPathJson,
+        }
+      : null,
+  }
+}
+
 async function requireOwnedShip(args: {
   ownerUserId: string
   shipDeploymentId: string
@@ -233,7 +310,7 @@ async function requireOwnedShip(args: {
   })
 
   if (!ship) {
-    throw new ShipToolsError("Ship not found", 404)
+    throw new ShipToolsError("Ship not found", 404, SHIP_NOT_FOUND_CODE)
   }
 
   return ship
@@ -243,6 +320,7 @@ async function requireOwnedCatalogEntry(args: {
   ownerUserId: string
   catalogEntryId: string
   requireInstalled?: boolean
+  requireActivated?: boolean
 }) {
   const entry = await prisma.toolCatalogEntry.findFirst({
     where: {
@@ -257,6 +335,10 @@ async function requireOwnedCatalogEntry(args: {
 
   if (args.requireInstalled && !entry.isInstalled) {
     throw new ShipToolsError("Tool must be installed before requesting access", 400)
+  }
+
+  if (args.requireActivated && entry.activationStatus !== "approved") {
+    throw new ShipToolsError("Tool activation is pending or denied", 403)
   }
 
   return entry
@@ -293,7 +375,7 @@ export async function getShipToolsStateForOwner(args: {
 }): Promise<ShipToolsStateDto> {
   const ship = await requireOwnedShip(args)
 
-  const [catalog, grants, requests, bridgeCrew] = await Promise.all([
+  const [catalog, grants, requests, bridgeCrew, subagentAssignments, governanceEvents] = await Promise.all([
     prisma.toolCatalogEntry.findMany({
       where: {
         ownerUserId: args.ownerUserId,
@@ -358,6 +440,15 @@ export async function getShipToolsStateForOwner(args: {
         role: "asc",
       },
     }),
+    listBridgeCrewSubagentAssignmentsForShip({
+      ownerUserId: args.ownerUserId,
+      shipDeploymentId: args.shipDeploymentId,
+    }),
+    listRecentGovernanceGrantEvents({
+      ownerUserId: args.ownerUserId,
+      shipDeploymentId: args.shipDeploymentId,
+      limit: 30,
+    }),
   ])
 
   const bridgeCrewDtos: ShipToolBridgeCrewOptionDto[] = bridgeCrew.map((member) => ({
@@ -374,6 +465,8 @@ export async function getShipToolsStateForOwner(args: {
     grants: grants.map(toShipToolGrantDto),
     requests: requests.map(toShipToolAccessRequestDto),
     bridgeCrew: bridgeCrewDtos,
+    subagentAssignments,
+    governanceEvents: governanceEvents.map(toShipToolsGovernanceEventDto),
   }
 }
 
@@ -392,6 +485,7 @@ export async function createShipToolAccessRequestForOwner(args: {
     ownerUserId: args.ownerUserId,
     catalogEntryId: args.catalogEntryId,
     requireInstalled: true,
+    requireActivated: true,
   })
 
   let requesterBridgeCrewId: string | null = null
@@ -485,6 +579,60 @@ async function upsertShipToolGrant(args: {
   })
 }
 
+export async function ensureShipToolGrantForBootstrap(args: {
+  ownerUserId: string
+  shipDeploymentId: string
+  catalogEntryId: string
+  grantedByUserId?: string | null
+  rationale?: string | null
+  metadata?: Record<string, unknown> | null
+}): Promise<ShipToolGrantDto> {
+  await requireOwnedShip(args)
+  const entry = await requireOwnedCatalogEntry({
+    ownerUserId: args.ownerUserId,
+    catalogEntryId: args.catalogEntryId,
+    requireInstalled: true,
+    requireActivated: true,
+  })
+
+  const grantedByUserId = args.grantedByUserId?.trim() || args.ownerUserId
+  const rationale = args.rationale?.trim() || "Ship bootstrap granted tool access."
+
+  const grant = await prisma.$transaction(async (tx) => {
+    const nextGrant = await upsertShipToolGrant(
+      {
+        ownerUserId: args.ownerUserId,
+        shipDeploymentId: args.shipDeploymentId,
+        catalogEntryId: entry.id,
+        scope: "ship",
+        grantedByUserId,
+      },
+      tx.shipToolGrant,
+    )
+
+    await createGovernanceGrantEvent({
+      ownerUserId: args.ownerUserId,
+      createdByUserId: grantedByUserId,
+      eventType: "ship_tool_grant_approved",
+      toolCatalogEntryId: entry.id,
+      shipDeploymentId: args.shipDeploymentId,
+      bridgeCrewId: null,
+      actorBridgeCrewId: null,
+      rationale,
+      metadata: {
+        source: "shipyard_initial_app_bootstrap",
+        bootstrap: true,
+        ...(args.metadata || {}),
+      },
+      tx,
+    })
+
+    return nextGrant
+  })
+
+  return toShipToolGrantDto(grant)
+}
+
 export async function reviewShipToolAccessRequestForOwner(args: {
   ownerUserId: string
   shipDeploymentId: string
@@ -492,9 +640,22 @@ export async function reviewShipToolAccessRequestForOwner(args: {
   decision: "approve" | "deny"
   grantMode?: "requester_only" | "ship"
   reviewedByUserId: string
+  actingBridgeCrewId?: string | null
+  grantRationale?: string | null
   reviewNote?: string | null
 }): Promise<{ request: ShipToolAccessRequestDto; grant: ShipToolGrantDto | null }> {
   await requireOwnedShip(args)
+
+  const governanceContext = await resolveGovernanceActorContext({
+    ownerUserId: args.ownerUserId,
+    shipDeploymentId: args.shipDeploymentId,
+    actingBridgeCrewId: args.actingBridgeCrewId,
+  })
+
+  assertOwnerOrXo({
+    context: governanceContext,
+    action: "Reviewing ship tool access requests",
+  })
 
   const request = await prisma.shipToolAccessRequest.findFirst({
     where: {
@@ -565,6 +726,11 @@ export async function reviewShipToolAccessRequestForOwner(args: {
     throw new ShipToolsError("grantMode is required for approval", 400)
   }
 
+  const grantRationale = args.grantRationale?.trim() || ""
+  if (!grantRationale) {
+    throw new ShipToolsError("grantRationale is required for approval", 400)
+  }
+
   let scope: "ship" | "bridge_crew" = "ship"
   let bridgeCrewId: string | null = null
 
@@ -580,7 +746,43 @@ export async function reviewShipToolAccessRequestForOwner(args: {
     bridgeCrewId = request.requesterBridgeCrewId
   }
 
+  const reportArtifact = await writeGovernanceSecurityReport({
+    ownerUserId: args.ownerUserId,
+    eventType: "ship_tool_grant_approved",
+    rationale: grantRationale,
+    actor: {
+      userId: args.reviewedByUserId,
+      actingBridgeCrewId: governanceContext.actingBridgeCrewId,
+      actingBridgeCrewRole: governanceContext.actingBridgeCrewRole,
+      actingBridgeCrewCallsign: governanceContext.actingBridgeCrewCallsign,
+    },
+    resource: {
+      shipDeploymentId: args.shipDeploymentId,
+      requestId: request.id,
+      catalogEntryId: request.catalogEntryId,
+      grantMode,
+      scope,
+      bridgeCrewId,
+    },
+    metadata: {
+      reviewNote: args.reviewNote?.trim() || null,
+      requestedByUserId: request.requestedByUserId,
+      requesterBridgeCrewId: request.requesterBridgeCrewId,
+    },
+  })
+
   const [approvedRequest, approvedGrant] = await prisma.$transaction(async (tx) => {
+    const reportRecord = await createGovernanceSecurityReportRecord({
+      ownerUserId: args.ownerUserId,
+      eventType: "ship_tool_grant_approved",
+      rationale: grantRationale,
+      reportPathMd: reportArtifact.reportPathMd || "",
+      reportPathJson: reportArtifact.reportPathJson || "",
+      createdByUserId: args.reviewedByUserId,
+      createdByBridgeCrewId: governanceContext.actingBridgeCrewId,
+      tx,
+    })
+
     const grant = await upsertShipToolGrant({
       ownerUserId: args.ownerUserId,
       shipDeploymentId: args.shipDeploymentId,
@@ -593,6 +795,7 @@ export async function reviewShipToolAccessRequestForOwner(args: {
     const nextMetadata = {
       ...(asObjectJson(request.metadata) || {}),
       grantMode,
+      grantRationale,
       ...(args.reviewNote?.trim()
         ? {
             reviewNote: args.reviewNote.trim(),
@@ -624,6 +827,23 @@ export async function reviewShipToolAccessRequestForOwner(args: {
       },
     })
 
+    await createGovernanceGrantEvent({
+      ownerUserId: args.ownerUserId,
+      createdByUserId: args.reviewedByUserId,
+      eventType: "ship_tool_grant_approved",
+      toolCatalogEntryId: request.catalogEntryId,
+      shipDeploymentId: args.shipDeploymentId,
+      bridgeCrewId,
+      actorBridgeCrewId: governanceContext.actingBridgeCrewId,
+      securityReportId: reportRecord.id,
+      rationale: grantRationale,
+      metadata: {
+        grantMode,
+        reviewNote: args.reviewNote?.trim() || null,
+      },
+      tx,
+    })
+
     return [updatedRequest, grant] as const
   })
 
@@ -637,8 +857,22 @@ export async function revokeShipToolGrantForOwner(args: {
   ownerUserId: string
   shipDeploymentId: string
   grantId: string
+  actingBridgeCrewId?: string | null
+  revokedByUserId?: string
+  revokeReason?: string | null
 }): Promise<void> {
   await requireOwnedShip(args)
+
+  const governanceContext = await resolveGovernanceActorContext({
+    ownerUserId: args.ownerUserId,
+    shipDeploymentId: args.shipDeploymentId,
+    actingBridgeCrewId: args.actingBridgeCrewId,
+  })
+
+  assertOwnerOrXo({
+    context: governanceContext,
+    action: "Revoking ship-level tool grants",
+  })
 
   const grant = await prisma.shipToolGrant.findFirst({
     where: {
@@ -648,6 +882,8 @@ export async function revokeShipToolGrantForOwner(args: {
     },
     select: {
       id: true,
+      catalogEntryId: true,
+      bridgeCrewId: true,
     },
   })
 
@@ -655,10 +891,27 @@ export async function revokeShipToolGrantForOwner(args: {
     throw new ShipToolsError("Tool grant not found", 404)
   }
 
-  await prisma.shipToolGrant.delete({
-    where: {
-      id: grant.id,
-    },
+  await prisma.$transaction(async (tx) => {
+    await tx.shipToolGrant.delete({
+      where: {
+        id: grant.id,
+      },
+    })
+
+    await createGovernanceGrantEvent({
+      ownerUserId: args.ownerUserId,
+      createdByUserId: args.revokedByUserId || args.ownerUserId,
+      eventType: "ship_tool_grant_revoked",
+      toolCatalogEntryId: grant.catalogEntryId,
+      shipDeploymentId: args.shipDeploymentId,
+      bridgeCrewId: grant.bridgeCrewId,
+      actorBridgeCrewId: governanceContext.actingBridgeCrewId,
+      rationale: args.revokeReason?.trim() || null,
+      metadata: {
+        grantId: grant.id,
+      },
+      tx,
+    })
   })
 }
 
@@ -706,6 +959,7 @@ export async function getShipToolRuntimeContext(args: {
       where: {
         ownerUserId: args.ownerUserId,
         isInstalled: true,
+        activationStatus: "approved",
       },
       orderBy: {
         slug: "asc",
@@ -721,6 +975,9 @@ export async function getShipToolRuntimeContext(args: {
       where: {
         ownerUserId: args.ownerUserId,
         shipDeploymentId: args.shipDeploymentId,
+        catalogEntry: {
+          activationStatus: "approved",
+        },
       },
       include: {
         catalogEntry: {

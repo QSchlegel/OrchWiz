@@ -18,6 +18,44 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>
 }
 
+export function mergeShipConfig(existingConfig: unknown, incomingConfig: unknown): Record<string, unknown> {
+  const existing = asRecord(existingConfig)
+  const incoming = asRecord(incomingConfig)
+
+  const hasIncomingInfrastructure = Object.prototype.hasOwnProperty.call(incoming, "infrastructure")
+  const hasIncomingCloudProvider = Object.prototype.hasOwnProperty.call(incoming, "cloudProvider")
+  const hasIncomingMonitoring = Object.prototype.hasOwnProperty.call(incoming, "monitoring")
+
+  return {
+    ...existing,
+    ...incoming,
+    ...(hasIncomingInfrastructure
+      ? {
+          infrastructure: {
+            ...asRecord(existing.infrastructure),
+            ...asRecord(incoming.infrastructure),
+          },
+        }
+      : {}),
+    ...(hasIncomingCloudProvider
+      ? {
+          cloudProvider: {
+            ...asRecord(existing.cloudProvider),
+            ...asRecord(incoming.cloudProvider),
+          },
+        }
+      : {}),
+    ...(hasIncomingMonitoring
+      ? {
+          monitoring: {
+            ...asRecord(existing.monitoring),
+            ...asRecord(incoming.monitoring),
+          },
+        }
+      : {}),
+  }
+}
+
 export function sanitizeShipUpdateData(body: Record<string, unknown>): Record<string, unknown> {
   const updateData: Record<string, unknown> = {
     ...body,
@@ -27,6 +65,8 @@ export function sanitizeShipUpdateData(body: Record<string, unknown>): Record<st
 
   delete updateData.userId
   delete updateData.advancedNodeTypeOverride
+  delete updateData.shipVersion
+  delete updateData.shipVersionUpdatedAt
 
   return updateData
 }
@@ -112,12 +152,17 @@ export async function PUT(
         return NextResponse.json({ error: "Ship not found" }, { status: 404 })
       }
 
+      const mergedConfig =
+        "config" in body
+          ? mergeShipConfig(existingShip.config, body.config)
+          : existingShip.config
+
       const normalizedProfile = normalizeDeploymentProfileInput({
         deploymentProfile: body.deploymentProfile ?? existingShip.deploymentProfile,
         provisioningMode: body.provisioningMode ?? existingShip.provisioningMode,
         nodeType: body.nodeType ?? existingShip.nodeType,
         advancedNodeTypeOverride: body.advancedNodeTypeOverride,
-        config: body.config ?? existingShip.config,
+        config: mergedConfig,
       })
 
       updateData.deploymentProfile = normalizedProfile.deploymentProfile

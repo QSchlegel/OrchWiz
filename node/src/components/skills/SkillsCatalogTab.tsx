@@ -4,12 +4,19 @@ import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react"
 import { EmptyState, FilterBar, InlineNotice, SurfaceCard } from "@/components/dashboard/PageLayout"
 import { SkillTreeGraph } from "@/components/skills/SkillTreeGraph"
 import {
+  isMapDirectImportable,
+  rankMapInstallCandidates,
+  resolveMapActionState,
+  type SkillCatalogMapActionState,
+} from "@/lib/skills/catalog-map-actions"
+import {
   buildSkillCatalogView,
   classifyCatalogGroup,
   type SkillCatalogSortKey,
   type SkillCatalogStatusFilter,
 } from "@/lib/skills/catalog-view"
 import type {
+  SkillCatalogEntryDto,
   SkillCatalogRefreshMode,
   SkillCatalogResponse,
   SkillCatalogSourceValue,
@@ -37,6 +44,8 @@ const SORT_OPTIONS: Array<{ value: SkillCatalogSortKey; label: string }> = [
   { value: "updated_desc", label: "Recently Updated" },
   { value: "installed_first", label: "Installed First" },
 ]
+
+const MAP_CANDIDATE_LIMIT = 5
 
 function groupLabel(groupId: SkillGraphGroupId): string {
   if (groupId === "installed") {
@@ -99,6 +108,73 @@ function statusBadgeClass(status: SkillImportRunDto["status"]): string {
   return "border-blue-500/30 bg-blue-500/10 text-blue-700 dark:text-blue-300"
 }
 
+function describeMapAction(args: {
+  state: SkillCatalogMapActionState
+  selectedEntry: SkillCatalogEntryDto | null
+}): { title: string; description: string; hint: string } {
+  if (args.state === "none_selected") {
+    return {
+      title: "Select a skill",
+      description: "Pick a node in the map to inspect import actions.",
+      hint: "Direct map import is available for curated skills that are not installed.",
+    }
+  }
+
+  if (!args.selectedEntry) {
+    return {
+      title: "Select a skill",
+      description: "Pick a node in the map to inspect import actions.",
+      hint: "Direct map import is available for curated skills that are not installed.",
+    }
+  }
+
+  if (args.state === "import_curated") {
+    return {
+      title: "Ready to import",
+      description: `${args.selectedEntry.slug} is curated and not installed yet.`,
+      hint: "Confirm import below to install this skill now.",
+    }
+  }
+
+  if (args.state === "already_installed") {
+    return {
+      title: "Already installed",
+      description: `${args.selectedEntry.slug} is already installed in your scoped Codex home.`,
+      hint: "Use Skill Detail to copy the installed path or select another curated candidate.",
+    }
+  }
+
+  if (args.selectedEntry.isSystem || args.selectedEntry.source === "system") {
+    return {
+      title: "System skill",
+      description: "System skills are read-only baseline capabilities.",
+      hint: "Select a curated skill to import directly, or use GitHub URL import for custom skills.",
+    }
+  }
+
+  if (args.selectedEntry.source === "custom_github" || args.selectedEntry.source === "local") {
+    return {
+      title: "Custom or local skill",
+      description: "Custom/local entries are not direct curated imports.",
+      hint: "Use Import Skills with a GitHub URL, or select a curated candidate from the map list.",
+    }
+  }
+
+  if (args.selectedEntry.source === "experimental") {
+    return {
+      title: "Experimental skill",
+      description: "Experimental entries are catalog references and cannot be imported directly from the map.",
+      hint: "Select a curated candidate for direct import, or use the import form for URL-based installs.",
+    }
+  }
+
+  return {
+    title: "Direct import unavailable",
+    description: "This selection is not importable from map actions.",
+    hint: "Select a curated, not-installed skill to use direct import.",
+  }
+}
+
 export function SkillsCatalogTab() {
   const [catalog, setCatalog] = useState<SkillCatalogResponse | null>(null)
   const [runs, setRuns] = useState<SkillImportRunDto[]>([])
@@ -113,12 +189,15 @@ export function SkillsCatalogTab() {
   const [curatedSkillSlug, setCuratedSkillSlug] = useState("")
   const [githubUrl, setGithubUrl] = useState("")
   const [githubTokenOverride, setGithubTokenOverride] = useState("")
+  const [actingBridgeCrewId, setActingBridgeCrewId] = useState("")
+  const [activationRationale, setActivationRationale] = useState("")
 
   const [isCatalogLoading, setIsCatalogLoading] = useState(true)
   const [isRunsLoading, setIsRunsLoading] = useState(true)
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [isImportingCurated, setIsImportingCurated] = useState(false)
   const [isImportingGithubUrl, setIsImportingGithubUrl] = useState(false)
+  const [activatingEntryIds, setActivatingEntryIds] = useState<Set<string>>(new Set())
   const [isImportExpanded, setIsImportExpanded] = useState(false)
   const [isHistoryExpanded, setIsHistoryExpanded] = useState(false)
   const [isMobileMapExpanded, setIsMobileMapExpanded] = useState(false)
@@ -182,7 +261,7 @@ export function SkillsCatalogTab() {
   const curatedCandidates = useMemo(
     () =>
       entries
-        .filter((entry) => entry.source === "curated" && !entry.isInstalled)
+        .filter((entry) => entry.source === "curated" && !entry.isInstalled && entry.activationStatus === "approved")
         .sort((left, right) => left.slug.localeCompare(right.slug)),
     [entries],
   )
@@ -236,6 +315,36 @@ export function SkillsCatalogTab() {
   }, [listView.selectedSkillId, selectedSkillId])
 
   const selectedEntry = listView.selectedEntry
+  const selectedMapEntry = mapView.selectedEntry
+
+  const mapCandidates = useMemo(
+    () =>
+      rankMapInstallCandidates(mapView.filteredEntries)
+        .filter((entry) => isMapDirectImportable(entry))
+        .slice(0, MAP_CANDIDATE_LIMIT),
+    [mapView.filteredEntries],
+  )
+
+  const mapImportableSkillIds = useMemo(
+    () => mapView.filteredEntries.filter((entry) => isMapDirectImportable(entry)).map((entry) => entry.id),
+    [mapView.filteredEntries],
+  )
+
+  const mapActionState = useMemo(
+    () => resolveMapActionState(selectedMapEntry),
+    [selectedMapEntry],
+  )
+
+  const mapActionCopy = useMemo(
+    () => describeMapAction({ state: mapActionState, selectedEntry: selectedMapEntry }),
+    [mapActionState, selectedMapEntry],
+  )
+
+  const mapCandidateSummary = isCatalogLoading
+    ? "Loading install candidates..."
+    : mapCandidates.length === 0
+      ? "No direct curated installs in this view."
+      : `${mapCandidates.length} install candidate${mapCandidates.length === 1 ? "" : "s"} in this view.`
 
   const importPayload = useMemo(
     () => ({
@@ -343,6 +452,54 @@ export function SkillsCatalogTab() {
     }
   }
 
+  const decideActivation = async (entryId: string, decision: "approve" | "deny") => {
+    const rationale = activationRationale.trim()
+    if (!rationale) {
+      setNotice({ type: "error", text: "Activation rationale is required." })
+      return
+    }
+
+    setActivatingEntryIds((current) => new Set(current).add(entryId))
+    setNotice(null)
+
+    try {
+      const response = await fetch(`/api/skills/catalog/${entryId}/activation`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          decision,
+          rationale,
+          actingBridgeCrewId: actingBridgeCrewId.trim() || null,
+        }),
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        setNotice({
+          type: "error",
+          text: typeof payload.error === "string" ? payload.error : `Activation update failed (${response.status}).`,
+        })
+        return
+      }
+
+      setNotice({
+        type: "success",
+        text: decision === "approve" ? "Skill activation approved." : "Skill activation denied.",
+      })
+      await loadCatalog("force")
+    } catch (error) {
+      console.error("Failed updating skill activation:", error)
+      setNotice({ type: "error", text: "Unable to update skill activation." })
+    } finally {
+      setActivatingEntryIds((current) => {
+        const next = new Set(current)
+        next.delete(entryId)
+        return next
+      })
+    }
+  }
+
   const hasActiveFilters =
     query.trim().length > 0
     || sourceFilters.length > 0
@@ -401,6 +558,96 @@ export function SkillsCatalogTab() {
   const matchingEntryByRun = useMemo(
     () => new Map(entries.map((entry) => [entry.id, entry])),
     [entries],
+  )
+
+  const handleMapImport = () => {
+    if (mapActionState !== "import_curated" || !selectedMapEntry) {
+      return
+    }
+
+    setCuratedSkillSlug(selectedMapEntry.slug)
+    void importCurated(selectedMapEntry.slug)
+  }
+
+  const renderMapActionsPanel = () => (
+    <div className="space-y-3 rounded-xl border border-slate-200/80 bg-white/70 p-3 dark:border-white/10 dark:bg-white/[0.03]">
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">Map Actions</p>
+          <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{mapCandidateSummary}</p>
+        </div>
+        {groupFilter ? (
+          <span className="rounded-full border border-cyan-500/40 bg-cyan-500/10 px-2 py-0.5 text-[11px] text-cyan-700 dark:text-cyan-300">
+            Group: {groupLabel(groupFilter)}
+          </span>
+        ) : null}
+      </div>
+
+      <div className="rounded-lg border border-slate-200/80 bg-white/70 p-2 dark:border-white/10 dark:bg-white/[0.03]">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+            {selectedMapEntry ? selectedMapEntry.name : mapActionCopy.title}
+          </p>
+          {selectedMapEntry ? (
+            <span className="rounded-full border border-slate-300/70 px-2 py-0.5 text-[10px] text-slate-600 dark:border-white/15 dark:text-slate-300">
+              {selectedMapEntry.source.replaceAll("_", " ")}
+            </span>
+          ) : null}
+        </div>
+
+        {selectedMapEntry ? (
+          <p className="mt-1 truncate text-[11px] text-slate-500 dark:text-slate-400">{selectedMapEntry.slug}</p>
+        ) : null}
+
+        <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">{mapActionCopy.description}</p>
+        <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">{mapActionCopy.hint}</p>
+      </div>
+
+      {mapActionState === "import_curated" && selectedMapEntry ? (
+        <button
+          type="button"
+          onClick={handleMapImport}
+          disabled={isImportingCurated}
+          className="w-full rounded-lg bg-slate-900 px-3 py-2 text-sm font-medium text-white hover:bg-black disabled:opacity-50 dark:bg-white dark:text-slate-900"
+        >
+          {isImportingCurated ? "Importing..." : `Import ${selectedMapEntry.slug}`}
+        </button>
+      ) : null}
+
+      <div className="space-y-2">
+        <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">Next to install</p>
+
+        {mapCandidates.length === 0 ? (
+          <p className="text-xs text-slate-500 dark:text-slate-400">
+            No installable curated skills in this view. Clear filters or refresh the catalog.
+          </p>
+        ) : (
+          <div className="space-y-1">
+            {mapCandidates.map((entry) => {
+              const isSelected = selectedMapEntry?.id === entry.id
+              return (
+                <div
+                  key={entry.id}
+                  className="flex items-center justify-between gap-2 rounded-lg border border-slate-200/80 bg-white/80 px-2 py-1.5 dark:border-white/10 dark:bg-white/[0.02]"
+                >
+                  <div className="min-w-0">
+                    <p className="truncate text-xs font-medium text-slate-800 dark:text-slate-100">{entry.name}</p>
+                    <p className="truncate text-[11px] text-slate-500 dark:text-slate-400">{entry.slug}</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedSkillId(entry.id)}
+                    className="rounded border border-slate-300 bg-white px-2 py-1 text-[11px] text-slate-700 hover:bg-slate-100 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-200 dark:hover:bg-white/[0.08]"
+                  >
+                    {isSelected ? "Selected" : "Select"}
+                  </button>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
+    </div>
   )
 
   return (
@@ -493,6 +740,29 @@ export function SkillsCatalogTab() {
       </FilterBar>
 
       <SurfaceCard>
+        <h2 className="text-sm font-semibold uppercase tracking-[0.14em] text-slate-500">Activation Governance</h2>
+        <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+          Pending or denied skills must be activation-approved before use.
+        </p>
+        <div className="mt-3 grid grid-cols-1 gap-2 lg:grid-cols-2">
+          <input
+            type="text"
+            value={actingBridgeCrewId}
+            onChange={(event) => setActingBridgeCrewId(event.target.value)}
+            placeholder="Acting bridge crew ID (optional)"
+            className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-white/15 dark:bg-white/[0.05]"
+          />
+          <input
+            type="text"
+            value={activationRationale}
+            onChange={(event) => setActivationRationale(event.target.value)}
+            placeholder="Rationale for approve/deny decisions"
+            className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-white/15 dark:bg-white/[0.05]"
+          />
+        </div>
+      </SurfaceCard>
+
+      <SurfaceCard>
         <button
           type="button"
           onClick={() => setIsImportExpanded((current) => !current)}
@@ -568,8 +838,8 @@ export function SkillsCatalogTab() {
         ) : null}
       </SurfaceCard>
 
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-12">
-        <SurfaceCard className="xl:col-span-5">
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
+        <SurfaceCard className="lg:col-span-7 xl:col-span-5">
           <div className="flex items-center justify-between gap-2">
             <h2 className="text-sm font-semibold uppercase tracking-[0.14em] text-slate-500">Catalog List</h2>
             <p className="text-xs text-slate-500 dark:text-slate-400">
@@ -628,6 +898,17 @@ export function SkillsCatalogTab() {
                             >
                               {entry.isInstalled ? "installed" : "not installed"}
                             </span>
+                            <span
+                              className={`rounded-full border px-2 py-0.5 text-[10px] ${
+                                entry.activationStatus === "approved"
+                                  ? "border-emerald-500/35 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+                                  : entry.activationStatus === "pending"
+                                    ? "border-amber-500/35 bg-amber-500/10 text-amber-700 dark:text-amber-300"
+                                    : "border-rose-500/35 bg-rose-500/10 text-rose-700 dark:text-rose-300"
+                              }`}
+                            >
+                              activation {entry.activationStatus}
+                            </span>
                             {entry.isSystem ? (
                               <span className="rounded-full border border-indigo-500/30 bg-indigo-500/10 px-2 py-0.5 text-[10px] text-indigo-700 dark:text-indigo-300">
                                 system
@@ -652,7 +933,7 @@ export function SkillsCatalogTab() {
           )}
         </SurfaceCard>
 
-        <SurfaceCard className="space-y-3 xl:col-span-4">
+        <SurfaceCard className="space-y-3 lg:col-span-5 xl:col-span-4">
           <h2 className="text-sm font-semibold uppercase tracking-[0.14em] text-slate-500">Skill Detail</h2>
           {!selectedEntry ? (
             <EmptyState title="No skill selected" description="Select a skill from the catalog list or map." />
@@ -673,6 +954,8 @@ export function SkillsCatalogTab() {
                 <p>Source: {selectedEntry.source}</p>
                 <p>Installed: {selectedEntry.isInstalled ? "yes" : "no"}</p>
                 <p>System: {selectedEntry.isSystem ? "yes" : "no"}</p>
+                <p>Activation: {selectedEntry.activationStatus}</p>
+                {selectedEntry.activationRationale ? <p>Activation rationale: {selectedEntry.activationRationale}</p> : null}
                 {selectedEntry.repo ? <p>Repository: {selectedEntry.repo}</p> : null}
                 {selectedEntry.sourcePath ? <p>Source path: {selectedEntry.sourcePath}</p> : null}
                 {selectedEntry.sourceRef ? <p>Source ref: {selectedEntry.sourceRef}</p> : null}
@@ -693,6 +976,31 @@ export function SkillsCatalogTab() {
               </div>
 
               <div className="flex flex-wrap gap-2">
+                {selectedEntry.activationStatus !== "approved" ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void decideActivation(selectedEntry.id, "approve")
+                      }}
+                      disabled={activatingEntryIds.has(selectedEntry.id)}
+                      className="rounded-lg border border-emerald-500/45 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700 disabled:opacity-50 dark:text-emerald-200"
+                    >
+                      {activatingEntryIds.has(selectedEntry.id) ? "Updating..." : "Approve Activation"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void decideActivation(selectedEntry.id, "deny")
+                      }}
+                      disabled={activatingEntryIds.has(selectedEntry.id)}
+                      className="rounded-lg border border-rose-500/45 bg-rose-500/10 px-3 py-2 text-sm text-rose-700 disabled:opacity-50 dark:text-rose-200"
+                    >
+                      {activatingEntryIds.has(selectedEntry.id) ? "Updating..." : "Deny Activation"}
+                    </button>
+                  </>
+                ) : null}
+
                 {selectedEntry.source === "curated" && !selectedEntry.isInstalled ? (
                   <button
                     type="button"
@@ -728,7 +1036,7 @@ export function SkillsCatalogTab() {
         <SurfaceCard className="hidden xl:col-span-3 xl:block">
           <h2 className="text-sm font-semibold uppercase tracking-[0.14em] text-slate-500">Catalog Map</h2>
           <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-            Orientation by source/status bucket. Click a group to filter the list.
+            Select a skill node to review actions and import curated candidates.
           </p>
 
           {isCatalogLoading ? (
@@ -738,11 +1046,13 @@ export function SkillsCatalogTab() {
               <EmptyState title="Catalog unavailable" description="Unable to render catalog map." />
             </div>
           ) : (
-            <div className="mt-3">
+            <div className="mt-3 space-y-3">
+              {renderMapActionsPanel()}
               <SkillTreeGraph
                 graph={catalog.graph}
                 selectedSkillId={selectedSkillId}
                 allowedSkillIds={mapView.filteredEntries.map((entry) => entry.id)}
+                importableSkillIds={mapImportableSkillIds}
                 activeGroupId={groupFilter}
                 onSelectSkill={handleMapSkillSelect}
                 onToggleGroup={handleMapGroupToggle}
@@ -761,7 +1071,9 @@ export function SkillsCatalogTab() {
         >
           <div>
             <h2 className="text-sm font-semibold uppercase tracking-[0.14em] text-slate-500">Catalog Map</h2>
-            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Secondary orientation view.</p>
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+              Actionable install view. {mapCandidateSummary}
+            </p>
           </div>
           <span className="text-xs text-slate-500 dark:text-slate-400">{isMobileMapExpanded ? "Hide" : "Show"}</span>
         </button>
@@ -773,15 +1085,19 @@ export function SkillsCatalogTab() {
             ) : !catalog ? (
               <EmptyState title="Catalog unavailable" description="Unable to render catalog map." />
             ) : (
-              <SkillTreeGraph
-                graph={catalog.graph}
-                selectedSkillId={selectedSkillId}
-                allowedSkillIds={mapView.filteredEntries.map((entry) => entry.id)}
-                activeGroupId={groupFilter}
-                onSelectSkill={handleMapSkillSelect}
-                onToggleGroup={handleMapGroupToggle}
-                className="h-[360px]"
-              />
+              <div className="space-y-3">
+                {renderMapActionsPanel()}
+                <SkillTreeGraph
+                  graph={catalog.graph}
+                  selectedSkillId={selectedSkillId}
+                  allowedSkillIds={mapView.filteredEntries.map((entry) => entry.id)}
+                  importableSkillIds={mapImportableSkillIds}
+                  activeGroupId={groupFilter}
+                  onSelectSkill={handleMapSkillSelect}
+                  onToggleGroup={handleMapGroupToggle}
+                  className="h-[360px]"
+                />
+              </div>
             )}
           </div>
         ) : null}

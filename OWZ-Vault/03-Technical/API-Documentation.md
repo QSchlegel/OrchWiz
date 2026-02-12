@@ -106,6 +106,21 @@ Forwarded records include metadata fields (for example `isForwarded`, `sourceNod
 - `GET /api/ship-yard/status/[id]` fetch Ship Yard deployment status + bridge crew state.
   - Uses the same auth rules as `POST /api/ship-yard/launch`.
   - Response includes top-level `baseRequirementsEstimate` (persisted value when valid; otherwise server-computed fallback).
+- `GET /api/ship-yard/status/[id]/inspection` fetch curated deployment inspection + logging readout.
+  - Uses the same auth rules as `POST /api/ship-yard/launch`.
+  - Query:
+    - `deliveriesTake` optional (clamped `1..50`, default `10`)
+    - `includeRuntime` optional (`true|false`, default `false`)
+  - Response sections:
+    - `deployment`: safe deployment snapshot fields (no raw metadata)
+    - `failure`: normalized `deploymentError`, `deploymentErrorCode`, and `deploymentErrorDetails`
+    - `logs`: curated/truncated log tails from known metadata keys only
+    - `bridgeReadout`: provider summary and recent delivery timeline with message previews
+    - `bridgeCrew`: role roster summary
+    - `runtime` only when `includeRuntime=true`
+  - Security posture:
+    - Does not return raw `deployment.metadata`
+    - Does not expose bridge connection credentials/config payloads
 - `GET /api/ship-yard/secrets?deploymentProfile=<profile>&includeValues=true|false` fetch Ship Yard secret template for the authenticated user + profile.
   - Query:
     - `deploymentProfile` required (`local_starship_build|cloud_shipyard`)
@@ -363,6 +378,17 @@ Webhook payload example sent to targets:
 
 - `GET /api/bridge/state` operational bridge state for dashboard.
   - Optional `includeForwarded=true` to merge forwarded bridge/system events.
+  - Includes `runtimeUi.openclaw` payload for iframe embedding:
+    - `label`
+    - `href` (default selected station proxy URL or `null`)
+    - `source` (selected station source)
+    - `instances` (always six station entries: `xo|ops|eng|sec|med|cou`)
+      - `stationKey`, `callsign`, `label`
+      - `href` (proxy URL `/api/bridge/runtime-ui/openclaw/:stationKey?shipDeploymentId=...` when configured)
+      - `source` (`openclaw_ui_urls | openclaw_ui_url_template | openclaw_ui_url | openclaw_gateway_urls | openclaw_gateway_url_template | openclaw_gateway_url | cluster_service_fallback | unconfigured`)
+- `GET /api/bridge/runtime-ui/openclaw/:stationKey/*` authenticated OpenClaw UI patch-through proxy for iframe embedding.
+  - Optional query: `shipDeploymentId`.
+  - Resolves station runtime URL via env/runtime registry and proxies HTML/assets for same-origin iframe rendering.
 - Ship-scoped Bridge Agent Chat:
   - `GET /api/ships/:id/agent-chat/rooms` list rooms for a ship (optional: `memberBridgeCrewId`, `take`).
   - `POST /api/ships/:id/agent-chat/rooms` create/upsert room.
@@ -397,7 +423,16 @@ Webhook payload example sent to targets:
   - `POST /api/bridge/connections/[id]/test` enqueue and attempt immediate test delivery for that connector.
   - `POST /api/bridge/connections/dispatch` manual patch-through dispatch.
     - Required body: `deploymentId`, `message`.
-    - Optional body: `connectionIds` (defaults to all enabled connectors in deployment).
+    - Optional body:
+      - `connectionIds` (defaults to all enabled connectors in deployment).
+      - `runtime` (defaults to `openclaw`; rejects unknown explicit values with `400` and supported runtime ids).
+      - `bridgeContext`:
+        - `stationKey`: `xo|ops|eng|sec|med|cou`
+        - `callsign`
+        - `bridgeCrewId`
+    - Default runtime semantics:
+      - Missing/empty runtime is resolved to `openclaw`.
+      - Persisted delivery payload stores `runtime.id` and optional `bridgeContext` for downstream runtime adapters.
   - COU auto relay:
     - Runtime dispatch is triggered when prompt metadata is bridge-channel COU (`metadata.bridge.channel === "bridge-agent"` and `metadata.bridge.stationKey === "cou"`).
     - `metadata.bridge.shipDeploymentId` is the preferred deployment target hint.
