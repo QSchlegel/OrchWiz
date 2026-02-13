@@ -11,8 +11,8 @@ export const SHIP_MONITORING_DEFAULTS = Object.freeze({
   prometheusUrl: "http://localhost:9090/query?g0.expr=sum%20by(job)%20(up)&g0.tab=0",
   // Use the built-in KubeView patch-through so users don't need a separate port-forward.
   kubeviewUrl: "/api/bridge/runtime-ui/kubeview",
-  // Use bridge patch-through for Langfuse UI when LANGFUSE_BASE_URL is configured.
-  langfuseUrl: "/api/bridge/runtime-ui/langfuse",
+  // Leave unset by default; configure a direct Langfuse URL per ship in Ship Yard.
+  langfuseUrl: "",
 })
 
 function asRecord(value: unknown): Record<string, unknown> {

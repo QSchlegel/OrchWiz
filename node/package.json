@@ -11,6 +11,7 @@
     "shipyard:local:debug": "npx tsx scripts/shipyard-local-debug-loop.ts",
     "build": "next build",
     "start": "NODE_ENV=production tsx server.ts",
+    "runtime-edge": "tsx src/runtime-edge/server.ts",
     "lint": "eslint .",
     "test": "tsx --test \"src/**/*.test.ts\"",
     "db:generate": "prisma generate",

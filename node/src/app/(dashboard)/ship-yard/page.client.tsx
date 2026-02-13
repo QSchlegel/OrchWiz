@@ -3077,7 +3077,7 @@ export default function ShipYardPage() {
                         },
                       }))
                     }
-                    placeholder="/api/bridge/runtime-ui/langfuse"
+                    placeholder="https://langfuse.example.com"
                     className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
                   />
                 </label>
@@ -4799,7 +4799,7 @@ export default function ShipYardPage() {
                           langfuseUrl: event.target.value,
                         }))
                       }
-                      placeholder="/api/bridge/runtime-ui/langfuse"
+                      placeholder="https://langfuse.example.com"
                       className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
                     />
                   </label>

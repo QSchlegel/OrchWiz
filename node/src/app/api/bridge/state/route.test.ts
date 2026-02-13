@@ -38,7 +38,27 @@ function createBaseDeps(overrides: Record<string, unknown> = {}) {
           kubeviewUrl: "https://kubeview.example.com/kubeview",
         },
       },
+      metadata: {
+        runtimeUi: {
+          openclaw: {
+            source: "terraform_output",
+            urls: {
+              xo: "http://localhost:3100/openclaw/xo",
+              ops: "http://localhost:3100/openclaw/ops",
+              eng: "http://localhost:3100/openclaw/eng",
+              sec: "http://localhost:3100/openclaw/sec",
+              med: "http://localhost:3100/openclaw/med",
+              cou: "http://localhost:3100/openclaw/cou",
+            },
+          },
+          kubeview: {
+            source: "terraform_output",
+            url: "http://localhost:3100/kubeview",
+          },
+        },
+      },
     }),
+    maybeHydrateSelectedShipRuntimeUi: async ({ selectedShip }: { selectedShip: unknown }) => selectedShip,
     listBridgeCrew: async () => [],
     listTasks: async () => [],
     listForwardedBridgeEvents: async () => [],
@@ -142,6 +162,13 @@ test("handleGetBridgeState marks missing monitoring URLs as warnings", async () 
             kubeviewUrl: "",
           },
         },
+        metadata: {
+          runtimeUi: {
+            kubeview: {
+              url: "http://localhost:3100/kubeview",
+            },
+          },
+        },
       }),
     }) as any,
   )
@@ -155,11 +182,8 @@ test("handleGetBridgeState marks missing monitoring URLs as warnings", async () 
   assert.equal(monitoring.prometheus.state, "warning")
   assert.match(String(monitoring.prometheus.detail), /Set Prometheus URL/i)
   assert.equal(monitoring.kubeview.state, "nominal")
-  assert.match(String(monitoring.kubeview.detail), /bridge proxy/i)
-  assert.equal(
-    monitoring.kubeview.href,
-    "/api/bridge/runtime-ui/kubeview?shipDeploymentId=ship-1",
-  )
+  assert.match(String(monitoring.kubeview.detail), /direct ship runtime ui/i)
+  assert.equal(monitoring.kubeview.href, "http://localhost:3100/kubeview")
 })
 
 test("handleGetBridgeState exposes langfuse monitoring card when LANGFUSE_BASE_URL is configured", async () => {
@@ -180,7 +204,7 @@ test("handleGetBridgeState exposes langfuse monitoring card when LANGFUSE_BASE_U
 
       assert.equal(langfuse.service, "langfuse")
       assert.equal(langfuse.state, "nominal")
-      assert.equal(langfuse.href, "/api/bridge/runtime-ui/langfuse")
+      assert.equal(langfuse.href, "https://langfuse.example.com")
     },
   )
 })
@@ -294,33 +318,72 @@ test("handleGetBridgeState returns unresolved monitoring placeholders when no sh
 })
 
 test("handleGetBridgeState exposes runtimeUi.openclaw iframe target", async () => {
-  await withEnv(
-    {
-      OPENCLAW_UI_URLS: JSON.stringify({
-        xo: "https://openclaw-xo.example.com",
-        ops: "https://openclaw-ops.example.com",
-      }),
-      OPENCLAW_GATEWAY_URL: "http://127.0.0.1:18789",
-    },
-    async () => {
-      const response = await handleGetBridgeState(
-        requestFor("http://localhost/api/bridge/state"),
-        createBaseDeps() as any,
-      )
-
-      assert.equal(response.status, 200)
-      const payload = (await response.json()) as Record<string, unknown>
-      const runtimeUi = payload.runtimeUi as Record<string, Record<string, unknown>>
-      const openclaw = runtimeUi.openclaw
-
-      assert.equal(openclaw.label, "OpenClaw Runtime UI")
-      assert.equal(openclaw.href, "/api/bridge/runtime-ui/openclaw/xo?shipDeploymentId=ship-1")
-      assert.equal(openclaw.source, "openclaw_ui_urls")
-      const instances = openclaw.instances as Array<Record<string, unknown>>
-      assert.equal(instances.length, 6)
-      const xo = instances.find((instance) => instance.stationKey === "xo")
-      assert.equal(xo?.href, "/api/bridge/runtime-ui/openclaw/xo?shipDeploymentId=ship-1")
-      assert.equal(xo?.source, "openclaw_ui_urls")
-    },
+  const response = await handleGetBridgeState(
+    requestFor("http://localhost/api/bridge/state"),
+    createBaseDeps() as any,
   )
+
+  assert.equal(response.status, 200)
+  const payload = (await response.json()) as Record<string, unknown>
+  const runtimeUi = payload.runtimeUi as Record<string, Record<string, unknown>>
+  const openclaw = runtimeUi.openclaw
+
+  assert.equal(openclaw.label, "OpenClaw Runtime UI")
+  assert.equal(openclaw.href, "http://localhost:3100/openclaw/xo")
+  assert.equal(openclaw.source, "runtime_ui_metadata")
+  const instances = openclaw.instances as Array<Record<string, unknown>>
+  assert.equal(instances.length, 6)
+  const xo = instances.find((instance) => instance.stationKey === "xo")
+  assert.equal(xo?.href, "http://localhost:3100/openclaw/xo")
+  assert.equal(xo?.source, "runtime_ui_metadata")
+})
+
+test("handleGetBridgeState uses hydrated runtimeUi metadata when legacy ships are missing it", async () => {
+  const response = await handleGetBridgeState(
+    requestFor("http://localhost/api/bridge/state"),
+    createBaseDeps({
+      findSelectedShipMonitoring: async () => ({
+        id: "ship-1",
+        status: "active",
+        deploymentProfile: "local_starship_build",
+        config: {
+          monitoring: {
+            kubeviewUrl: "/api/bridge/runtime-ui/kubeview",
+          },
+        },
+        metadata: {
+          createdBy: "codex-debug",
+        },
+      }),
+      maybeHydrateSelectedShipRuntimeUi: async ({ selectedShip }: any) => ({
+        ...selectedShip,
+        metadata: {
+          ...selectedShip.metadata,
+          runtimeUi: {
+            openclaw: {
+              source: "terraform_output",
+              urls: {
+                xo: "http://localhost:3100/openclaw/xo",
+              },
+            },
+            kubeview: {
+              source: "terraform_output",
+              url: "http://localhost:3100/kubeview",
+            },
+            portForwardCommand: "kubectl -n orchwiz-starship port-forward svc/orchwiz-runtime-edge 3100:3100",
+          },
+        },
+      }),
+    }) as any,
+  )
+
+  assert.equal(response.status, 200)
+  const payload = (await response.json()) as Record<string, unknown>
+
+  const monitoring = payload.monitoring as Record<string, Record<string, unknown>>
+  assert.equal(monitoring.kubeview.href, "http://localhost:3100/kubeview")
+
+  const runtimeUi = payload.runtimeUi as Record<string, Record<string, unknown>>
+  const openclaw = runtimeUi.openclaw
+  assert.equal(openclaw.href, "http://localhost:3100/openclaw/xo")
 })

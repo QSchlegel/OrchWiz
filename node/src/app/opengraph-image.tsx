@@ -14,7 +14,7 @@ async function getRequestOrigin() {
 
 export default async function OpenGraphImage() {
   const origin = await getRequestOrigin()
-  const logoUrl = `${origin}/brand/orchwiz-mark.png`
+  const logoUrl = `${origin}/brand/orchwiz-mark.svg`
 
   // Fetch fonts over HTTP so this works reliably in Edge/dev/build environments.
   const outfitFontUrl = `${origin}/og/fonts/Outfit-SemiBold.ttf`

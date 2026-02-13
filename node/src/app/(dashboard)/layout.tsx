@@ -88,6 +88,33 @@ export default function DashboardLayout({
     }
   }, [session, isPending, pathname])
 
+  useEffect(() => {
+    if (isPending || !session) {
+      return
+    }
+
+    // Mint/refresh the short-lived runtime JWT cookie used by ship-side runtime UIs.
+    // Best-effort: if this fails, the runtime UI iframe will show a 401 until refreshed.
+    const refresh = () => {
+      void fetch("/api/runtime/jwt", {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({}),
+      }).catch(() => {
+        // ignore
+      })
+    }
+
+    refresh()
+    const timer = window.setInterval(refresh, 5 * 60 * 1000)
+    return () => {
+      window.clearInterval(timer)
+    }
+  }, [session, isPending])
+
   if (isPending) {
     return (
       <div className="min-h-screen flex items-center justify-center">

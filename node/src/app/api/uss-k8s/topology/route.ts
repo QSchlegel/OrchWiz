@@ -79,11 +79,15 @@ function resolveKubeviewPayload(
 
   const metadata = asRecord(selectedShip.metadata)
   const kubeview = asRecord(metadata.kubeview)
+  const runtimeUi = asRecord(metadata.runtimeUi)
+  const runtimeUiKubeview = asRecord(runtimeUi.kubeview)
 
   const metadataEnabled = asBoolean(kubeview.enabled)
   const metadataIngressEnabled = asBoolean(kubeview.ingressEnabled)
   const metadataUrl = asString(kubeview.url)
   const metadataSource = asString(kubeview.source)
+  const runtimeUiUrl = asString(runtimeUiKubeview.url)
+  const runtimeUiSource = asString(runtimeUiKubeview.source)
 
   const enabled = metadataEnabled ?? true
   const ingressEnabled = metadataIngressEnabled ?? (selectedShip.deploymentProfile === "cloud_shipyard")
@@ -91,16 +95,10 @@ function resolveKubeviewPayload(
     metadataSource === "terraform_output" || metadataSource === "fallback"
       ? metadataSource
       : "fallback"
-
-  if (metadataUrl) {
-    return {
-      enabled,
-      ingressEnabled,
-      url: metadataUrl,
-      source: normalizedSource,
-      reason: null,
-    }
-  }
+  const normalizedRuntimeUiSource: KubeviewSource =
+    runtimeUiSource === "terraform_output" || runtimeUiSource === "fallback"
+      ? runtimeUiSource
+      : "fallback"
 
   if (!enabled) {
     return {
@@ -109,6 +107,26 @@ function resolveKubeviewPayload(
       url: null,
       source: normalizedSource,
       reason: "KubeView is disabled for this ship.",
+    }
+  }
+
+  if (runtimeUiUrl) {
+    return {
+      enabled,
+      ingressEnabled: true,
+      url: runtimeUiUrl,
+      source: normalizedRuntimeUiSource,
+      reason: null,
+    }
+  }
+
+  if (metadataUrl) {
+    return {
+      enabled,
+      ingressEnabled,
+      url: metadataUrl,
+      source: normalizedSource,
+      reason: null,
     }
   }
 

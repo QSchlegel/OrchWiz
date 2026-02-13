@@ -281,11 +281,16 @@ function mergeMetadataPreservingKubeview(
     ...(incoming || {}),
   }
 
-  if (!incoming || !Object.prototype.hasOwnProperty.call(incoming, "kubeview")) {
-    if (Object.prototype.hasOwnProperty.call(base, "kubeview")) {
-      merged.kubeview = base.kubeview
+  const preserveKey = (key: string) => {
+    if (!incoming || !Object.prototype.hasOwnProperty.call(incoming, key)) {
+      if (Object.prototype.hasOwnProperty.call(base, key)) {
+        ;(merged as any)[key] = (base as any)[key]
+      }
     }
   }
+
+  preserveKey("kubeview")
+  preserveKey("runtimeUi")
 
   return merged
 }

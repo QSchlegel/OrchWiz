@@ -950,9 +950,9 @@ export default function ShipsPage() {
                       setForm({
                         ...form,
                         monitoring: { ...form.monitoring, langfuseUrl: e.target.value },
-                      })}
+                    })}
                     className={inputCls}
-                    placeholder="/api/bridge/runtime-ui/langfuse"
+                    placeholder="https://langfuse.example.com"
                   />
                 </div>
                 <div className="sm:col-span-2">

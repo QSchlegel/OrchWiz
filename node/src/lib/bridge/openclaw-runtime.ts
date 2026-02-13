@@ -1,6 +1,7 @@
 import { getBridgeStationTemplates, type BridgeStationKey } from "@/lib/bridge/stations"
 
 export type OpenClawRuntimeUrlSource =
+  | "runtime_ui_metadata"
   | "openclaw_ui_urls"
   | "openclaw_ui_url_template"
   | "openclaw_ui_url"

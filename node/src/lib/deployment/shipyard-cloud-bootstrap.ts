@@ -104,6 +104,12 @@ interface TerraformOutputShape {
   kubeview_url?: {
     value?: unknown
   }
+  runtime_ui_openclaw_urls?: {
+    value?: unknown
+  }
+  runtime_ui_kubeview_url?: {
+    value?: unknown
+  }
   control_plane_public_ipv4?: {
     value?: unknown
   }
@@ -119,10 +125,56 @@ interface KubeviewBootstrapMetadata {
   source: "terraform_output" | "fallback"
 }
 
+interface RuntimeUiBootstrapMetadata {
+  openclaw: {
+    urls: Partial<Record<"xo" | "ops" | "eng" | "sec" | "med" | "cou", string>>
+    source: "terraform_output" | "fallback"
+  }
+  kubeview: {
+    url: string | null
+    source: "terraform_output" | "fallback"
+  }
+  portForwardCommand: string | null
+}
+
 function asString(value: unknown): string | null {
   if (typeof value !== "string") return null
   const trimmed = value.trim()
   return trimmed.length > 0 ? trimmed : null
+}
+
+function isStationKey(value: unknown): value is "xo" | "ops" | "eng" | "sec" | "med" | "cou" {
+  return value === "xo" || value === "ops" || value === "eng" || value === "sec" || value === "med" || value === "cou"
+}
+
+function fallbackCloudRuntimeUiMetadata(): RuntimeUiBootstrapMetadata {
+  return {
+    openclaw: {
+      urls: {},
+      source: "fallback",
+    },
+    kubeview: {
+      url: null,
+      source: "fallback",
+    },
+    portForwardCommand: null,
+  }
+}
+
+function parseStationUrlMap(value: unknown): Partial<Record<"xo" | "ops" | "eng" | "sec" | "med" | "cou", string>> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {}
+  }
+
+  const out: Partial<Record<"xo" | "ops" | "eng" | "sec" | "med" | "cou", string>> = {}
+  for (const [key, rawUrl] of Object.entries(value as Record<string, unknown>)) {
+    const stationKey = key.trim().toLowerCase()
+    if (!isStationKey(stationKey)) continue
+    const url = asString(rawUrl)
+    if (!url) continue
+    out[stationKey] = url
+  }
+  return out
 }
 
 function asStringArray(value: unknown): string[] {
@@ -477,6 +529,10 @@ async function runProvisioning(args: {
     runtime: args.runtime,
     terraformEnvDirAbsolute: args.paths.terraformEnvDirAbsolute,
   })
+  metadata.runtimeUi = await resolveCloudRuntimeUiMetadata({
+    runtime: args.runtime,
+    terraformEnvDirAbsolute: args.paths.terraformEnvDirAbsolute,
+  })
 
   return {
     ok: true,
@@ -528,6 +584,55 @@ async function resolveCloudKubeviewMetadata(args: {
     ingressEnabled,
     url: resolvedUrl,
     source: "terraform_output",
+  }
+}
+
+async function resolveCloudRuntimeUiMetadata(args: {
+  runtime: ShipyardCloudBootstrapRuntime
+  terraformEnvDirAbsolute: string
+}): Promise<RuntimeUiBootstrapMetadata> {
+  const fallback = fallbackCloudRuntimeUiMetadata()
+
+  const outputResult = await args.runtime.runCommand(
+    "terraform",
+    ["-chdir", args.terraformEnvDirAbsolute, "output", "-json"],
+    {
+      timeoutMs: timeoutMs(args.runtime.env),
+    },
+  )
+
+  if (!outputResult.ok) {
+    return fallback
+  }
+
+  let parsedOutput: TerraformOutputShape = {}
+  try {
+    parsedOutput = JSON.parse(outputResult.stdout) as TerraformOutputShape
+  } catch {
+    return fallback
+  }
+
+  const hasRuntimeUiOutputs = (
+    parsedOutput.runtime_ui_openclaw_urls !== undefined
+    || parsedOutput.runtime_ui_kubeview_url !== undefined
+  )
+  if (!hasRuntimeUiOutputs) {
+    return fallback
+  }
+
+  const openclawUrls = parseStationUrlMap(parsedOutput.runtime_ui_openclaw_urls?.value)
+  const kubeviewUrl = asString(parsedOutput.runtime_ui_kubeview_url?.value)
+
+  return {
+    openclaw: {
+      urls: openclawUrls,
+      source: "terraform_output",
+    },
+    kubeview: {
+      url: kubeviewUrl,
+      source: "terraform_output",
+    },
+    portForwardCommand: null,
   }
 }
 

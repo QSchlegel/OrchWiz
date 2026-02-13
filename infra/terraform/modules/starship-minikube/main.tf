@@ -5,6 +5,8 @@ locals {
   kubeview_ingress_host  = trimspace(var.kubeview_ingress_host) != "" ? trimspace(var.kubeview_ingress_host) : "kubeview.${var.namespace}.localhost"
   kubeview_ingress_path  = trimspace(var.kubeview_ingress_path) != "" ? trimspace(var.kubeview_ingress_path) : "/kubeview"
   openclaw_station_keys  = ["xo", "ops", "eng", "sec", "med", "cou"]
+  runtime_edge_name      = "${var.app_name}-runtime-edge"
+  runtime_jwt_secret     = trimspace(var.runtime_jwt_secret) != "" ? var.runtime_jwt_secret : var.better_auth_secret
   openclaw_gateway_tokens = merge(
     { for station in local.openclaw_station_keys : station => "${var.openclaw_gateway_token}-${station}" },
     { for station, token in var.openclaw_gateway_tokens : station => token if contains(local.openclaw_station_keys, station) },
@@ -25,6 +27,11 @@ locals {
       BETTER_AUTH_SECRET   = var.better_auth_secret
       BETTER_AUTH_URL      = var.better_auth_url
       NEXT_PUBLIC_APP_URL  = var.next_public_app_url
+      ORCHWIZ_APP_NAME     = var.app_name
+      ORCHWIZ_RUNTIME_JWT_SECRET      = local.runtime_jwt_secret
+      ORCHWIZ_RUNTIME_JWT_TTL_SECONDS = "600"
+      ORCHWIZ_RUNTIME_JWT_ISSUER      = "orchwiz"
+      ORCHWIZ_RUNTIME_JWT_AUDIENCE    = "orchwiz-runtime-edge"
       GITHUB_CLIENT_ID     = var.github_client_id
       GITHUB_CLIENT_SECRET = var.github_client_secret
       OPENCLAW_GATEWAY_URL = "http://openclaw-xo:18789"
@@ -399,6 +406,123 @@ resource "kubernetes_service_v1" "openclaw" {
   }
 
   depends_on = [kubernetes_deployment_v1.openclaw]
+}
+
+resource "kubernetes_deployment_v1" "runtime_edge" {
+  metadata {
+    name      = local.runtime_edge_name
+    namespace = kubernetes_namespace_v1.starship.metadata[0].name
+    labels = {
+      "app.kubernetes.io/name"    = "runtime-edge"
+      "app.kubernetes.io/part-of" = "orchwiz"
+      "orchwiz/profile"           = "local_starship_build"
+    }
+  }
+
+  spec {
+    replicas = 1
+
+    selector {
+      match_labels = {
+        app = local.runtime_edge_name
+      }
+    }
+
+    template {
+      metadata {
+        labels = {
+          app                      = local.runtime_edge_name
+          "app.kubernetes.io/name" = "runtime-edge"
+        }
+      }
+
+      spec {
+        container {
+          name  = "runtime-edge"
+          image = var.app_image
+
+          port {
+            container_port = var.runtime_edge_port
+          }
+
+          env_from {
+            secret_ref {
+              name = kubernetes_secret_v1.app_env.metadata[0].name
+            }
+          }
+
+          env_from {
+            secret_ref {
+              name = kubernetes_secret_v1.openclaw_env.metadata[0].name
+            }
+          }
+
+          env {
+            name  = "PORT"
+            value = tostring(var.runtime_edge_port)
+          }
+
+          env {
+            name  = "HOSTNAME"
+            value = "0.0.0.0"
+          }
+
+          command = ["npm"]
+          args    = ["run", "runtime-edge", "--", "--hostname", "0.0.0.0", "--port", tostring(var.runtime_edge_port)]
+
+          readiness_probe {
+            http_get {
+              path = "/health"
+              port = var.runtime_edge_port
+            }
+            initial_delay_seconds = 10
+            period_seconds        = 10
+            timeout_seconds       = 2
+            failure_threshold     = 12
+          }
+
+          liveness_probe {
+            http_get {
+              path = "/health"
+              port = var.runtime_edge_port
+            }
+            initial_delay_seconds = 30
+            period_seconds        = 20
+            timeout_seconds       = 2
+            failure_threshold     = 6
+          }
+        }
+      }
+    }
+  }
+
+  depends_on = [kubernetes_secret_v1.app_env]
+}
+
+resource "kubernetes_service_v1" "runtime_edge" {
+  metadata {
+    name      = local.runtime_edge_name
+    namespace = kubernetes_namespace_v1.starship.metadata[0].name
+    labels = {
+      "app.kubernetes.io/name" = "runtime-edge"
+    }
+  }
+
+  spec {
+    selector = {
+      app = local.runtime_edge_name
+    }
+
+    port {
+      port        = var.runtime_edge_port
+      target_port = var.runtime_edge_port
+      protocol    = "TCP"
+    }
+
+    type = "ClusterIP"
+  }
+
+  depends_on = [kubernetes_deployment_v1.runtime_edge]
 }
 
 resource "kubernetes_deployment_v1" "app" {

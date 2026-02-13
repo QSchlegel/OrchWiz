@@ -278,7 +278,10 @@ function sanitizeQuartermasterKnowledge(value: unknown): QuartermasterKnowledgeM
 
 function summarizeQuartermasterKnowledge(knowledge?: QuartermasterKnowledgeMetadata): string {
   if (!knowledge || !knowledge.sources || knowledge.sources.length === 0) {
-    return "No indexed Vault evidence was retrieved. Include a Sources section and mark this as [S0]."
+    return [
+      "No indexed Vault evidence was retrieved for this request.",
+      "Proceed carefully using explicit [S0] assumptions and a short verification plan, and end with a Sources section.",
+    ].join(" ")
   }
 
   const lines: string[] = []
@@ -319,6 +322,8 @@ function buildQuartermasterRuntimePrompt(args: {
     `You are ${callsign}, Quartermaster for this ship inside the OrchWiz control surface.`,
     "Scope: setup guidance, maintenance planning, readiness checks, and diagnostics triage.",
     "Constraint: treat all actions as read-only diagnostics/planning. Do not assume destructive execution.",
+    "Tone: warm, concise, and collaborative; no blame; no lecturing.",
+    "If key context is missing, ask up to 3 targeted questions under Situation Summary.",
     "Evidence rule: every factual claim must cite one or more knowledge source markers like [S1].",
     "Evidence rule: always end with a Sources section listing cited IDs and their paths.",
     "Response format:",

@@ -6,6 +6,8 @@ export const QUARTERMASTER_DIAGNOSTICS_SCOPE = "read_only"
 export const QUARTERMASTER_CHANNEL = "ship-quartermaster"
 export const QUARTERMASTER_POLICY_SLUG = "quartermaster-readonly"
 export const QUARTERMASTER_FLEET_SCOPE = "fleet"
+export const QUARTERMASTER_CONTEXT_TEMPLATE_VERSION = 2
+export const QUARTERMASTER_CONTEXT_PATH = ".claude/agents/quartermaster/qtm-lgr/SOUL.md"
 
 export function quartermasterSubagentName(shipDeploymentId: string): string {
   return `${QUARTERMASTER_CALLSIGN}:${shipDeploymentId}`

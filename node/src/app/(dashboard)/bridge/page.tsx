@@ -269,7 +269,7 @@ function parseMonitoringStatus(
       : service === "prometheus"
         ? "Prometheus telemetry unresolved. Configure monitoring URL in Ship Yard."
         : service === "langfuse"
-          ? "Langfuse link unresolved. Configure Langfuse UI patch-through."
+          ? "Langfuse link unresolved. Configure Langfuse URL in Ship Yard."
           : "KubeView link unresolved. Configure monitoring URL in Ship Yard."
 
   return {
@@ -686,6 +686,67 @@ export default function BridgePage() {
       setIsBridgeLoading(false)
     }
   }, [selectedShipDeploymentId, setSelectedShipDeploymentId])
+
+  const ensureRuntimeEdgeAvailable = useCallback(async (targetHref: string | null): Promise<boolean> => {
+    if (!selectedShipDeploymentId) {
+      return true
+    }
+
+    const isLoopbackTarget = (() => {
+      if (!targetHref) return false
+      if (targetHref.startsWith("/")) return false
+      try {
+        const parsed = new URL(targetHref)
+        const hostname = parsed.hostname.trim().toLowerCase()
+        return (
+          hostname === "localhost"
+          || hostname === "127.0.0.1"
+          || hostname === "::1"
+          || hostname.endsWith(".localhost")
+        )
+      } catch {
+        return false
+      }
+    })()
+
+    if (!isLoopbackTarget) {
+      return true
+    }
+
+    try {
+      const response = await fetch("/api/bridge/runtime-edge/ensure", {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          shipDeploymentId: selectedShipDeploymentId,
+        }),
+      })
+
+      const payload = (await response.json()) as Record<string, unknown>
+      if (!response.ok) {
+        const detail = typeof payload.detail === "string" ? payload.detail : `HTTP ${response.status}`
+        setError(detail)
+        return false
+      }
+
+      if (payload.ok === true) {
+        setError(null)
+        return true
+      }
+
+      const detail = typeof payload.detail === "string" ? payload.detail : "runtime-edge is not reachable."
+      const command = typeof payload.command === "string" ? payload.command : ""
+      setError(command ? `${detail} Run: ${command}` : detail)
+      return false
+    } catch (error) {
+      console.error("runtime-edge ensure failed:", error)
+      setError("Unable to reach runtime-edge. Ensure your runtime-edge port-forward is running.")
+      return false
+    }
+  }, [selectedShipDeploymentId])
 
   const loadCharacterModels = useCallback(async () => {
     try {
@@ -1257,18 +1318,25 @@ export default function BridgePage() {
               const shipYardHref = selectedShipDeploymentId
                 ? `/ship-yard?shipDeploymentId=${selectedShipDeploymentId}`
                 : "/ship-yard"
-              const configureHref = service === "langfuse" ? "/docs#langfuse-tracing" : shipYardHref
+              const configureHref = shipYardHref
               if (status?.href) {
                 return (
                   <button
                     type="button"
                     key={service}
-                    onClick={() =>
-                      setMonitoringFrame({
-                        title: label,
-                        href: status.href as string,
-                      })
-                    }
+                    onClick={() => {
+                      void (async () => {
+                        if (service === "kubeview") {
+                          const ok = await ensureRuntimeEdgeAvailable(status.href as string)
+                          if (!ok) return
+                        }
+
+                        setMonitoringFrame({
+                          title: label,
+                          href: status.href as string,
+                        })
+                      })()
+                    }}
                     className="inline-flex items-center gap-2 rounded-lg border border-emerald-300/40 bg-emerald-500/12 px-3 py-2 text-sm text-emerald-700 transition hover:bg-emerald-500/22 dark:text-emerald-100"
                   >
                     {label}
@@ -1581,7 +1649,17 @@ export default function BridgePage() {
                         <button
                           type="button"
                           disabled={!selectedOpenClawRuntimeInstance?.href}
-                          onClick={() => setShowRuntimeIframe((current) => !current)}
+                          onClick={() => {
+                            void (async () => {
+                              if (!selectedOpenClawRuntimeInstance?.href) return
+                              if (!showRuntimeIframe) {
+                                const ok = await ensureRuntimeEdgeAvailable(selectedOpenClawRuntimeInstance.href)
+                                if (!ok) return
+                              }
+
+                              setShowRuntimeIframe((current) => !current)
+                            })()
+                          }}
                           className="inline-flex items-center gap-1 rounded-md border border-cyan-300/45 bg-cyan-500/12 px-2 py-1 text-xs text-cyan-700 transition hover:bg-cyan-500/22 disabled:opacity-50 dark:text-cyan-100"
                         >
                           {showRuntimeIframe ? "Hide iframe" : "Open full UI"}
@@ -1589,7 +1667,7 @@ export default function BridgePage() {
                       </div>
                       {!selectedOpenClawRuntimeInstance?.href && (
                         <p className="mt-1 text-xs text-amber-700 dark:text-amber-200">
-                          Configure station-specific runtime URLs (`OPENCLAW_UI_URLS` or template envs) to enable iframe patch-through.
+                          Runtime UI links are unavailable for this ship. Ensure runtime-edge is deployed and reachable (local: port-forward runtime-edge; cloud: runtime-edge ingress).
                         </p>
                       )}
                       {selectedOpenClawRuntimeInstance && (

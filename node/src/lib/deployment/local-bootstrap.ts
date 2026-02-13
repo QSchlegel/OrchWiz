@@ -140,6 +140,9 @@ interface TerraformOutputShape {
   kubeview_enabled?: TerraformOutputEntry
   kubeview_ingress_enabled?: TerraformOutputEntry
   kubeview_url?: TerraformOutputEntry
+  runtime_ui_openclaw_urls?: TerraformOutputEntry
+  runtime_ui_kubeview_url?: TerraformOutputEntry
+  runtime_edge_port_forward_command?: TerraformOutputEntry
 }
 
 interface KubeviewBootstrapMetadata {
@@ -147,6 +150,18 @@ interface KubeviewBootstrapMetadata {
   ingressEnabled: boolean
   url: string | null
   source: "terraform_output" | "fallback"
+}
+
+interface RuntimeUiBootstrapMetadata {
+  openclaw: {
+    urls: Partial<Record<"xo" | "ops" | "eng" | "sec" | "med" | "cou", string>>
+    source: "terraform_output" | "fallback"
+  }
+  kubeview: {
+    url: string | null
+    source: "terraform_output" | "fallback"
+  }
+  portForwardCommand: string | null
 }
 
 const DEFAULT_OPENCLAW_TARGET_DEPLOYMENTS = [
@@ -235,6 +250,40 @@ function fallbackLocalKubeviewMetadata(): KubeviewBootstrapMetadata {
   }
 }
 
+function isStationKey(value: unknown): value is "xo" | "ops" | "eng" | "sec" | "med" | "cou" {
+  return value === "xo" || value === "ops" || value === "eng" || value === "sec" || value === "med" || value === "cou"
+}
+
+function fallbackLocalRuntimeUiMetadata(): RuntimeUiBootstrapMetadata {
+  return {
+    openclaw: {
+      urls: {},
+      source: "fallback",
+    },
+    kubeview: {
+      url: null,
+      source: "fallback",
+    },
+    portForwardCommand: null,
+  }
+}
+
+function parseStationUrlMap(value: unknown): Partial<Record<"xo" | "ops" | "eng" | "sec" | "med" | "cou", string>> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {}
+  }
+
+  const out: Partial<Record<"xo" | "ops" | "eng" | "sec" | "med" | "cou", string>> = {}
+  for (const [key, rawUrl] of Object.entries(value as Record<string, unknown>)) {
+    const stationKey = key.trim().toLowerCase()
+    if (!isStationKey(stationKey)) continue
+    const url = asNonEmptyString(rawUrl)
+    if (!url) continue
+    out[stationKey] = url
+  }
+  return out
+}
+
 async function resolveLocalKubeviewMetadata(args: {
   runtime: LocalBootstrapRuntime
   terraformEnvDirAbsolute: string
@@ -279,6 +328,58 @@ async function resolveLocalKubeviewMetadata(args: {
     ingressEnabled,
     url,
     source: "terraform_output",
+  }
+}
+
+async function resolveLocalRuntimeUiMetadata(args: {
+  runtime: LocalBootstrapRuntime
+  terraformEnvDirAbsolute: string
+  timeoutMs: number
+}): Promise<RuntimeUiBootstrapMetadata> {
+  const fallback = fallbackLocalRuntimeUiMetadata()
+
+  const outputResult = await args.runtime.runCommand(
+    "terraform",
+    ["-chdir", args.terraformEnvDirAbsolute, "output", "-json"],
+    {
+      timeoutMs: args.timeoutMs,
+    },
+  )
+
+  if (!outputResult.ok) {
+    return fallback
+  }
+
+  let parsedOutput: TerraformOutputShape = {}
+  try {
+    parsedOutput = JSON.parse(outputResult.stdout) as TerraformOutputShape
+  } catch {
+    return fallback
+  }
+
+  const hasRuntimeUiOutputs = (
+    parsedOutput.runtime_ui_openclaw_urls !== undefined
+    || parsedOutput.runtime_ui_kubeview_url !== undefined
+    || parsedOutput.runtime_edge_port_forward_command !== undefined
+  )
+  if (!hasRuntimeUiOutputs) {
+    return fallback
+  }
+
+  const openclawUrls = parseStationUrlMap(parsedOutput.runtime_ui_openclaw_urls?.value)
+  const kubeviewUrl = asNonEmptyString(parsedOutput.runtime_ui_kubeview_url?.value)
+  const portForwardCommand = asNonEmptyString(parsedOutput.runtime_edge_port_forward_command?.value)
+
+  return {
+    openclaw: {
+      urls: openclawUrls,
+      source: "terraform_output",
+    },
+    kubeview: {
+      url: kubeviewUrl,
+      source: "terraform_output",
+    },
+    portForwardCommand: portForwardCommand || null,
   }
 }
 
@@ -1459,6 +1560,12 @@ export async function runLocalBootstrap(
     timeoutMs,
   })
 
+  const runtimeUi = await resolveLocalRuntimeUiMetadata({
+    runtime,
+    terraformEnvDirAbsolute: paths.terraformEnvDirAbsolute,
+    timeoutMs,
+  })
+
   return {
     ok: true,
     metadata: {
@@ -1475,6 +1582,7 @@ export async function runLocalBootstrap(
       provisionOutputTail: outputTail(provisionResult),
       openClawContextInjection: openClawContextInjection.summary,
       kubeview,
+      runtimeUi,
     },
   }
 }

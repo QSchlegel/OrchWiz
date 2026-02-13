@@ -8,6 +8,8 @@ import {
   QUARTERMASTER_AUTHORITY,
   QUARTERMASTER_CALLSIGN,
   QUARTERMASTER_CHANNEL,
+  QUARTERMASTER_CONTEXT_PATH,
+  QUARTERMASTER_CONTEXT_TEMPLATE_VERSION,
   QUARTERMASTER_DIAGNOSTICS_SCOPE,
   QUARTERMASTER_FLEET_SCOPE,
   QUARTERMASTER_POLICY_SLUG,
@@ -16,6 +18,7 @@ import {
   quartermasterFleetSessionTitle,
   quartermasterFleetSubagentName,
 } from "@/lib/quartermaster/constants"
+import { buildQuartermasterSubagentContent } from "@/lib/quartermaster/context-template"
 
 interface ShipSummary {
   id: string
@@ -94,13 +97,7 @@ function asString(value: unknown): string | null {
 }
 
 function quartermasterPromptTemplate(): string {
-  return [
-    `You are ${QUARTERMASTER_CALLSIGN}, the Quartermaster for this user's fleet.`,
-    "Operate inside OrchWiz ship control surfaces only.",
-    "Primary duties: setup guidance, maintenance planning, diagnostics triage, and operational readiness checks.",
-    "Execution posture: read-only diagnostics first; propose command sequences but do not assume destructive execution.",
-    "Always provide: situation summary, setup/maintenance checklist, risk notes, and next operator action.",
-  ].join("\n")
+  return buildQuartermasterSubagentContent()
 }
 
 async function loadShipForUser(args: {
@@ -401,27 +398,29 @@ export async function ensureShipQuartermaster(args: EnsureShipQuartermasterArgs)
   })
 
   if (!subagent) {
-    subagent = await prisma.subagent.create({
-      data: {
-        name: quartermasterFleetSubagentName(),
-        description: `${QUARTERMASTER_CALLSIGN} Quartermaster for fleet operations.`,
-        content: quartermasterPromptTemplate(),
-        isShared: false,
-        teamId: args.userId,
-        ownerUserId: args.userId,
-        settings: {
-          quartermaster: {
-            roleKey: QUARTERMASTER_ROLE_KEY,
-            callsign: QUARTERMASTER_CALLSIGN,
-            authority: QUARTERMASTER_AUTHORITY,
-            runtimeProfile: QUARTERMASTER_RUNTIME_PROFILE,
-            diagnosticsScope: QUARTERMASTER_DIAGNOSTICS_SCOPE,
-            scope: QUARTERMASTER_FLEET_SCOPE,
-          },
-        },
-      },
-    })
-  }
+	    subagent = await prisma.subagent.create({
+	      data: {
+	        name: quartermasterFleetSubagentName(),
+	        description: `${QUARTERMASTER_CALLSIGN} Quartermaster for fleet operations.`,
+	        content: quartermasterPromptTemplate(),
+	        path: QUARTERMASTER_CONTEXT_PATH,
+	        isShared: false,
+	        teamId: args.userId,
+	        ownerUserId: args.userId,
+	        settings: {
+	          quartermaster: {
+	            roleKey: QUARTERMASTER_ROLE_KEY,
+	            callsign: QUARTERMASTER_CALLSIGN,
+	            authority: QUARTERMASTER_AUTHORITY,
+	            runtimeProfile: QUARTERMASTER_RUNTIME_PROFILE,
+	            diagnosticsScope: QUARTERMASTER_DIAGNOSTICS_SCOPE,
+	            scope: QUARTERMASTER_FLEET_SCOPE,
+	            contextTemplateVersion: QUARTERMASTER_CONTEXT_TEMPLATE_VERSION,
+	          },
+	        },
+	      },
+	    })
+	  }
 
   await assignQuartermasterPolicy(subagent.id)
 

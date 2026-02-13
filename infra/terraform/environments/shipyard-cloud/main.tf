@@ -67,3 +67,19 @@ output "kubeview_ingress_enabled" {
 output "kubeview_url" {
   value = module.shipyard_k8s.kubeview_url
 }
+
+output "runtime_ui_openclaw_urls" {
+  value = module.shipyard_k8s.runtime_ui_openclaw_urls
+}
+
+output "runtime_ui_kubeview_url" {
+  value = module.shipyard_k8s.runtime_ui_kubeview_url
+}
+
+output "runtime_edge_service_name" {
+  value = module.shipyard_k8s.runtime_edge_service_name
+}
+
+output "runtime_edge_port" {
+  value = module.shipyard_k8s.runtime_edge_port
+}

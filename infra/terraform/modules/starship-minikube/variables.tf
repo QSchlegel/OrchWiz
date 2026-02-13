@@ -59,6 +59,13 @@ variable "better_auth_secret" {
   default     = "replace-with-32-char-secret"
 }
 
+variable "runtime_jwt_secret" {
+  type        = string
+  description = "ORCHWIZ_RUNTIME_JWT_SECRET value (defaults to better_auth_secret when empty)"
+  sensitive   = true
+  default     = ""
+}
+
 variable "better_auth_url" {
   type        = string
   description = "BETTER_AUTH_URL value"
@@ -88,6 +95,12 @@ variable "app_env" {
   type        = map(string)
   description = "Additional environment variables to inject into the app secret"
   default     = {}
+}
+
+variable "runtime_edge_port" {
+  type        = number
+  description = "Port for the ship-side runtime-edge service"
+  default     = 3100
 }
 
 variable "openclaw_image" {

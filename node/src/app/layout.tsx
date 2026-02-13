@@ -14,6 +14,7 @@ export const metadata: Metadata = {
     "OrchWiz is the Agent VPC for AI infra engineers: run agents across local and cloud nodes with policy controls and full decision traceability.",
   icons: {
     icon: [
+      { url: "/favicon.svg", type: "image/svg+xml" },
       { url: "/favicon.ico" },
       { url: "/favicon-32x32.png", sizes: "32x32", type: "image/png" },
       { url: "/favicon-16x16.png", sizes: "16x16", type: "image/png" },

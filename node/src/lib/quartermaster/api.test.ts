@@ -72,6 +72,7 @@ function createDeps(overrides: Partial<QuartermasterApiDeps> = {}): Quartermaste
   return {
     getShipQuartermasterState: async () => state,
     ensureShipQuartermaster: async () => state,
+    upgradeQuartermasterSubagentContext: async () => false,
     listSessionInteractions: async () => [
       makeInteraction("i-user", "user_input", "hello"),
       makeInteraction("i-ai", "ai_response", "world"),
@@ -240,4 +241,58 @@ test("executeShipQuartermasterPrompt fail-opens retrieval errors and still execu
   const knowledgeMetadata = (quartermasterMetadata.knowledge || {}) as Record<string, unknown>
   assert.equal((knowledgeMetadata.mode as string), "lexical")
   assert.equal((knowledgeMetadata.fallbackUsed as boolean), true)
+})
+
+test("loadShipQuartermasterStateWithInteractions upgrades quartermaster subagent context when present", async () => {
+  let upgraded = false
+
+  await loadShipQuartermasterStateWithInteractions(
+    {
+      userId: "user-1",
+      shipDeploymentId: "ship-1",
+    },
+    createDeps({
+      upgradeQuartermasterSubagentContext: async (args) => {
+        upgraded = true
+        assert.equal(args.userId, "user-1")
+        assert.equal(args.subagentId, "subagent-1")
+        return true
+      },
+    }),
+  )
+
+  assert.equal(upgraded, true)
+})
+
+test("executeShipQuartermasterPrompt upgrades quartermaster subagent context before runtime prompt execution", async () => {
+  let upgraded = false
+  let executedAfterUpgrade = false
+
+  await executeShipQuartermasterPrompt(
+    {
+      userId: "user-1",
+      shipDeploymentId: "ship-1",
+      prompt: "status report",
+      requestedBackend: "auto",
+      autoProvisionIfMissing: false,
+    },
+    createDeps({
+      upgradeQuartermasterSubagentContext: async () => {
+        upgraded = true
+        return true
+      },
+      executeSessionPrompt: async () => {
+        executedAfterUpgrade = upgraded
+        return {
+          interaction: makeInteraction("i-user", "user_input", "status report"),
+          responseInteraction: makeInteraction("i-ai", "ai_response", "ok"),
+          provider: "codex-cli",
+          fallbackUsed: false,
+          signature: null,
+        }
+      },
+    }),
+  )
+
+  assert.equal(executedAfterUpgrade, true)
 })

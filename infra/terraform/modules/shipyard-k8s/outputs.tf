@@ -39,3 +39,34 @@ output "kubeview_url" {
   )
   description = "kubeview URL when ingress is enabled"
 }
+
+output "runtime_edge_port" {
+  value       = var.runtime_edge_port
+  description = "runtime-edge service port"
+}
+
+output "runtime_edge_service_name" {
+  value       = kubernetes_service_v1.runtime_edge.metadata[0].name
+  description = "Kubernetes service name for runtime-edge"
+}
+
+output "runtime_ui_openclaw_urls" {
+  value = (
+    var.create_ingress && var.enable_openclaw && trimspace(var.ingress_host) != ""
+    ? {
+        for station in local.openclaw_station_keys :
+        station => "https://openclaw-${station}.${trimspace(var.ingress_host)}"
+      }
+    : {}
+  )
+  description = "Direct OpenClaw runtime UI base URLs (per station) exposed via runtime-edge"
+}
+
+output "runtime_ui_kubeview_url" {
+  value = (
+    var.create_ingress && var.enable_kubeview && trimspace(var.ingress_host) != ""
+    ? "https://kubeview.${trimspace(var.ingress_host)}"
+    : null
+  )
+  description = "Direct KubeView runtime UI base URL exposed via runtime-edge"
+}

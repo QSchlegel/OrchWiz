@@ -2,6 +2,8 @@ locals {
   create_database_secret = length(trimspace(var.database_url)) > 0
   kubeview_chart_archive = "${path.module}/../../../vendor/kubeview/deploy/helm/kubeview-${var.kubeview_chart_version}.tgz"
   openclaw_station_keys  = ["xo", "ops", "eng", "sec", "med", "cou"]
+  runtime_edge_name      = "${var.app_name}-runtime-edge"
+  runtime_jwt_secret     = trimspace(var.runtime_jwt_secret) != "" ? var.runtime_jwt_secret : var.better_auth_secret
   openclaw_gateway_tokens = merge(
     { for station in local.openclaw_station_keys : station => "${var.openclaw_gateway_token}-${station}" },
     { for station, token in var.openclaw_gateway_tokens : station => token if contains(local.openclaw_station_keys, station) },
@@ -22,12 +24,30 @@ locals {
     var.kubeview_ingress_annotations,
     var.kubeview_ingress_auth_required ? var.kubeview_ingress_auth_annotations : {},
   )
+  runtime_edge_ingress_annotations = merge(
+    {
+      "nginx.ingress.kubernetes.io/proxy-read-timeout"  = "3600"
+      "nginx.ingress.kubernetes.io/proxy-send-timeout"  = "3600"
+      "nginx.ingress.kubernetes.io/proxy-buffering"     = "off"
+    },
+    var.ingress_annotations,
+  )
 
   app_env = merge(
     {
       BETTER_AUTH_SECRET       = var.better_auth_secret
       BETTER_AUTH_URL          = var.better_auth_url
       NEXT_PUBLIC_APP_URL      = var.next_public_app_url
+      ORCHWIZ_APP_NAME         = var.app_name
+      ORCHWIZ_RUNTIME_JWT_SECRET = local.runtime_jwt_secret
+      ORCHWIZ_RUNTIME_JWT_TTL_SECONDS = "600"
+      ORCHWIZ_RUNTIME_JWT_ISSUER       = "orchwiz"
+      ORCHWIZ_RUNTIME_JWT_AUDIENCE     = "orchwiz-runtime-edge"
+      ORCHWIZ_RUNTIME_JWT_COOKIE_DOMAIN = (
+        var.create_ingress && trimspace(var.ingress_host) != ""
+        ? ".${trimspace(var.ingress_host)}"
+        : ""
+      )
       GITHUB_CLIENT_ID         = var.github_client_id
       GITHUB_CLIENT_SECRET     = var.github_client_secret
       NODE_ENV                 = "production"
@@ -403,6 +423,182 @@ resource "kubernetes_service_v1" "openclaw" {
   }
 
   depends_on = [kubernetes_deployment_v1.openclaw]
+}
+
+resource "kubernetes_deployment_v1" "runtime_edge" {
+  metadata {
+    name      = local.runtime_edge_name
+    namespace = kubernetes_namespace_v1.shipyard.metadata[0].name
+    labels = {
+      "app.kubernetes.io/name"    = "runtime-edge"
+      "app.kubernetes.io/part-of" = "orchwiz"
+      "orchwiz/profile"           = "cloud_shipyard"
+    }
+  }
+
+  spec {
+    replicas = 1
+
+    selector {
+      match_labels = {
+        app = local.runtime_edge_name
+      }
+    }
+
+    template {
+      metadata {
+        labels = {
+          app                      = local.runtime_edge_name
+          "app.kubernetes.io/name" = "runtime-edge"
+        }
+      }
+
+      spec {
+        container {
+          name  = "runtime-edge"
+          image = var.app_image
+
+          port {
+            container_port = var.runtime_edge_port
+          }
+
+          env_from {
+            secret_ref {
+              name = kubernetes_secret_v1.app_env.metadata[0].name
+            }
+          }
+
+          dynamic "env_from" {
+            for_each = var.enable_openclaw ? [1] : []
+            content {
+              secret_ref {
+                name = kubernetes_secret_v1.openclaw_env[0].metadata[0].name
+              }
+            }
+          }
+
+          env {
+            name  = "PORT"
+            value = tostring(var.runtime_edge_port)
+          }
+
+          env {
+            name  = "HOSTNAME"
+            value = "0.0.0.0"
+          }
+
+          command = ["npm"]
+          args    = ["run", "runtime-edge", "--", "--hostname", "0.0.0.0", "--port", tostring(var.runtime_edge_port)]
+
+          readiness_probe {
+            http_get {
+              path = "/health"
+              port = var.runtime_edge_port
+            }
+            initial_delay_seconds = 10
+            period_seconds        = 10
+            timeout_seconds       = 2
+            failure_threshold     = 12
+          }
+
+          liveness_probe {
+            http_get {
+              path = "/health"
+              port = var.runtime_edge_port
+            }
+            initial_delay_seconds = 30
+            period_seconds        = 20
+            timeout_seconds       = 2
+            failure_threshold     = 6
+          }
+        }
+      }
+    }
+  }
+
+  depends_on = [kubernetes_secret_v1.app_env]
+}
+
+resource "kubernetes_service_v1" "runtime_edge" {
+  metadata {
+    name      = local.runtime_edge_name
+    namespace = kubernetes_namespace_v1.shipyard.metadata[0].name
+    labels = {
+      "app.kubernetes.io/name" = "runtime-edge"
+    }
+  }
+
+  spec {
+    selector = {
+      app = local.runtime_edge_name
+    }
+
+    port {
+      port        = var.runtime_edge_port
+      target_port = var.runtime_edge_port
+      protocol    = "TCP"
+    }
+
+    type = "ClusterIP"
+  }
+
+  depends_on = [kubernetes_deployment_v1.runtime_edge]
+}
+
+resource "kubernetes_ingress_v1" "runtime_edge" {
+  count = var.create_ingress && (var.enable_openclaw || var.enable_kubeview) ? 1 : 0
+
+  metadata {
+    name        = "${local.runtime_edge_name}-ingress"
+    namespace   = kubernetes_namespace_v1.shipyard.metadata[0].name
+    annotations = local.runtime_edge_ingress_annotations
+  }
+
+  spec {
+    ingress_class_name = var.ingress_class_name
+
+    dynamic "rule" {
+      for_each = concat(
+        var.enable_kubeview && trimspace(var.ingress_host) != "" ? [
+          {
+            host = "kubeview.${trimspace(var.ingress_host)}"
+          }
+        ] : [],
+        var.enable_openclaw && trimspace(var.ingress_host) != "" ? [
+          for station in local.openclaw_station_keys : {
+            host = "openclaw-${station}.${trimspace(var.ingress_host)}"
+          }
+        ] : [],
+      )
+
+      content {
+        host = rule.value.host
+
+        http {
+          path {
+            path      = "/"
+            path_type = "Prefix"
+
+            backend {
+              service {
+                name = kubernetes_service_v1.runtime_edge.metadata[0].name
+                port {
+                  number = var.runtime_edge_port
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    lifecycle {
+      precondition {
+        condition     = trimspace(var.ingress_host) != ""
+        error_message = "runtime-edge ingress requires ingress_host to be set."
+      }
+    }
+  }
 }
 
 resource "kubernetes_deployment_v1" "app" {

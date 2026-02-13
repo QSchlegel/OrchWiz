@@ -10,6 +10,7 @@ import {
   QUARTERMASTER_CHANNEL,
   QUARTERMASTER_RUNTIME_PROFILE,
 } from "@/lib/quartermaster/constants"
+import { upgradeQuartermasterSubagentContext } from "@/lib/quartermaster/context-upgrade"
 import {
   executeSessionPrompt,
   SessionPromptError,
@@ -124,6 +125,7 @@ async function defaultListSessionInteractions(sessionId: string): Promise<Sessio
 export interface QuartermasterApiDeps {
   getShipQuartermasterState: typeof getShipQuartermasterState
   ensureShipQuartermaster: typeof ensureShipQuartermaster
+  upgradeQuartermasterSubagentContext: typeof upgradeQuartermasterSubagentContext
   listSessionInteractions: (sessionId: string) => Promise<SessionInteraction[]>
   countBridgeCrew: (shipDeploymentId: string) => Promise<number>
   dataCoreEnabled: () => boolean
@@ -138,6 +140,7 @@ export interface QuartermasterApiDeps {
 const defaultDeps: QuartermasterApiDeps = {
   getShipQuartermasterState,
   ensureShipQuartermaster,
+  upgradeQuartermasterSubagentContext,
   listSessionInteractions: defaultListSessionInteractions,
   countBridgeCrew: async (shipDeploymentId) =>
     prisma.bridgeCrew.count({
@@ -231,6 +234,17 @@ export async function loadShipQuartermasterStateWithInteractions(
     }
   }
 
+  if (state.subagent) {
+    try {
+      await deps.upgradeQuartermasterSubagentContext({
+        userId: args.userId,
+        subagentId: state.subagent.id,
+      })
+    } catch (error) {
+      console.warn("Quartermaster context upgrade failed (fail-open):", error)
+    }
+  }
+
   const interactions = state.session
     ? await deps.listSessionInteractions(state.session.id)
     : []
@@ -257,6 +271,16 @@ export async function executeShipQuartermasterPrompt(
 
   if (!state.session || !state.subagent) {
     throw quartermasterNotEnabledResponseError()
+  }
+
+  const warnings: string[] = []
+  try {
+    await deps.upgradeQuartermasterSubagentContext({
+      userId: args.userId,
+      subagentId: state.subagent.id,
+    })
+  } catch (error) {
+    warnings.push(`Quartermaster context upgrade failed (fail-open): ${(error as Error)?.message || "unknown error"}`)
   }
 
   const crewCount = await deps.countBridgeCrew(args.shipDeploymentId)
@@ -447,14 +471,17 @@ export async function executeShipQuartermasterPrompt(
     entityId: state.session.id,
   })
 
+  const mergedWarnings = [
+    ...warnings,
+    ...(promptResult.warnings && promptResult.warnings.length > 0 ? promptResult.warnings : []),
+  ]
+
   return {
     interaction: promptResult.interaction,
     responseInteraction: promptResult.responseInteraction,
     provider: promptResult.provider,
     fallbackUsed: promptResult.fallbackUsed,
-    ...(promptResult.warnings && promptResult.warnings.length > 0
-      ? { warnings: promptResult.warnings }
-      : {}),
+    ...(mergedWarnings.length > 0 ? { warnings: mergedWarnings } : {}),
     sessionId: state.session.id,
     interactions,
     knowledge: knowledgeBlock,

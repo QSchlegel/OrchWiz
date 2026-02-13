@@ -16,7 +16,7 @@ test("defaultShipMonitoringConfig returns local monitoring defaults", () => {
   )
   assert.equal(defaults.prometheusUrl, "http://localhost:9090/query?g0.expr=sum%20by(job)%20(up)&g0.tab=0")
   assert.equal(defaults.kubeviewUrl, "/api/bridge/runtime-ui/kubeview")
-  assert.equal(defaults.langfuseUrl, "/api/bridge/runtime-ui/langfuse")
+  assert.equal(defaults.langfuseUrl, "")
 })
 
 test("normalizeShipMonitoringConfig accepts valid http/https monitoring URLs", () => {

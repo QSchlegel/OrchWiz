@@ -2,21 +2,26 @@ import { NextRequest, NextResponse } from "next/server"
 import { auth } from "@/lib/auth"
 import { headers } from "next/headers"
 import { prisma } from "@/lib/prisma"
+import type { Prisma } from "@prisma/client"
+import { existsSync } from "node:fs"
+import { resolve as resolvePath } from "node:path"
 import {
   applyForwardedBridgeStationEvents,
   buildCanonicalBridgeStations,
+  getBridgeStationTemplates,
   type BridgeStationKey,
 } from "@/lib/bridge/stations"
 import {
-  resolveOpenClawRuntimeUiStations,
-  resolveShipNamespace,
   type OpenClawRuntimeUrlSource,
 } from "@/lib/bridge/openclaw-runtime"
 import { readShipMonitoringConfig } from "@/lib/shipyard/monitoring"
+import { normalizeInfrastructureInConfig } from "@/lib/deployment/profile"
+import { resolveRuntimeUiFromTerraform } from "@/lib/bridge/runtime-ui-hydration"
 
 export const dynamic = "force-dynamic"
 
 const MONITORING_STALE_WINDOW_MS = 15 * 60 * 1000
+const RUNTIME_UI_HYDRATION_COOLDOWN_MS = 30 * 1000
 
 type BridgeSystemState = "nominal" | "warning" | "critical"
 type MonitoringEventServiceKey = "grafana" | "prometheus"
@@ -42,6 +47,7 @@ interface BridgeStateSelectedShipMonitoringRecord {
   status: "pending" | "deploying" | "active" | "inactive" | "failed" | "updating"
   deploymentProfile: "local_starship_build" | "cloud_shipyard"
   config: unknown
+  metadata: unknown
 }
 
 interface BridgeStateCrewRecord {
@@ -103,11 +109,31 @@ interface BridgeStateRouteDeps {
     userId: string
     shipDeploymentId: string
   }) => Promise<BridgeStateSelectedShipMonitoringRecord | null>
+  maybeHydrateSelectedShipRuntimeUi: (args: {
+    userId: string
+    selectedShip: BridgeStateSelectedShipMonitoringRecord
+  }) => Promise<BridgeStateSelectedShipMonitoringRecord>
   listBridgeCrew: (shipDeploymentId: string) => Promise<BridgeStateCrewRecord[]>
   listTasks: (userId: string) => Promise<BridgeStateTaskRecord[]>
   listForwardedBridgeEvents: () => Promise<BridgeStateForwardingEventRecord[]>
   listForwardedSystemEvents: () => Promise<BridgeStateForwardingEventRecord[]>
   now: () => Date
+}
+
+type RuntimeUiHydrationState = {
+  inFlight: Map<string, Promise<BridgeStateSelectedShipMonitoringRecord>>
+  lastAttemptAt: Map<string, number>
+}
+
+function runtimeUiHydrationState(): RuntimeUiHydrationState {
+  const globalRef = globalThis as unknown as { __owzRuntimeUiHydrationState?: RuntimeUiHydrationState }
+  if (!globalRef.__owzRuntimeUiHydrationState) {
+    globalRef.__owzRuntimeUiHydrationState = {
+      inFlight: new Map(),
+      lastAttemptAt: new Map(),
+    }
+  }
+  return globalRef.__owzRuntimeUiHydrationState
 }
 
 const defaultDeps: BridgeStateRouteDeps = {
@@ -146,8 +172,82 @@ const defaultDeps: BridgeStateRouteDeps = {
         status: true,
         deploymentProfile: true,
         config: true,
+        metadata: true,
       },
     }),
+  maybeHydrateSelectedShipRuntimeUi: async ({ userId, selectedShip }) => {
+    if (selectedShip.deploymentProfile !== "local_starship_build") {
+      return selectedShip
+    }
+
+    const metadata = asRecord(selectedShip.metadata)
+    const runtimeUi = asRecord(metadata.runtimeUi)
+    if (!runtimeUiNeedsHydration(runtimeUi)) {
+      return selectedShip
+    }
+
+    const state = runtimeUiHydrationState()
+    const lastAttempt = state.lastAttemptAt.get(selectedShip.id) || 0
+    const now = Date.now()
+    if (now - lastAttempt <= RUNTIME_UI_HYDRATION_COOLDOWN_MS) {
+      return selectedShip
+    }
+
+    const existingInFlight = state.inFlight.get(selectedShip.id)
+    if (existingInFlight) {
+      return existingInFlight
+    }
+
+    const inFlight = (async () => {
+      state.lastAttemptAt.set(selectedShip.id, Date.now())
+
+      const repoRoot = resolveRepoRoot()
+      const { infrastructure } = normalizeInfrastructureInConfig(
+        selectedShip.deploymentProfile,
+        selectedShip.config || {},
+      )
+
+      const resolution = await resolveRuntimeUiFromTerraform({
+        repoRoot,
+        terraformEnvDir: infrastructure.terraformEnvDir,
+        allowCommandExecution: process.env.ENABLE_LOCAL_COMMAND_EXECUTION === "true",
+      })
+      if (!resolution) {
+        return selectedShip
+      }
+
+      const nextRuntimeUi = mergeRuntimeUiMetadata(runtimeUi, resolution.runtimeUi)
+      const nextMetadata = {
+        ...metadata,
+        runtimeUi: nextRuntimeUi,
+      }
+
+      try {
+        await prisma.agentDeployment.updateMany({
+          where: {
+            id: selectedShip.id,
+            userId,
+            deploymentType: "ship",
+          },
+          data: {
+            metadata: nextMetadata as unknown as Prisma.InputJsonValue,
+          },
+        })
+      } catch {
+        // Best effort: if this fails (race, DB unavailable), still return hydrated payload.
+      }
+
+      return {
+        ...selectedShip,
+        metadata: nextMetadata,
+      }
+    })().finally(() => {
+      runtimeUiHydrationState().inFlight.delete(selectedShip.id)
+    })
+
+    state.inFlight.set(selectedShip.id, inFlight)
+    return inFlight
+  },
   listBridgeCrew: async (shipDeploymentId) =>
     prisma.bridgeCrew.findMany({
       where: {
@@ -212,6 +312,130 @@ function asString(value: unknown): string | null {
   }
   const trimmed = value.trim()
   return trimmed.length > 0 ? trimmed : null
+}
+
+function resolvePublicHostname(request: NextRequest): string | null {
+  const forwardedHost = asString(request.headers.get("x-forwarded-host"))
+  const host = forwardedHost || asString(request.headers.get("host")) || request.nextUrl.host
+  const first = host.split(",")[0]?.trim() || ""
+  if (!first) return null
+  return first.split(":")[0]?.trim().toLowerCase() || null
+}
+
+function isLoopbackHostname(value: string): boolean {
+  const hostname = value.trim().toLowerCase()
+  return (
+    hostname === "localhost"
+    || hostname === "127.0.0.1"
+    || hostname === "::1"
+    || hostname.endsWith(".localhost")
+  )
+}
+
+function rewriteLoopbackUrlHostname(url: string | null, desiredHostname: string): string | null {
+  if (!url) return null
+  try {
+    const parsed = new URL(url)
+    const hostname = parsed.hostname.trim().toLowerCase()
+    if (!isLoopbackHostname(hostname)) {
+      return url
+    }
+    parsed.hostname = desiredHostname
+    return parsed.toString().replace(/\/+$/u, "")
+  } catch {
+    return url
+  }
+}
+
+function rewriteLoopbackStationUrlMap(
+  map: Partial<Record<BridgeStationKey, string>>,
+  desiredHostname: string,
+): Partial<Record<BridgeStationKey, string>> {
+  const next: Partial<Record<BridgeStationKey, string>> = {}
+  for (const [stationKey, href] of Object.entries(map)) {
+    const key = stationKey as BridgeStationKey
+    const rewritten = rewriteLoopbackUrlHostname(href, desiredHostname)
+    if (rewritten) {
+      next[key] = rewritten
+    }
+  }
+  return next
+}
+
+function resolveRepoRoot(): string {
+  const override = asString(process.env.ORCHWIZ_REPO_ROOT)
+  if (override) {
+    return resolvePath(override)
+  }
+
+  const cwd = process.cwd()
+  if (existsSync(resolvePath(cwd, "infra/terraform"))) {
+    return cwd
+  }
+
+  const parent = resolvePath(cwd, "..")
+  if (existsSync(resolvePath(parent, "infra/terraform"))) {
+    return parent
+  }
+
+  return parent
+}
+
+function runtimeUiNeedsHydration(runtimeUi: Record<string, unknown>): boolean {
+  const kubeviewUrl = asString(asRecord(asRecord(runtimeUi).kubeview).url)
+  const openclawUrls = asRecord(asRecord(asRecord(runtimeUi).openclaw).urls)
+  const hasOpenclawUrl = Object.keys(openclawUrls).some((key) => {
+    const stationKey = key.trim().toLowerCase()
+    return (
+      (stationKey === "xo"
+        || stationKey === "ops"
+        || stationKey === "eng"
+        || stationKey === "sec"
+        || stationKey === "med"
+        || stationKey === "cou")
+      && asString(openclawUrls[key]) !== null
+    )
+  })
+  const portForwardCommand = asString(runtimeUi.portForwardCommand)
+
+  return !kubeviewUrl || !hasOpenclawUrl || !portForwardCommand
+}
+
+function mergeRuntimeUiMetadata(
+  existingRuntimeUi: Record<string, unknown>,
+  incoming: {
+    openclaw: { urls: Partial<Record<string, string>>; source: string }
+    kubeview: { url: string | null; source: string }
+    portForwardCommand: string | null
+  },
+): Record<string, unknown> {
+  const existing = asRecord(existingRuntimeUi)
+
+  const existingOpenclaw = asRecord(existing.openclaw)
+  const existingOpenclawUrls = asRecord(existingOpenclaw.urls)
+  const incomingUrls = asRecord(incoming.openclaw.urls)
+  const mergedUrls = {
+    ...existingOpenclawUrls,
+    ...incomingUrls,
+  }
+
+  const existingKubeview = asRecord(existing.kubeview)
+  const existingKubeviewUrl = asString(existingKubeview.url)
+
+  return {
+    ...existing,
+    openclaw: {
+      ...existingOpenclaw,
+      urls: mergedUrls,
+      source: typeof incoming.openclaw.source === "string" ? incoming.openclaw.source : existingOpenclaw.source,
+    },
+    kubeview: {
+      ...existingKubeview,
+      url: incoming.kubeview.url || existingKubeviewUrl || null,
+      source: typeof incoming.kubeview.source === "string" ? incoming.kubeview.source : existingKubeview.source,
+    },
+    portForwardCommand: incoming.portForwardCommand || asString(existing.portForwardCommand) || null,
+  }
 }
 
 function mapTaskStatus(status?: string) {
@@ -282,41 +506,22 @@ function normalizeSystemState(value: unknown): BridgeSystemState {
   return parsed || "warning"
 }
 
-function openClawRuntimeUiProxyHref(args: {
-  stationKey: BridgeStationKey
-  shipDeploymentId: string | null
-}): string {
-  const query = new URLSearchParams()
-  if (args.shipDeploymentId) {
-    query.set("shipDeploymentId", args.shipDeploymentId)
-  }
-
-  const basePath = `/api/bridge/runtime-ui/openclaw/${args.stationKey}`
-  return query.size > 0 ? `${basePath}?${query.toString()}` : basePath
-}
-
 function resolveOpenClawRuntimeUiCard(args: {
-  namespace: string | null
   callsigns: Partial<Record<BridgeStationKey, string>>
-  shipDeploymentId: string | null
+  runtimeUiUrls: Partial<Record<BridgeStationKey, string>>
 }): BridgeStateRuntimeUiCard {
-  const stations = resolveOpenClawRuntimeUiStations({
-    namespace: args.namespace,
-    callsigns: args.callsigns,
-  })
+  const instances: BridgeStateRuntimeUiInstance[] = getBridgeStationTemplates().map((template) => {
+    const callsign = args.callsigns[template.stationKey] || template.callsign
+    const directHref = args.runtimeUiUrls[template.stationKey] || null
 
-  const instances = stations.map((station) => ({
-    stationKey: station.stationKey,
-    callsign: station.callsign,
-    label: station.label,
-    href: station.href
-      ? openClawRuntimeUiProxyHref({
-          stationKey: station.stationKey,
-          shipDeploymentId: args.shipDeploymentId,
-        })
-      : null,
-    source: station.source,
-  }))
+    return {
+      stationKey: template.stationKey,
+      callsign,
+      label: `${callsign} OpenClaw UI`,
+      href: directHref,
+      source: directHref ? "runtime_ui_metadata" : "unconfigured",
+    }
+  })
 
   const preferred = instances.find((entry) => entry.href) || instances[0]
   return {
@@ -325,6 +530,29 @@ function resolveOpenClawRuntimeUiCard(args: {
     source: preferred?.source || "unconfigured",
     instances,
   }
+}
+
+function parseRuntimeUiOpenclawUrls(value: unknown): Partial<Record<BridgeStationKey, string>> {
+  const record = asRecord(value)
+  const out: Partial<Record<BridgeStationKey, string>> = {}
+  for (const [key, rawHref] of Object.entries(record)) {
+    const stationKey = key.trim().toLowerCase()
+    if (
+      stationKey !== "xo"
+      && stationKey !== "ops"
+      && stationKey !== "eng"
+      && stationKey !== "sec"
+      && stationKey !== "med"
+      && stationKey !== "cou"
+    ) {
+      continue
+    }
+
+    const href = asString(rawHref)
+    if (!href) continue
+    out[stationKey] = href
+  }
+  return out
 }
 
 function parseMonitoringService(value: unknown): MonitoringEventServiceKey | null {
@@ -429,6 +657,7 @@ function buildFallbackMonitoringCard(args: {
 
 function buildKubeviewMonitoringCard(args: {
   href: string | null
+  runtimeUiHref: string | null
   selectedShip: BridgeStateSelectedShipMonitoringRecord | null
 }): BridgeStateMonitoringCard {
   if (!args.selectedShip) {
@@ -448,6 +677,7 @@ function buildKubeviewMonitoringCard(args: {
     query.set("shipDeploymentId", args.selectedShip.id)
     return `/api/bridge/runtime-ui/kubeview?${query.toString()}`
   })()
+  const proxyBase = "/api/bridge/runtime-ui/kubeview"
 
   const isLoopbackOrLocalhostMonitoringUrl = (value: string): boolean => {
     if (value.startsWith("/")) {
@@ -462,10 +692,20 @@ function buildKubeviewMonitoringCard(args: {
     }
   }
 
+  const wantsProxy = (() => {
+    const href = args.href
+    if (!href) return false
+    return (
+      href === proxyBase
+      || href.startsWith(`${proxyBase}/`)
+      || href.startsWith(`${proxyBase}?`)
+    )
+  })()
+
   const resolvedHref =
-    args.href && !isLoopbackOrLocalhostMonitoringUrl(args.href)
+    args.href && !wantsProxy && !isLoopbackOrLocalhostMonitoringUrl(args.href)
       ? args.href
-      : proxyHref
+      : args.runtimeUiHref || proxyHref
 
   if (args.selectedShip.status === "failed") {
     return {
@@ -486,7 +726,9 @@ function buildKubeviewMonitoringCard(args: {
     detail:
       resolvedHref === proxyHref
         ? "KubeView available via bridge proxy for selected ship."
-        : "KubeView link configured for selected ship.",
+        : args.runtimeUiHref && resolvedHref === args.runtimeUiHref
+          ? "KubeView available via direct ship runtime UI."
+          : "KubeView link configured for selected ship.",
     href: resolvedHref,
     source: "ship-monitoring",
     observedAt: null,
@@ -517,14 +759,19 @@ function buildLangfuseMonitoringCard(args: {
   const upstreamBaseUrl = resolveLangfuseUpstreamBaseUrl()
   const proxyHref = "/api/bridge/runtime-ui/langfuse"
   const configuredHref = args.href
+  const configuredIsProxy = (() => {
+    if (!configuredHref) return false
+    return (
+      configuredHref === proxyHref
+      || configuredHref.startsWith(`${proxyHref}/`)
+      || configuredHref.startsWith(`${proxyHref}?`)
+    )
+  })()
 
-  const wantsProxy =
-    !configuredHref || configuredHref === proxyHref || configuredHref.startsWith(`${proxyHref}/`)
-  const resolvedHref = wantsProxy
-    ? upstreamBaseUrl
-      ? configuredHref || proxyHref
-      : null
-    : configuredHref
+  // Prefer direct Langfuse links; keep proxy only as a backwards-compatible config value.
+  const resolvedHref = configuredHref && !configuredIsProxy
+    ? configuredHref
+    : upstreamBaseUrl
 
   if (args.selectedShip?.status === "failed") {
     return {
@@ -543,10 +790,12 @@ function buildLangfuseMonitoringCard(args: {
     service: "langfuse",
     state: resolvedHref ? "nominal" : "warning",
     detail: resolvedHref
-      ? wantsProxy
-        ? "Langfuse available via bridge proxy."
-        : "Langfuse link configured for selected ship."
-      : "Langfuse upstream is not configured. Set LANGFUSE_BASE_URL to enable patch-through.",
+      ? configuredHref && !configuredIsProxy
+        ? "Langfuse link configured for selected ship."
+        : "Langfuse available via proxy link."
+      : configuredIsProxy
+        ? "Langfuse proxy is configured, but LANGFUSE_BASE_URL is not set. Set a direct Langfuse URL in Ship Yard or configure LANGFUSE_BASE_URL."
+        : "Langfuse link unresolved. Set a Langfuse URL in Ship Yard monitoring settings.",
     href: resolvedHref,
     source: "ship-monitoring",
     observedAt: null,
@@ -662,6 +911,14 @@ export async function handleGetBridgeState(
         includeForwarded ? deps.listForwardedSystemEvents() : Promise.resolve([]),
       ])
 
+    const hydratedSelectedShipMonitoring =
+      selectedShipMonitoring
+        ? await deps.maybeHydrateSelectedShipRuntimeUi({
+            userId: sessionUser.id,
+            selectedShip: selectedShipMonitoring,
+          })
+        : null
+
     const stationBase = buildCanonicalBridgeStations(
       bridgeCrew.map((crewMember) => ({
         id: crewMember.id,
@@ -732,18 +989,35 @@ export async function handleGetBridgeState(
     ]
 
     const monitoring = resolveMonitoringCards({
-      selectedShip: selectedShipMonitoring,
+      selectedShip: hydratedSelectedShipMonitoring,
       forwardedSystemEvents,
       now: deps.now(),
     })
-    const selectedShipMonitoringConfig = readShipMonitoringConfig(selectedShipMonitoring?.config || {})
+    const selectedShipMonitoringConfig = readShipMonitoringConfig(hydratedSelectedShipMonitoring?.config || {})
+    const selectedShipRuntimeUi = asRecord(asRecord(hydratedSelectedShipMonitoring?.metadata || {}).runtimeUi)
+    const selectedShipRuntimeUiKubeview = asRecord(selectedShipRuntimeUi.kubeview)
+    const runtimeUiKubeviewHref = asString(selectedShipRuntimeUiKubeview.url)
+    const selectedShipRuntimeUiOpenclaw = asRecord(selectedShipRuntimeUi.openclaw)
+    const runtimeUiOpenclawUrls = parseRuntimeUiOpenclawUrls(asRecord(selectedShipRuntimeUiOpenclaw.urls))
+
+    const publicHost = resolvePublicHostname(request)
+    const wantsLoopbackRewrite = publicHost ? isLoopbackHostname(publicHost) : false
+    const rewrittenKubeviewHref =
+      wantsLoopbackRewrite && publicHost
+        ? rewriteLoopbackUrlHostname(runtimeUiKubeviewHref, publicHost)
+        : runtimeUiKubeviewHref
+    const rewrittenOpenclawUrls =
+      wantsLoopbackRewrite && publicHost
+        ? rewriteLoopbackStationUrlMap(runtimeUiOpenclawUrls, publicHost)
+        : runtimeUiOpenclawUrls
     const kubeviewMonitoring = buildKubeviewMonitoringCard({
       href: selectedShipMonitoringConfig.kubeviewUrl,
-      selectedShip: selectedShipMonitoring,
+      runtimeUiHref: rewrittenKubeviewHref,
+      selectedShip: hydratedSelectedShipMonitoring,
     })
     const langfuseMonitoring = buildLangfuseMonitoringCard({
       href: selectedShipMonitoringConfig.langfuseUrl,
-      selectedShip: selectedShipMonitoring,
+      selectedShip: hydratedSelectedShipMonitoring,
     })
 
     systems.push(monitoring.prometheus)
@@ -780,15 +1054,10 @@ export async function handleGetBridgeState(
       acc[station.stationKey] = station.callsign
       return acc
     }, {})
-    const runtimeNamespace = resolveShipNamespace(
-      selectedShipMonitoring?.config || {},
-      selectedShipMonitoring?.deploymentProfile || selectedShip?.deploymentProfile || null,
-    )
     const runtimeUi = {
       openclaw: resolveOpenClawRuntimeUiCard({
-        namespace: runtimeNamespace,
         callsigns: stationCallsigns,
-        shipDeploymentId: selectedShip?.id || null,
+        runtimeUiUrls: rewrittenOpenclawUrls,
       }),
     }
 
