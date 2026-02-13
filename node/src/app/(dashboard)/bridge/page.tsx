@@ -63,7 +63,7 @@ interface SystemStatus {
 
 interface MonitoringStatus {
   label: string
-  service: "grafana" | "prometheus" | "kubeview"
+  service: "grafana" | "prometheus" | "kubeview" | "langfuse"
   state: "nominal" | "warning" | "critical"
   detail: string
   href: string | null
@@ -75,6 +75,7 @@ interface MonitoringSnapshot {
   grafana: MonitoringStatus
   prometheus: MonitoringStatus
   kubeview: MonitoringStatus
+  langfuse: MonitoringStatus
 }
 
 interface MonitoringFrameView {
@@ -155,6 +156,7 @@ interface BridgeConnectionOption {
   provider: "telegram" | "discord" | "whatsapp"
   enabled: boolean
   autoRelay: boolean
+  purpose: "bridge_group" | "xo_direct" | "custom"
 }
 
 const STATION_KEYS = new Set<BridgeStationKey>(["xo", "ops", "eng", "sec", "med", "cou"])
@@ -254,13 +256,21 @@ function parseMonitoringStatus(
 ): MonitoringStatus {
   const payload = asRecord(value)
   const fallbackLabel =
-    service === "grafana" ? "Grafana" : service === "prometheus" ? "Prometheus" : "KubeView"
+    service === "grafana"
+      ? "Grafana"
+      : service === "prometheus"
+        ? "Prometheus"
+        : service === "langfuse"
+          ? "Langfuse"
+          : "KubeView"
   const fallbackDetail =
     service === "grafana"
       ? "Grafana telemetry unresolved. Configure monitoring URL in Ship Yard."
       : service === "prometheus"
         ? "Prometheus telemetry unresolved. Configure monitoring URL in Ship Yard."
-        : "KubeView link unresolved. Configure monitoring URL in Ship Yard."
+        : service === "langfuse"
+          ? "Langfuse link unresolved. Configure Langfuse UI patch-through."
+          : "KubeView link unresolved. Configure monitoring URL in Ship Yard."
 
   return {
     label:
@@ -289,6 +299,21 @@ function compactTelemetryText(value: string, maxLength = 160) {
   }
 
   return `${compact.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`
+}
+
+function parseBridgeConnectionPurpose(value: unknown): BridgeConnectionOption["purpose"] {
+  if (value === "bridge_group" || value === "xo_direct" || value === "custom") {
+    return value
+  }
+  return "custom"
+}
+
+function defaultConnectionIdsForStation(
+  options: BridgeConnectionOption[],
+  stationKey: BridgeStationKey | null,
+): string[] {
+  const wantedPurpose = stationKey === "xo" ? "xo_direct" : "bridge_group"
+  return options.filter((option) => option.enabled && option.purpose === wantedPurpose).map((option) => option.id)
 }
 
 export default function BridgePage() {
@@ -540,6 +565,10 @@ export default function BridgePage() {
           monitoringPayload.kubeview ?? {},
           "kubeview",
         ),
+        langfuse: parseMonitoringStatus(
+          monitoringPayload.langfuse ?? {},
+          "langfuse",
+        ),
       }
 
       const runtimeUiPayload = asRecord(payload?.runtimeUi)
@@ -702,25 +731,34 @@ export default function BridgePage() {
                 return null
               }
 
+              const config = asRecord(connection.config)
+              const purpose = parseBridgeConnectionPurpose(config.purpose)
+
               return {
                 id: connection.id,
                 name: connection.name,
                 provider,
                 enabled: connection.enabled === true,
                 autoRelay: connection.autoRelay === true,
+                purpose,
               } satisfies BridgeConnectionOption
             })
             .filter((entry: BridgeConnectionOption | null): entry is BridgeConnectionOption => entry !== null)
         : []
 
       setConnectionOptions(next)
-      setSelectedConnectionIds((current) =>
-        current.filter((connectionId) => next.some((connection) => connection.id === connectionId)),
-      )
+      setSelectedConnectionIds((current) => {
+        const filtered = current.filter((connectionId) => next.some((connection) => connection.id === connectionId))
+        if (filtered.length > 0) {
+          return filtered
+        }
+
+        return defaultConnectionIdsForStation(next, selectedStation?.stationKey || null)
+      })
     } catch (loadError) {
       console.error("Bridge connection options load failed:", loadError)
     }
-  }, [selectedShipDeploymentId])
+  }, [selectedShipDeploymentId, selectedStation?.stationKey])
 
   const loadBridgeSessions = useCallback(async () => {
     try {
@@ -1198,23 +1236,28 @@ export default function BridgePage() {
               Voice Utility
             </Link>
 
-            {(["grafana", "prometheus", "kubeview"] as const).map((service) => {
+            {(["grafana", "prometheus", "kubeview", "langfuse"] as const).map((service) => {
               const status = monitoring?.[service] || null
               const label =
                 service === "grafana"
                   ? "Open Grafana"
                   : service === "prometheus"
                     ? "Open Prometheus"
-                    : "Open KubeView"
+                    : service === "langfuse"
+                      ? "Open Langfuse"
+                      : "Open KubeView"
               const configureLabel =
                 service === "grafana"
                   ? "Configure Grafana"
                   : service === "prometheus"
                     ? "Configure Prometheus"
-                    : "Configure KubeView"
+                    : service === "langfuse"
+                      ? "Configure Langfuse"
+                      : "Configure KubeView"
               const shipYardHref = selectedShipDeploymentId
                 ? `/ship-yard?shipDeploymentId=${selectedShipDeploymentId}`
                 : "/ship-yard"
+              const configureHref = service === "langfuse" ? "/docs#langfuse-tracing" : shipYardHref
               if (status?.href) {
                 return (
                   <button
@@ -1237,7 +1280,7 @@ export default function BridgePage() {
                 <Link
                   key={service}
                   title={status?.detail || `${label} unavailable`}
-                  href={shipYardHref}
+                  href={configureHref}
                   className="inline-flex items-center gap-2 rounded-lg border border-amber-300/40 bg-amber-500/12 px-3 py-2 text-sm text-amber-700 dark:text-amber-100"
                 >
                   {configureLabel}
@@ -1552,6 +1595,11 @@ export default function BridgePage() {
                       {selectedOpenClawRuntimeInstance && (
                         <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-300">
                           Active station: {selectedOpenClawRuntimeInstance.callsign} ({selectedOpenClawRuntimeInstance.stationKey.toUpperCase()})
+                        </p>
+                      )}
+                      {selectedOpenClawRuntimeInstance && (
+                        <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-300">
+                          Runtime source: {selectedOpenClawRuntimeInstance.source}
                         </p>
                       )}
                       {showRuntimeIframe && selectedOpenClawRuntimeInstance?.href && (

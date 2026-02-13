@@ -36,19 +36,23 @@ export function SlideOverPanel({
   }, [onClose, open])
 
   return (
-    <>
+    <div
+      aria-hidden={!open}
+      // Ensure translated off-canvas panels do not expand the document's scroll width.
+      className={`fixed inset-0 z-[70] overflow-hidden ${open ? "" : "pointer-events-none"}`.trim()}
+    >
       <div
         aria-hidden="true"
         onClick={onClose}
-        className={`fixed inset-0 z-[70] bg-slate-950/40 backdrop-blur-[2px] transition-opacity duration-200 ${
-          open ? "opacity-100" : "pointer-events-none opacity-0"
+        className={`absolute inset-0 bg-slate-950/40 backdrop-blur-[2px] transition-opacity duration-200 ${
+          open ? "opacity-100" : "opacity-0"
         }`}
       />
 
       <aside
         aria-hidden={!open}
         aria-label={title}
-        className={`fixed inset-y-0 right-0 z-[71] w-full transform border-l border-slate-200/80 bg-white shadow-2xl transition-transform duration-200 ease-out dark:border-white/10 dark:bg-slate-950 ${maxWidthClassName} ${
+        className={`absolute inset-y-0 right-0 z-10 w-full transform border-l border-slate-200/80 bg-white shadow-2xl transition-transform duration-200 ease-out dark:border-white/10 dark:bg-slate-950 ${maxWidthClassName} ${
           open ? "translate-x-0" : "translate-x-full"
         }`}
       >
@@ -70,6 +74,6 @@ export function SlideOverPanel({
           <div className="flex-1 overflow-y-auto px-4 py-4 sm:px-6">{children}</div>
         </div>
       </aside>
-    </>
+    </div>
   )
 }

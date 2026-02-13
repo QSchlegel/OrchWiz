@@ -2,6 +2,8 @@
 
 <div align="center">
 
+<img src="node/public/brand/orchwiz-mark.png" width="140" alt="OrchWiz logo" />
+
 **OrchWiz is the Agent VPC for AI infra engineers: a private, policy-controlled runtime network that runs agents across local + cloud nodes with full decision traceability.**
 
 [![Next.js](https://img.shields.io/badge/Next.js-16.1-black)](https://nextjs.org/)

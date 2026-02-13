@@ -26,6 +26,27 @@ app_env = {
   ENABLE_LOCAL_COMMAND_EXECUTION = "false"
 }
 
+enable_openclaw         = true
+openclaw_image          = "ghcr.io/openclaw/openclaw:latest"
+openclaw_gateway_token  = "replace-with-unique-openclaw-token-seed"
+# Optional: provide dedicated per-station gateway tokens. When omitted, tokens
+# are automatically derived from openclaw_gateway_token (e.g. "<seed>-xo").
+# openclaw_gateway_tokens = {
+#   xo  = "replace-with-openclaw-xo-token"
+#   ops = "replace-with-openclaw-ops-token"
+#   eng = "replace-with-openclaw-eng-token"
+#   sec = "replace-with-openclaw-sec-token"
+#   med = "replace-with-openclaw-med-token"
+#   cou = "replace-with-openclaw-cou-token"
+# }
+
+enable_provider_proxy        = true
+provider_proxy_image         = "ghcr.io/qschlegel/orchwiz-provider-proxy:latest"
+provider_proxy_port          = 4000
+provider_proxy_api_key       = "replace-with-unique-provider-proxy-api-key"
+provider_proxy_storage_size  = "1Gi"
+provider_proxy_default_model = "gpt-5"
+
 # Kubeview is deployed and exposed by default at /kubeview.
 enable_kubeview            = true
 kubeview_chart_version     = "2.0.6"

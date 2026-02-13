@@ -175,6 +175,50 @@ test("bootstrapInitialApplicationsForShip returns degraded when required n8n sec
   assert.equal(adapterCalls, 0)
 })
 
+test("bootstrapInitialApplicationsForShip returns skipped and does not deploy when ship config disables n8n", async () => {
+  const harness = makePrismaHarness({
+    storedSecrets: n8nSecrets(),
+  })
+
+  const ship = shipTarget()
+  ship.config = {
+    ...(ship.config as Record<string, unknown>),
+    initialApplications: {
+      n8n: false,
+      dokploy: false,
+    },
+  }
+
+  let adapterCalls = 0
+  const result = await bootstrapInitialApplicationsForShip(
+    {
+      ownerUserId: "user-1",
+      ship,
+    },
+    {
+      prismaClient: harness.prismaStub as any,
+      runDeploymentAdapterFn: async () => {
+        adapterCalls += 1
+        return adapterResult("active")
+      },
+      resolveShipyardSecretTemplateValuesFn: async () => {
+        throw new Error("should not resolve secrets")
+      },
+      importCuratedToolForUserFn: async () => {
+        throw new Error("should not import tool")
+      },
+      ensureShipToolGrantForBootstrapFn: async () => {
+        throw new Error("should not grant tool")
+      },
+    },
+  )
+
+  assert.equal(result.n8n.status, "skipped")
+  assert.equal(adapterCalls, 0)
+  assert.equal(harness.getCreateCount(), 0)
+  assert.equal(harness.getUpdateCount(), 0)
+})
+
 test("bootstrapInitialApplicationsForShip deploys n8n and grants tool when everything succeeds", async () => {
   const harness = makePrismaHarness({
     storedSecrets: n8nSecrets(),

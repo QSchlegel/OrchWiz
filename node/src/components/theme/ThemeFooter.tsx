@@ -49,6 +49,7 @@ export function ThemeFooter() {
   const { mode, resolvedTheme, setMode } = useTheme()
   const pathname = usePathname()
   const { selectedShipDeploymentId, setSelectedShipDeploymentId } = useShipSelection()
+  const [hasMounted, setHasMounted] = useState(false)
 
   const hiddenForPath = pathname === "/bridge-chat" || pathname?.startsWith("/bridge-chat/")
   const quartermasterAvailable =
@@ -135,6 +136,10 @@ export function ThemeFooter() {
   useEffect(() => {
     void loadShips()
   }, [loadShips])
+
+  useEffect(() => {
+    setHasMounted(true)
+  }, [])
 
   useEventStream({
     enabled: shipSelectorAvailable,
@@ -274,7 +279,7 @@ export function ThemeFooter() {
           </div>
 
           <div className="text-[11px] font-medium uppercase tracking-[0.12em] text-slate-600 dark:text-slate-300">
-            Resolved {resolvedTheme}
+            Resolved {hasMounted ? resolvedTheme : ""}
           </div>
         </div>
       </footer>

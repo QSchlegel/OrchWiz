@@ -8,12 +8,19 @@ import {
 } from "./constants"
 import type { AgentSyncRewardAggregate } from "./rewards"
 
+export interface AgentSyncGuidanceTemplate {
+  template: string
+  source: "agent_lightning"
+  resourcesId?: string | null
+}
+
 export interface AgentSyncFileSuggestionInput {
   fileName: string
   existingContent: string
   aggregate: AgentSyncRewardAggregate
   subagentName: string
   generatedAt?: Date
+  guidanceTemplate?: AgentSyncGuidanceTemplate
 }
 
 export interface AgentSyncFileSuggestion {
@@ -49,6 +56,40 @@ function upsertManagedBlock(existingContent: string, managedBody: string): strin
 
 function formatNumber(value: number): string {
   return Number.isFinite(value) ? value.toFixed(2) : "0.00"
+}
+
+function renderFStringLikeTemplate(template: string, vars: Record<string, string>): string {
+  if (!template.trim()) {
+    return ""
+  }
+
+  const LBRACE = "__AGENTSYNC_LBRACE__"
+  const RBRACE = "__AGENTSYNC_RBRACE__"
+
+  return template
+    .replace(/{{/g, LBRACE)
+    .replace(/}}/g, RBRACE)
+    .replace(/{([a-zA-Z0-9_]+)}/g, (_match, key: string) => vars[key] ?? "")
+    .replace(new RegExp(LBRACE, "g"), "{")
+    .replace(new RegExp(RBRACE, "g"), "}")
+}
+
+function hasReviewConstraintSection(value: string): boolean {
+  return /(^|\n)#{1,6}\s+Review Constraint\b/i.test(value)
+}
+
+function ensureReviewConstraintSection(body: string): string {
+  if (hasReviewConstraintSection(body)) {
+    return body
+  }
+
+  const trimmed = body.trim()
+  const suffix = ["### Review Constraint", "- High-risk file: requires manual approval before apply."].join("\n")
+  if (!trimmed) {
+    return suffix
+  }
+
+  return `${trimmed}\n\n${suffix}`
 }
 
 function buildReinforcementLines(aggregate: AgentSyncRewardAggregate): string[] {
@@ -110,9 +151,41 @@ function buildManagedBody(args: {
   subagentName: string
   generatedAt: Date
   risk: AgentSyncSuggestionRisk
+  guidanceTemplate?: AgentSyncGuidanceTemplate
 }): string {
   const reinforcementLines = buildReinforcementLines(args.aggregate)
   const warningLines = buildWarningLines(args.aggregate)
+  const watchoutBulletLines = warningLines.length > 0
+    ? warningLines.map((line) => `- ${line}`)
+    : ["- Continue monitoring for stability; no urgent warnings detected."]
+  const reviewConstraintSectionMd = args.risk === "high"
+    ? ["### Review Constraint", "- High-risk file: requires manual approval before apply."].join("\n")
+    : ""
+
+  if (args.guidanceTemplate?.source === "agent_lightning" && args.guidanceTemplate.template.trim()) {
+    const rendered = renderFStringLikeTemplate(args.guidanceTemplate.template, {
+      subagent_name: args.subagentName,
+      generated_at_iso: args.generatedAt.toISOString(),
+      signal_count: String(args.aggregate.signalCount),
+      total_reward: formatNumber(args.aggregate.totalReward),
+      mean_reward: formatNumber(args.aggregate.meanReward),
+      trend: args.aggregate.trend,
+      command_count: String(args.aggregate.sourceBreakdown.command.count),
+      verification_count: String(args.aggregate.sourceBreakdown.verification.count),
+      bridge_call_count: String(args.aggregate.sourceBreakdown.bridge_call.count),
+      command_mean_reward: formatNumber(args.aggregate.sourceBreakdown.command.meanReward),
+      verification_mean_reward: formatNumber(args.aggregate.sourceBreakdown.verification.meanReward),
+      bridge_call_mean_reward: formatNumber(args.aggregate.sourceBreakdown.bridge_call.meanReward),
+      reinforcement_lines_md: reinforcementLines.map((line) => `- ${line}`).join("\n"),
+      watchouts_lines_md: watchoutBulletLines.join("\n"),
+      risk: args.risk,
+      review_constraint_section_md: reviewConstraintSectionMd,
+    }).trim()
+
+    if (rendered) {
+      return args.risk === "high" ? ensureReviewConstraintSection(rendered) : rendered
+    }
+  }
 
   const lines: string[] = [
     "## AgentSync Guidance (Auto-Managed)",
@@ -126,10 +199,7 @@ function buildManagedBody(args: {
     ...reinforcementLines.map((line) => `- ${line}`),
     "",
     "### Watchouts",
-    ...(warningLines.length > 0
-      ? warningLines.map((line) => `- ${line}`)
-      : ["- Continue monitoring for stability; no urgent warnings detected."]
-    ),
+    ...watchoutBulletLines,
   ]
 
   if (args.risk === "high") {
@@ -161,6 +231,7 @@ export function buildAgentSyncFileSuggestion(input: AgentSyncFileSuggestionInput
     subagentName: input.subagentName,
     generatedAt,
     risk,
+    guidanceTemplate: input.guidanceTemplate,
   })
 
   const suggestedContent = upsertManagedBlock(input.existingContent, managedBody)
@@ -182,6 +253,7 @@ export function buildAgentSyncSuggestionsForFiles(args: {
   aggregate: AgentSyncRewardAggregate
   subagentName: string
   generatedAt?: Date
+  guidanceTemplate?: AgentSyncGuidanceTemplate
 }): AgentSyncFileSuggestion[] {
   if (args.files.length === 0) {
     return []
@@ -197,6 +269,7 @@ export function buildAgentSyncSuggestionsForFiles(args: {
       aggregate: args.aggregate,
       subagentName: args.subagentName,
       generatedAt,
+      guidanceTemplate: args.guidanceTemplate,
     })
 
     if (suggestion) {

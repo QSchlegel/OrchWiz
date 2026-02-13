@@ -81,3 +81,52 @@ test("codex provider blocks quartermaster calls without subagent metadata", asyn
     },
   )
 })
+
+test("codex provider uses provider proxy when configured", async () => {
+  const restoreProxyUrl = withEnv("CODEX_PROVIDER_PROXY_URL", "http://proxy")
+  const restoreProxyKey = withEnv("CODEX_PROVIDER_PROXY_API_KEY", "proxy-secret")
+  const restoreCliPath = withEnv("CODEX_CLI_PATH", "/definitely/missing/codex")
+
+  const previousFetch = globalThis.fetch
+  let fetchCalls = 0
+  globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
+    fetchCalls += 1
+    assert.equal(String(url), "http://proxy/v1/orchwiz/runtime/codex-cli")
+    assert.equal(init?.method, "POST")
+    assert.equal((init?.headers as Record<string, string>)?.Authorization, "Bearer proxy-secret")
+
+    return new Response(
+      JSON.stringify({
+        provider: "codex-cli",
+        output: "OK",
+        fallbackUsed: false,
+        metadata: {
+          durationMs: 12,
+        },
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    )
+  }) as typeof fetch
+
+  try {
+    const result = await codexCliRuntimeProvider.run(
+      {
+        sessionId: "session-proxy",
+        prompt: "respond with ok",
+      },
+      {
+        profile: "default",
+        previousErrors: [],
+      },
+    )
+
+    assert.equal(fetchCalls, 1)
+    assert.equal(result.provider, "codex-cli")
+    assert.equal(result.output, "OK")
+  } finally {
+    globalThis.fetch = previousFetch
+    restoreProxyUrl()
+    restoreProxyKey()
+    restoreCliPath()
+  }
+})

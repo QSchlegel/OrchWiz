@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import { ArrowRightLeft, FilePlus2, Loader2, PenSquare, RefreshCw, Save, Search, Trash2 } from "lucide-react"
 import { InlineNotice, SurfaceCard } from "@/components/dashboard/PageLayout"
+import { buildUiError, isWalletEnclaveCode, walletEnclaveGuidance } from "@/lib/api-errors"
 import type {
   VaultDeleteMode,
   VaultFileReadMode,
@@ -145,7 +146,12 @@ export function VaultExplorer() {
   const [isLoadingFile, setIsLoadingFile] = useState(false)
   const [isSearching, setIsSearching] = useState(false)
   const [isLoadingFullForEdit, setIsLoadingFullForEdit] = useState(false)
-  const [message, setMessage] = useState<{ type: "error" | "success" | "info"; text: string } | null>(null)
+  const [message, setMessage] = useState<{
+    type: "error" | "success" | "info"
+    text: string
+    code?: string | null
+    suggestedCommands?: string[]
+  } | null>(null)
   const [seedPacks, setSeedPacks] = useState<VaultSeedPackSummary[]>([])
   const [selectedSeedPackId, setSelectedSeedPackId] = useState("")
   const [isLoadingSeedPacks, setIsLoadingSeedPacks] = useState(false)
@@ -184,7 +190,11 @@ export function VaultExplorer() {
     const response = await fetch(`/api/vaults/file?${params.toString()}`)
     const payload = await response.json().catch(() => ({}))
     if (!response.ok) {
-      throw new Error(payload?.error || `Failed to load note (${response.status}).`)
+      const ui = buildUiError(payload, response.status, `Failed to load note (${response.status}).`)
+      const error = new Error(ui.text) as Error & { code?: string | null; suggestedCommands?: string[] }
+      error.code = ui.code
+      error.suggestedCommands = ui.suggestedCommands
+      throw error
     }
 
     return payload as VaultFileResponse
@@ -283,7 +293,17 @@ export function VaultExplorer() {
         setFile(payload)
       } catch (error) {
         console.error("Error loading vault note:", error)
-        setMessage({ type: "error", text: (error as Error).message || "Failed to load note." })
+        const code = typeof (error as { code?: unknown })?.code === "string" ? String((error as { code?: unknown }).code) : null
+        const suggestedCommandsRaw = (error as { suggestedCommands?: unknown })?.suggestedCommands
+        const suggestedCommands = Array.isArray(suggestedCommandsRaw)
+          ? suggestedCommandsRaw.filter((entry): entry is string => typeof entry === "string")
+          : []
+        setMessage({
+          type: "error",
+          text: error instanceof Error ? error.message : "Failed to load note.",
+          ...(code ? { code } : {}),
+          ...(suggestedCommands.length > 0 ? { suggestedCommands } : {}),
+        })
         setFile(null)
       } finally {
         setIsLoadingFile(false)
@@ -482,8 +502,16 @@ export function VaultExplorer() {
 
       const payload = await response.json().catch(() => ({}))
       if (!response.ok) {
+        const ui = buildUiError(payload, response.status, "Failed to save note.")
         setSaveState("error")
-        setMessage({ type: "error", text: payload?.error || "Failed to save note." })
+        setMessage({
+          type: "error",
+          text: ui.text,
+          ...(ui.code ? { code: ui.code } : {}),
+          ...(ui.suggestedCommands && ui.suggestedCommands.length > 0
+            ? { suggestedCommands: ui.suggestedCommands }
+            : {}),
+        })
         return false
       }
 
@@ -517,7 +545,17 @@ export function VaultExplorer() {
     } catch (error) {
       console.error("Error saving note:", error)
       setSaveState("error")
-      setMessage({ type: "error", text: "Failed to save note." })
+      const code = typeof (error as { code?: unknown })?.code === "string" ? String((error as { code?: unknown }).code) : null
+      const suggestedCommandsRaw = (error as { suggestedCommands?: unknown })?.suggestedCommands
+      const suggestedCommands = Array.isArray(suggestedCommandsRaw)
+        ? suggestedCommandsRaw.filter((entry): entry is string => typeof entry === "string")
+        : []
+      setMessage({
+        type: "error",
+        text: error instanceof Error ? error.message : "Failed to save note.",
+        ...(code ? { code } : {}),
+        ...(suggestedCommands.length > 0 ? { suggestedCommands } : {}),
+      })
       return false
     }
   }, [fetchVaultFile, isEditing, selectedNotePath, selectedVault])
@@ -559,7 +597,17 @@ export function VaultExplorer() {
       setMobileSection("note")
     } catch (error) {
       console.error("Error loading full note for editing:", error)
-      setMessage({ type: "error", text: (error as Error).message || "Unable to open editor for this note." })
+      const code = typeof (error as { code?: unknown })?.code === "string" ? String((error as { code?: unknown }).code) : null
+      const suggestedCommandsRaw = (error as { suggestedCommands?: unknown })?.suggestedCommands
+      const suggestedCommands = Array.isArray(suggestedCommandsRaw)
+        ? suggestedCommandsRaw.filter((entry): entry is string => typeof entry === "string")
+        : []
+      setMessage({
+        type: "error",
+        text: error instanceof Error ? error.message : "Unable to open editor for this note.",
+        ...(code ? { code } : {}),
+        ...(suggestedCommands.length > 0 ? { suggestedCommands } : {}),
+      })
     } finally {
       setIsLoadingFullForEdit(false)
     }
@@ -623,7 +671,15 @@ export function VaultExplorer() {
 
       const payload = await response.json().catch(() => ({}))
       if (!response.ok) {
-        setMessage({ type: "error", text: payload?.error || "Failed to create note." })
+        const ui = buildUiError(payload, response.status, "Failed to create note.")
+        setMessage({
+          type: "error",
+          text: ui.text,
+          ...(ui.code ? { code: ui.code } : {}),
+          ...(ui.suggestedCommands && ui.suggestedCommands.length > 0
+            ? { suggestedCommands: ui.suggestedCommands }
+            : {}),
+        })
         return
       }
 
@@ -636,7 +692,17 @@ export function VaultExplorer() {
       setMobileSection("note")
     } catch (error) {
       console.error("Error creating note:", error)
-      setMessage({ type: "error", text: "Failed to create note." })
+      const code = typeof (error as { code?: unknown })?.code === "string" ? String((error as { code?: unknown }).code) : null
+      const suggestedCommandsRaw = (error as { suggestedCommands?: unknown })?.suggestedCommands
+      const suggestedCommands = Array.isArray(suggestedCommandsRaw)
+        ? suggestedCommandsRaw.filter((entry): entry is string => typeof entry === "string")
+        : []
+      setMessage({
+        type: "error",
+        text: error instanceof Error ? error.message : "Failed to create note.",
+        ...(code ? { code } : {}),
+        ...(suggestedCommands.length > 0 ? { suggestedCommands } : {}),
+      })
     }
   }
 
@@ -678,7 +744,15 @@ export function VaultExplorer() {
 
       const payload = await response.json().catch(() => ({}))
       if (!response.ok) {
-        setMessage({ type: "error", text: payload?.error || "Failed to rename note." })
+        const ui = buildUiError(payload, response.status, "Failed to rename note.")
+        setMessage({
+          type: "error",
+          text: ui.text,
+          ...(ui.code ? { code: ui.code } : {}),
+          ...(ui.suggestedCommands && ui.suggestedCommands.length > 0
+            ? { suggestedCommands: ui.suggestedCommands }
+            : {}),
+        })
         return
       }
 
@@ -695,7 +769,17 @@ export function VaultExplorer() {
       await loadTree(selectedVault, movedTo)
     } catch (error) {
       console.error("Error renaming note:", error)
-      setMessage({ type: "error", text: "Failed to rename note." })
+      const code = typeof (error as { code?: unknown })?.code === "string" ? String((error as { code?: unknown }).code) : null
+      const suggestedCommandsRaw = (error as { suggestedCommands?: unknown })?.suggestedCommands
+      const suggestedCommands = Array.isArray(suggestedCommandsRaw)
+        ? suggestedCommandsRaw.filter((entry): entry is string => typeof entry === "string")
+        : []
+      setMessage({
+        type: "error",
+        text: error instanceof Error ? error.message : "Failed to rename note.",
+        ...(code ? { code } : {}),
+        ...(suggestedCommands.length > 0 ? { suggestedCommands } : {}),
+      })
     }
   }
 
@@ -719,7 +803,15 @@ export function VaultExplorer() {
 
       const payload = await response.json().catch(() => ({}))
       if (!response.ok) {
-        setMessage({ type: "error", text: payload?.error || "Failed to delete note." })
+        const ui = buildUiError(payload, response.status, "Failed to delete note.")
+        setMessage({
+          type: "error",
+          text: ui.text,
+          ...(ui.code ? { code: ui.code } : {}),
+          ...(ui.suggestedCommands && ui.suggestedCommands.length > 0
+            ? { suggestedCommands: ui.suggestedCommands }
+            : {}),
+        })
         return
       }
 
@@ -738,7 +830,17 @@ export function VaultExplorer() {
       await loadTree(selectedVault, null)
     } catch (error) {
       console.error("Error deleting note:", error)
-      setMessage({ type: "error", text: "Failed to delete note." })
+      const code = typeof (error as { code?: unknown })?.code === "string" ? String((error as { code?: unknown }).code) : null
+      const suggestedCommandsRaw = (error as { suggestedCommands?: unknown })?.suggestedCommands
+      const suggestedCommands = Array.isArray(suggestedCommandsRaw)
+        ? suggestedCommandsRaw.filter((entry): entry is string => typeof entry === "string")
+        : []
+      setMessage({
+        type: "error",
+        text: error instanceof Error ? error.message : "Failed to delete note.",
+        ...(code ? { code } : {}),
+        ...(suggestedCommands.length > 0 ? { suggestedCommands } : {}),
+      })
     }
   }
 
@@ -1169,7 +1271,40 @@ export function VaultExplorer() {
 
   return (
     <div className="space-y-4">
-      {message ? <InlineNotice variant={message.type}>{message.text}</InlineNotice> : null}
+      {message ? (
+        <InlineNotice variant={message.type}>
+          <div className="space-y-2">
+            <p>{message.text}</p>
+            {message.code ? (
+              <p className="text-xs">
+                Code: <code>{message.code}</code>
+              </p>
+            ) : null}
+            {message.code && isWalletEnclaveCode(message.code) ? (
+              <div className="space-y-1">
+                <p className="text-xs font-medium">Next steps</p>
+                <ul className="list-disc space-y-1 pl-5 text-xs">
+                  {walletEnclaveGuidance(message.code).steps.map((step) => (
+                    <li key={step}>{step}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+            {message.suggestedCommands && message.suggestedCommands.length > 0 ? (
+              <div className="space-y-1">
+                <p className="text-xs font-medium">Suggested commands</p>
+                <ul className="list-disc space-y-1 pl-5 text-xs">
+                  {message.suggestedCommands.map((command) => (
+                    <li key={command}>
+                      <code>{command}</code>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+          </div>
+        </InlineNotice>
+      ) : null}
 
       {isLoadingVaults ? (
         <SurfaceCard>

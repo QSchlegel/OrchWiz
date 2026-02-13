@@ -3,14 +3,14 @@
   "version": "0.1.1",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "ORCHWIZ_NEXT_DEV=1 tsx server.ts",
     "dev:ngrok:app": "ngrok http 3000",
     "dev:ngrok:webhooks": "ngrok http 4000",
     "dev:ngrok:urls": "npx tsx scripts/ngrok-urls.ts",
     "shipyard:smoke": "npx tsx scripts/shipyard-api-smoke.ts",
     "shipyard:local:debug": "npx tsx scripts/shipyard-local-debug-loop.ts",
     "build": "next build",
-    "start": "next start",
+    "start": "NODE_ENV=production tsx server.ts",
     "lint": "eslint .",
     "test": "tsx --test \"src/**/*.test.ts\"",
     "db:generate": "prisma generate",
@@ -47,6 +47,7 @@
     "remark-gfm": "^4.0.1",
     "stripe": "^20.3.1",
     "three": "^0.182.0",
+    "ws": "^8.18.3",
     "zod": "^4.3.6"
   },
   "devDependencies": {
@@ -55,6 +56,7 @@
     "@types/react": "^19.2.9",
     "@types/react-dom": "^19.2.3",
     "@types/three": "^0.182.0",
+    "@types/ws": "^8.18.1",
     "autoprefixer": "^10.4.19",
     "eslint": "^9.39.2",
     "eslint-config-next": "^16.1.4",

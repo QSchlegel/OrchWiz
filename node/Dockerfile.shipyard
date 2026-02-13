@@ -3,6 +3,8 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 COPY . .
+# Prisma requires DATABASE_URL to be present to resolve env() in schema at generate-time.
+RUN DATABASE_URL="postgresql://orchwiz:orchwiz_dev@localhost:5432/orchis?schema=public" npm run db:generate
 ENV NODE_ENV=development
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0

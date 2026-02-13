@@ -63,8 +63,9 @@ function DashboardContent({ children }: { children: React.ReactNode }) {
 
   return (
     <div
-      className={`flex min-h-screen flex-1 flex-col transition-[margin-left] duration-300 ease-in-out ${
-        collapsed ? "md:ml-16" : "md:ml-60"
+      className={`flex min-h-screen flex-1 flex-col transition-[padding-left] duration-300 ease-in-out ${
+        // Sidebar is `fixed`, so use padding to reserve space without increasing scroll width.
+        collapsed ? "md:pl-16" : "md:pl-60"
       }`}
     >
       <DashboardHeader />

@@ -60,6 +60,7 @@ interface MonitoringConfigInput {
   grafanaUrl: string
   prometheusUrl: string
   kubeviewUrl: string
+  langfuseUrl: string
 }
 
 interface DeploymentFormData {
@@ -301,6 +302,7 @@ export default function ShipsPage() {
       grafanaUrl: SHIP_MONITORING_DEFAULTS.grafanaUrl,
       prometheusUrl: SHIP_MONITORING_DEFAULTS.prometheusUrl,
       kubeviewUrl: SHIP_MONITORING_DEFAULTS.kubeviewUrl,
+      langfuseUrl: SHIP_MONITORING_DEFAULTS.langfuseUrl,
     },
   })
 
@@ -431,6 +433,7 @@ export default function ShipsPage() {
               grafanaUrl: form.monitoring.grafanaUrl,
               prometheusUrl: form.monitoring.prometheusUrl,
               kubeviewUrl: form.monitoring.kubeviewUrl,
+              langfuseUrl: form.monitoring.langfuseUrl,
             },
           },
         }),
@@ -452,6 +455,7 @@ export default function ShipsPage() {
             grafanaUrl: SHIP_MONITORING_DEFAULTS.grafanaUrl,
             prometheusUrl: SHIP_MONITORING_DEFAULTS.prometheusUrl,
             kubeviewUrl: SHIP_MONITORING_DEFAULTS.kubeviewUrl,
+            langfuseUrl: SHIP_MONITORING_DEFAULTS.langfuseUrl,
           },
         })
         fetchDeployments()
@@ -934,7 +938,21 @@ export default function ShipsPage() {
                         monitoring: { ...form.monitoring, kubeviewUrl: e.target.value },
                       })}
                     className={inputCls}
-                    placeholder="http://kubeview.orchwiz-starship.localhost:18080/"
+                    placeholder="/api/bridge/runtime-ui/kubeview"
+                  />
+                </div>
+                <div>
+                  <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">LANGFUSE URL (OPTIONAL)</label>
+                  <input
+                    type="url"
+                    value={form.monitoring.langfuseUrl}
+                    onChange={e =>
+                      setForm({
+                        ...form,
+                        monitoring: { ...form.monitoring, langfuseUrl: e.target.value },
+                      })}
+                    className={inputCls}
+                    placeholder="/api/bridge/runtime-ui/langfuse"
                   />
                 </div>
                 <div className="sm:col-span-2">

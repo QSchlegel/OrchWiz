@@ -41,6 +41,26 @@ function asString(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null
 }
 
+function normalizeProxyBaseUrl(value: string): string {
+  return value.replace(/\/+$/u, "")
+}
+
+function codexProviderProxyConfig(): { baseUrl: string; apiKey: string } | null {
+  const baseUrl = asString(process.env.CODEX_PROVIDER_PROXY_URL)
+  const apiKey = asString(process.env.CODEX_PROVIDER_PROXY_API_KEY)
+  if (!baseUrl) {
+    return null
+  }
+  if (!apiKey) {
+    return null
+  }
+
+  return {
+    baseUrl: normalizeProxyBaseUrl(baseUrl),
+    apiKey,
+  }
+}
+
 function isConnectorAction(value: string): value is ConnectorAction {
   return value === "connect_api_key" || value === "start_device_auth" || value === "logout"
 }
@@ -64,6 +84,43 @@ export async function handleGetCodexCliConnector(
     const userId = await deps.getSessionUserId()
     if (!userId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+    }
+
+    const proxy = codexProviderProxyConfig()
+    if (proxy) {
+      let response: Response
+      try {
+        response = await fetch(`${proxy.baseUrl}/v1/codex-cli/connector`, {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${proxy.apiKey}`,
+          },
+          cache: "no-store",
+        })
+      } catch (error) {
+        return NextResponse.json(
+          {
+            error: "Codex provider proxy is unreachable.",
+            details: {
+              message: (error as Error).message,
+            },
+          },
+          { status: 502 },
+        )
+      }
+
+      const payload = await response.json().catch(() => ({})) as Record<string, unknown>
+      if (!response.ok) {
+        return NextResponse.json(
+          {
+            error: "Failed to inspect Codex CLI connector via provider proxy.",
+            details: payload,
+          },
+          { status: 502 },
+        )
+      }
+
+      return NextResponse.json(payload)
     }
 
     const connector = await deps.inspectConnector()
@@ -96,8 +153,55 @@ export async function handlePostCodexCliConnector(
     }
 
     const action = actionValue
-    let actionResult: ConnectorActionResult
+    const proxy = codexProviderProxyConfig()
+    if (proxy) {
+      if (action === "connect_api_key") {
+        const apiKey = asString(payload.apiKey)
+        if (!apiKey) {
+          return NextResponse.json({ error: "API key is required for connector setup." }, { status: 400 })
+        }
+      }
 
+      let response: Response
+      try {
+        response = await fetch(`${proxy.baseUrl}/v1/codex-cli/connector`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${proxy.apiKey}`,
+          },
+          body: JSON.stringify({
+            action,
+            ...(action === "connect_api_key" ? { apiKey: asString(payload.apiKey) } : {}),
+          }),
+        })
+      } catch (error) {
+        return NextResponse.json(
+          {
+            error: "Codex provider proxy is unreachable.",
+            details: {
+              message: (error as Error).message,
+            },
+          },
+          { status: 502 },
+        )
+      }
+
+      const proxyPayload = await response.json().catch(() => ({})) as Record<string, unknown>
+      if (!response.ok) {
+        return NextResponse.json(
+          {
+            error: "Failed to update Codex CLI connector via provider proxy.",
+            details: proxyPayload,
+          },
+          { status: 502 },
+        )
+      }
+
+      return NextResponse.json(proxyPayload)
+    }
+
+    let actionResult: ConnectorActionResult
     if (action === "connect_api_key") {
       const apiKey = asString(payload.apiKey)
       if (!apiKey) {

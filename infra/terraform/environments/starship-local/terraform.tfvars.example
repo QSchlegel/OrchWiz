@@ -4,6 +4,25 @@ namespace    = "orchwiz-starship"
 app_name     = "orchwiz"
 app_image    = "orchwiz:local-dev"
 
+openclaw_image         = "ghcr.io/openclaw/openclaw:latest"
+openclaw_gateway_token = "orchwiz-openclaw-dev-token"
+# Optional: provide dedicated per-station gateway tokens. When omitted, tokens
+# are automatically derived from openclaw_gateway_token (e.g. "<seed>-xo").
+# openclaw_gateway_tokens = {
+#   xo  = "orchwiz-openclaw-dev-token-xo"
+#   ops = "orchwiz-openclaw-dev-token-ops"
+#   eng = "orchwiz-openclaw-dev-token-eng"
+#   sec = "orchwiz-openclaw-dev-token-sec"
+#   med = "orchwiz-openclaw-dev-token-med"
+#   cou = "orchwiz-openclaw-dev-token-cou"
+# }
+
+provider_proxy_image         = "ghcr.io/qschlegel/orchwiz-provider-proxy:latest"
+provider_proxy_port          = 4000
+provider_proxy_api_key       = "orchwiz-provider-proxy-dev-key"
+provider_proxy_storage_size  = "1Gi"
+provider_proxy_default_model = "gpt-5"
+
 postgres_user     = "orchwiz"
 postgres_password = "orchwiz_dev"
 postgres_db       = "orchis"

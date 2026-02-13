@@ -21,6 +21,14 @@ services:
     networks:
       - orchwiz-network
 
+  agent-lightning-store:
+    build:
+      context: ../services/agent-lightning-store
+    container_name: orchwiz-agent-lightning-store
+    restart: unless-stopped
+    networks:
+      - orchwiz-network
+
   nextjs:
     build:
       context: ../node
@@ -37,6 +45,7 @@ services:
       NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL}
       GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID}
       GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET}
+      AGENT_LIGHTNING_STORE_URL: http://agent-lightning-store:4747
       NODE_ENV: production
     ports:
       - "3000:3000"

@@ -20,6 +20,18 @@ module "shipyard_k8s" {
   ingress_annotations      = var.ingress_annotations
   app_env                  = var.app_env
 
+  enable_openclaw         = var.enable_openclaw
+  openclaw_image          = var.openclaw_image
+  openclaw_gateway_token  = var.openclaw_gateway_token
+  openclaw_gateway_tokens = var.openclaw_gateway_tokens
+
+  enable_provider_proxy        = var.enable_provider_proxy
+  provider_proxy_image         = var.provider_proxy_image
+  provider_proxy_port          = var.provider_proxy_port
+  provider_proxy_api_key       = var.provider_proxy_api_key
+  provider_proxy_storage_size  = var.provider_proxy_storage_size
+  provider_proxy_default_model = var.provider_proxy_default_model
+
   enable_kubeview                   = var.enable_kubeview
   kubeview_chart_version            = var.kubeview_chart_version
   kubeview_single_namespace         = var.kubeview_single_namespace

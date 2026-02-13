@@ -15,6 +15,7 @@ import {
 } from "lucide-react"
 import { authClient } from "@/lib/auth-client"
 import { InlineNotice, PageLayout, SurfaceCard } from "@/components/dashboard/PageLayout"
+import { CloudProvidersCard } from "@/components/settings/CloudProvidersCard"
 import {
   CODEX_DEVICE_AUTH_PENDING_STORAGE_KEY,
   codexDeviceAuthPollDelayMs,
@@ -909,6 +910,8 @@ export default function SettingsPage() {
             </p>
           ) : null}
         </SurfaceCard>
+
+        <CloudProvidersCard />
       </div>
     </PageLayout>
   )

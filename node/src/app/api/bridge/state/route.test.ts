@@ -154,8 +154,58 @@ test("handleGetBridgeState marks missing monitoring URLs as warnings", async () 
   assert.match(String(monitoring.grafana.detail), /Set Grafana URL/i)
   assert.equal(monitoring.prometheus.state, "warning")
   assert.match(String(monitoring.prometheus.detail), /Set Prometheus URL/i)
-  assert.equal(monitoring.kubeview.state, "warning")
-  assert.match(String(monitoring.kubeview.detail), /Set KubeView URL/i)
+  assert.equal(monitoring.kubeview.state, "nominal")
+  assert.match(String(monitoring.kubeview.detail), /bridge proxy/i)
+  assert.equal(
+    monitoring.kubeview.href,
+    "/api/bridge/runtime-ui/kubeview?shipDeploymentId=ship-1",
+  )
+})
+
+test("handleGetBridgeState exposes langfuse monitoring card when LANGFUSE_BASE_URL is configured", async () => {
+  await withEnv(
+    {
+      LANGFUSE_BASE_URL: "https://langfuse.example.com",
+    },
+    async () => {
+      const response = await handleGetBridgeState(
+        requestFor("http://localhost/api/bridge/state"),
+        createBaseDeps() as any,
+      )
+
+      assert.equal(response.status, 200)
+      const payload = (await response.json()) as Record<string, unknown>
+      const monitoring = payload.monitoring as Record<string, Record<string, unknown>>
+      const langfuse = monitoring.langfuse
+
+      assert.equal(langfuse.service, "langfuse")
+      assert.equal(langfuse.state, "nominal")
+      assert.equal(langfuse.href, "/api/bridge/runtime-ui/langfuse")
+    },
+  )
+})
+
+test("handleGetBridgeState marks langfuse monitoring as warning when LANGFUSE_BASE_URL is missing", async () => {
+  await withEnv(
+    {
+      LANGFUSE_BASE_URL: undefined,
+    },
+    async () => {
+      const response = await handleGetBridgeState(
+        requestFor("http://localhost/api/bridge/state"),
+        createBaseDeps() as any,
+      )
+
+      assert.equal(response.status, 200)
+      const payload = (await response.json()) as Record<string, unknown>
+      const monitoring = payload.monitoring as Record<string, Record<string, unknown>>
+      const langfuse = monitoring.langfuse
+
+      assert.equal(langfuse.service, "langfuse")
+      assert.equal(langfuse.state, "warning")
+      assert.equal(langfuse.href, null)
+    },
+  )
 })
 
 test("handleGetBridgeState marks stale monitoring telemetry as warning after 15m", async () => {

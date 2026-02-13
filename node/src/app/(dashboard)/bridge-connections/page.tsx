@@ -2,9 +2,12 @@
 
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react"
 import { CheckCircle2, Loader2, Send, TestTube2, Trash2, Webhook } from "lucide-react"
+import { buildUiError, isWalletEnclaveCode, walletEnclaveGuidance } from "@/lib/api-errors"
 import { useShipSelection } from "@/lib/shipyard/useShipSelection"
 import { EmptyState, InlineNotice, PageLayout, SurfaceCard } from "@/components/dashboard/PageLayout"
 import type { BridgeConnectionProvider, BridgeDispatchStatus, BridgeDispatchSource } from "@prisma/client"
+
+type BridgeConnectionPurpose = "bridge_group" | "xo_direct" | "custom"
 
 interface ShipRecord {
   id: string
@@ -78,6 +81,7 @@ interface CreateFormState {
   destination: string
   enabled: boolean
   autoRelay: boolean
+  purpose: BridgeConnectionPurpose
   configText: string
   botToken: string
   webhookUrl: string
@@ -90,6 +94,7 @@ interface EditDraftState {
   destination: string
   enabled: boolean
   autoRelay: boolean
+  purpose: BridgeConnectionPurpose
   configText: string
   botToken: string
   webhookUrl: string
@@ -100,6 +105,8 @@ interface EditDraftState {
 interface Notice {
   type: "success" | "error" | "info"
   text: string
+  code?: string | null
+  suggestedCommands?: string[]
 }
 
 const PROVIDER_LABELS: Record<BridgeConnectionProvider, string> = {
@@ -115,6 +122,29 @@ const STATUS_LABELS: Record<BridgeDispatchStatus, string> = {
   failed: "Failed",
 }
 
+function parsePurpose(value: unknown): BridgeConnectionPurpose {
+  if (value === "bridge_group" || value === "xo_direct" || value === "custom") {
+    return value
+  }
+  return "custom"
+}
+
+function configWithPurpose(
+  config: Record<string, unknown>,
+  purpose: BridgeConnectionPurpose,
+): Record<string, unknown> {
+  if (purpose === "custom") {
+    const next = { ...config }
+    delete next.purpose
+    return next
+  }
+
+  return {
+    ...config,
+    purpose,
+  }
+}
+
 function defaultCreateFormState(): CreateFormState {
   return {
     provider: "telegram",
@@ -122,6 +152,7 @@ function defaultCreateFormState(): CreateFormState {
     destination: "",
     enabled: true,
     autoRelay: true,
+    purpose: "bridge_group",
     configText: "{}",
     botToken: "",
     webhookUrl: "",
@@ -142,6 +173,15 @@ function parseConfigJson(raw: string): Record<string, unknown> {
   }
 
   return parsed as Record<string, unknown>
+}
+
+function patchConfigTextPurpose(raw: string, purpose: BridgeConnectionPurpose): string {
+  try {
+    const config = configWithPurpose(parseConfigJson(raw), purpose)
+    return JSON.stringify(config, null, 2)
+  } catch {
+    return raw
+  }
 }
 
 function buildCredentialsPayload(
@@ -175,11 +215,14 @@ function destinationPlaceholderForProvider(provider: BridgeConnectionProvider): 
 }
 
 function draftFromConnection(connection: ConnectionRecord): EditDraftState {
+  const purpose = parsePurpose(connection.config?.purpose)
+
   return {
     name: connection.name,
     destination: connection.destination,
     enabled: connection.enabled,
     autoRelay: connection.autoRelay,
+    purpose,
     configText: JSON.stringify(connection.config || {}, null, 2),
     botToken: "",
     webhookUrl: "",
@@ -295,7 +338,7 @@ export default function BridgeConnectionsPage() {
 
       setIsCreating(true)
       try {
-        const config = parseConfigJson(createForm.configText)
+        const config = configWithPurpose(parseConfigJson(createForm.configText), createForm.purpose)
         const credentials = buildCredentialsPayload(createForm.provider, createForm)
 
         const response = await fetch("/api/bridge/connections", {
@@ -317,7 +360,14 @@ export default function BridgeConnectionsPage() {
 
         const payload = await response.json().catch(() => ({}))
         if (!response.ok) {
-          throw new Error(typeof payload?.error === "string" ? payload.error : `HTTP ${response.status}`)
+          const ui = buildUiError(payload, response.status, `HTTP ${response.status}`)
+          setNotice({
+            type: "error",
+            text: ui.text,
+            code: ui.code,
+            suggestedCommands: ui.suggestedCommands,
+          })
+          return
         }
 
         setCreateForm(defaultCreateFormState())
@@ -350,7 +400,7 @@ export default function BridgeConnectionsPage() {
           destination: draft.destination.trim(),
           enabled: draft.enabled,
           autoRelay: draft.autoRelay,
-          config: parseConfigJson(draft.configText),
+          config: configWithPurpose(parseConfigJson(draft.configText), draft.purpose),
         }
 
         if (connection.provider === "telegram" && draft.botToken.trim()) {
@@ -377,7 +427,14 @@ export default function BridgeConnectionsPage() {
         })
         const parsed = await response.json().catch(() => ({}))
         if (!response.ok) {
-          throw new Error(typeof parsed?.error === "string" ? parsed.error : `HTTP ${response.status}`)
+          const ui = buildUiError(parsed, response.status, `HTTP ${response.status}`)
+          setNotice({
+            type: "error",
+            text: ui.text,
+            code: ui.code,
+            suggestedCommands: ui.suggestedCommands,
+          })
+          return
         }
 
         setNotice({ type: "success", text: `${connection.name} updated.` })
@@ -525,7 +582,40 @@ export default function BridgeConnectionsPage() {
       description="Configure Telegram, Discord, and WhatsApp patch-through channels for COU-DEA outbound relay."
     >
       <div className="space-y-4">
-        {notice ? <InlineNotice variant={notice.type}>{notice.text}</InlineNotice> : null}
+        {notice ? (
+          <InlineNotice variant={notice.type}>
+            <div className="space-y-2">
+              <p>{notice.text}</p>
+              {notice.code ? (
+                <p className="text-xs">
+                  Code: <code>{notice.code}</code>
+                </p>
+              ) : null}
+              {notice.code && isWalletEnclaveCode(notice.code) ? (
+                <div className="space-y-1">
+                  <p className="text-xs font-medium">Next steps</p>
+                  <ul className="list-disc space-y-1 pl-5 text-xs">
+                    {walletEnclaveGuidance(notice.code).steps.map((step) => (
+                      <li key={step}>{step}</li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+              {notice.suggestedCommands && notice.suggestedCommands.length > 0 ? (
+                <div className="space-y-1">
+                  <p className="text-xs font-medium">Suggested commands</p>
+                  <ul className="list-disc space-y-1 pl-5 text-xs">
+                    {notice.suggestedCommands.map((command) => (
+                      <li key={command}>
+                        <code>{command}</code>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+            </div>
+          </InlineNotice>
+        ) : null}
 
         <SurfaceCard>
           <div className="flex flex-wrap items-center gap-3">
@@ -599,6 +689,31 @@ export default function BridgeConnectionsPage() {
                       />
                     </label>
                   </div>
+
+                  <label className="text-sm">
+                    <span className="mb-1 block text-slate-600 dark:text-slate-300">Purpose</span>
+                    <select
+                      value={createForm.purpose}
+                      onChange={(event) => {
+                        const purpose = parsePurpose(event.target.value)
+                        setCreateForm((current) => ({
+                          ...current,
+                          purpose,
+                          autoRelay: purpose === "xo_direct" ? false : purpose === "bridge_group" ? true : current.autoRelay,
+                          configText: patchConfigTextPurpose(current.configText, purpose),
+                        }))
+                      }}
+                      className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
+                    >
+                      <option value="bridge_group">Bridge crew group</option>
+                      <option value="xo_direct">XO direct</option>
+                      <option value="custom">Custom</option>
+                    </select>
+                    <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                      Use <span className="font-medium">Bridge crew group</span> for COU auto-relay. Use{" "}
+                      <span className="font-medium">XO direct</span> for a private outbound lane.
+                    </p>
+                  </label>
 
                   <label className="text-sm">
                     <span className="mb-1 block text-slate-600 dark:text-slate-300">Destination</span>
@@ -805,6 +920,12 @@ export default function BridgeConnectionsPage() {
                     const isSaving = savingConnectionId === connection.id
                     const isTesting = testingConnectionId === connection.id
                     const isDeleting = deletingConnectionId === connection.id
+                    const purposeLabel =
+                      draft.purpose === "bridge_group"
+                        ? "Bridge group"
+                        : draft.purpose === "xo_direct"
+                          ? "XO direct"
+                          : null
 
                     return (
                       <div
@@ -819,6 +940,11 @@ export default function BridgeConnectionsPage() {
                             <p className="text-xs text-slate-600 dark:text-slate-400">
                               {PROVIDER_LABELS[connection.provider]} • {connection.destination}
                             </p>
+                            {purposeLabel ? (
+                              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                                Purpose: {purposeLabel}
+                              </p>
+                            ) : null}
                           </div>
                           <div className="flex flex-wrap items-center gap-2 text-xs">
                             <span className="rounded-md border border-slate-300/70 px-2 py-1 text-slate-600 dark:border-white/15 dark:text-slate-300">
@@ -931,6 +1057,29 @@ export default function BridgeConnectionsPage() {
 
                         <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
                           <div className="flex items-center gap-4 text-xs text-slate-600 dark:text-slate-400">
+                            <label className="inline-flex items-center gap-2">
+                              <span>Purpose</span>
+                              <select
+                                value={draft.purpose}
+                                onChange={(event) => {
+                                  const purpose = parsePurpose(event.target.value)
+                                  setDrafts((current) => ({
+                                    ...current,
+                                    [connection.id]: {
+                                      ...draft,
+                                      purpose,
+                                      autoRelay: purpose === "xo_direct" ? false : purpose === "bridge_group" ? true : draft.autoRelay,
+                                      configText: patchConfigTextPurpose(draft.configText, purpose),
+                                    },
+                                  }))
+                                }}
+                                className="rounded-md border border-slate-300/70 bg-white px-2 py-1 text-xs text-slate-700 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-200"
+                              >
+                                <option value="bridge_group">Bridge group</option>
+                                <option value="xo_direct">XO direct</option>
+                                <option value="custom">Custom</option>
+                              </select>
+                            </label>
                             <label className="inline-flex items-center gap-2">
                               <input
                                 type="checkbox"

@@ -1,12 +1,28 @@
 import type { RuntimeRequest, RuntimeResult } from "@/lib/types/runtime"
 import { createRecoverableRuntimeError, RuntimeProviderError } from "@/lib/runtime/errors"
 import type { RuntimeProviderDefinition } from "@/lib/runtime/providers/types"
+import { prisma } from "@/lib/prisma"
+import type { BridgeStationKey } from "@/lib/bridge/stations"
+import {
+  isBridgeStationKey,
+  resolveOpenClawRuntimeUrlForStation,
+  resolveShipNamespace,
+} from "@/lib/bridge/openclaw-runtime"
 
 function asRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object") {
     return {}
   }
   return value as Record<string, unknown>
+}
+
+function asString(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null
+  }
+
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : null
 }
 
 function asSignatureBundle(value: unknown) {
@@ -45,12 +61,12 @@ function extractRuntimeSignatureBundle(payload: unknown) {
   return asSignatureBundle(dataRecord.signatureBundle || dataRecord.signature)
 }
 
-function openClawGateway(): string | null {
+function openClawGatewayFallback(): string | null {
   const raw = process.env.OPENCLAW_GATEWAY_URL
   if (!raw || !raw.trim()) {
     return null
   }
-  return raw.trim()
+  return raw.trim().replace(/\/+$/u, "")
 }
 
 function openClawPath(): string {
@@ -58,7 +74,9 @@ function openClawPath(): string {
   if (!raw || !raw.trim()) {
     return "/v1/prompt"
   }
-  return raw.trim()
+
+  const trimmed = raw.trim()
+  return trimmed.startsWith("/") ? trimmed : `/${trimmed}`
 }
 
 function openClawTimeoutMs(): number {
@@ -88,8 +106,87 @@ function extractOpenClawOutput(payload: unknown): string | null {
   return null
 }
 
+function resolveBridgeStationKey(request: RuntimeRequest): BridgeStationKey | null {
+  const metadata = asRecord(request.metadata)
+  const bridge = asRecord(metadata.bridge)
+  if (isBridgeStationKey(bridge.stationKey)) {
+    return bridge.stationKey
+  }
+
+  const agentChat = asRecord(metadata.agentChat)
+  if (isBridgeStationKey(agentChat.role)) {
+    return agentChat.role
+  }
+
+  return null
+}
+
+function resolveShipDeploymentId(request: RuntimeRequest): string | null {
+  const metadata = asRecord(request.metadata)
+  const bridge = asRecord(metadata.bridge)
+  const bridgeShipId = asString(bridge.shipDeploymentId)
+  if (bridgeShipId) {
+    return bridgeShipId
+  }
+
+  const agentChat = asRecord(metadata.agentChat)
+  const chatShipId = asString(agentChat.shipDeploymentId)
+  if (chatShipId) {
+    return chatShipId
+  }
+
+  const shipContext = asRecord(metadata.shipContext)
+  const shipContextId = asString(shipContext.shipDeploymentId) || asString(shipContext.deploymentId)
+  return shipContextId
+}
+
+function resolveShipNamespaceFromMetadata(request: RuntimeRequest): string | null {
+  const metadata = asRecord(request.metadata)
+  const shipContext = asRecord(metadata.shipContext)
+  return asString(shipContext.namespace)
+}
+
+const SHIP_NAMESPACE_CACHE_TTL_MS = 60_000
+const shipNamespaceCache = new Map<string, { value: string | null; expiresAt: number }>()
+
+async function resolveShipNamespaceFromDb(shipDeploymentId: string): Promise<string | null> {
+  const now = Date.now()
+  const cached = shipNamespaceCache.get(shipDeploymentId)
+  if (cached && cached.expiresAt > now) {
+    return cached.value
+  }
+
+  const deployment = await prisma.agentDeployment.findUnique({
+    where: {
+      id: shipDeploymentId,
+    },
+    select: {
+      config: true,
+      deploymentProfile: true,
+    },
+  })
+
+  const namespace = deployment ? resolveShipNamespace(deployment.config, deployment.deploymentProfile) : null
+  shipNamespaceCache.set(shipDeploymentId, {
+    value: namespace,
+    expiresAt: now + SHIP_NAMESPACE_CACHE_TTL_MS,
+  })
+  return namespace
+}
+
 async function runOpenClawRuntime(request: RuntimeRequest): Promise<RuntimeResult> {
-  const gateway = openClawGateway()
+  const stationKey = resolveBridgeStationKey(request)
+  const shipDeploymentId = resolveShipDeploymentId(request)
+  const shipNamespace =
+    resolveShipNamespaceFromMetadata(request)
+    || (shipDeploymentId ? await resolveShipNamespaceFromDb(shipDeploymentId) : null)
+
+  const effectiveStationKey: BridgeStationKey | null = stationKey || (shipNamespace ? "xo" : null)
+  const resolved = effectiveStationKey
+    ? resolveOpenClawRuntimeUrlForStation({ stationKey: effectiveStationKey, namespace: shipNamespace })
+    : { href: null, source: "unconfigured" as const }
+
+  const gateway = resolved.href || openClawGatewayFallback()
   if (!gateway) {
     throw createRecoverableRuntimeError({
       provider: "openclaw",
@@ -142,6 +239,9 @@ async function runOpenClawRuntime(request: RuntimeRequest): Promise<RuntimeResul
       metadata: {
         gateway,
         path,
+        stationKey: effectiveStationKey,
+        shipNamespace,
+        gatewaySource: resolved.source,
       },
     }
   } catch (error) {

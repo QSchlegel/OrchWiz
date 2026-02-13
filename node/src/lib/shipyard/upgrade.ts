@@ -578,7 +578,7 @@ async function executeShipUpgrade(
     deploymentProfile: input.ship.deploymentProfile,
     provisioningMode: input.ship.provisioningMode,
     config: normalizedInfrastructure.config,
-    infrastructure: normalizedInfrastructure.infrastructure as Record<string, unknown>,
+    infrastructure: normalizedInfrastructure.infrastructure as unknown as Record<string, unknown>,
     metadata: asRecord(input.ship.metadata),
   })
 

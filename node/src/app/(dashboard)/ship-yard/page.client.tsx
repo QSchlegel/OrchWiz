@@ -84,6 +84,7 @@ import {
 } from "@/lib/shipyard/versions"
 import { useEventStream } from "@/lib/realtime/useEventStream"
 import { useShipSelection } from "@/lib/shipyard/useShipSelection"
+import { buildUiError, isWalletEnclaveCode, walletEnclaveGuidance } from "@/lib/api-errors"
 import { EmptyState, InlineNotice, SurfaceCard } from "@/components/dashboard/PageLayout"
 import { CloudUtilityPanel } from "@/components/shipyard/CloudUtilityPanel"
 import { ShipToolsPanel } from "@/components/shipyard/ShipToolsPanel"
@@ -95,6 +96,10 @@ type WizardStepId = "mission" | "environment" | "secrets" | "apps" | "crew" | "r
 
 type MainTab = "build" | "fleet" | "apiKeys" | "ops"
 
+type BootstrapAppId = "n8n" | "dokploy"
+
+type InitialApplicationsSelection = Record<BootstrapAppId, boolean>
+
 interface CrewOverrideInput {
   name: string
   description: string
@@ -105,6 +110,7 @@ interface MonitoringUrlFormInput {
   grafanaUrl: string
   prometheusUrl: string
   kubeviewUrl: string
+  langfuseUrl: string
 }
 
 interface LaunchFormState {
@@ -112,6 +118,7 @@ interface LaunchFormState {
   description: string
   nodeId: string
   nodeUrl: string
+  initialApplications: InitialApplicationsSelection
   saneBootstrap: boolean
   deploymentProfile: DeploymentProfile
   provisioningMode: ProvisioningMode
@@ -166,6 +173,13 @@ interface BridgeCrewRecord {
 interface LaunchMessage {
   type: "success" | "error" | "info"
   text: string
+  code?: string | null
+  suggestedCommands?: string[]
+}
+
+interface RefuelingErrorState {
+  text: string
+  code: string | null
   suggestedCommands?: string[]
 }
 
@@ -261,9 +275,34 @@ const steps: { id: WizardStepId; title: string; subtitle: string; icon: ElementT
   { id: "mission", title: "Mission", subtitle: "Ship identity and target", icon: Ship },
   { id: "environment", title: "Environment", subtitle: "Deployment profile setup", icon: Settings2 },
   { id: "secrets", title: "Secrets", subtitle: "Setup templates and snippets", icon: KeyRound },
-  { id: "apps", title: "Apps", subtitle: "n8n bootstrap setup", icon: AppWindow },
+  { id: "apps", title: "Apps", subtitle: "Bootstrap app selection", icon: AppWindow },
   { id: "crew", title: "Bridge Crew", subtitle: "Bootstrap OpenClaw command", icon: Users },
   { id: "review", title: "Launch", subtitle: "Review and deploy", icon: Rocket },
+]
+
+const DEFAULT_INITIAL_APPLICATIONS: InitialApplicationsSelection = {
+  n8n: true,
+  dokploy: false,
+}
+
+const BOOTSTRAP_APPS: Array<{
+  id: BootstrapAppId
+  label: string
+  description: string
+  icon: ElementType
+}> = [
+  {
+    id: "n8n",
+    label: "n8n",
+    description: "Workflow automation + curated tool bridge bootstrap.",
+    icon: AppWindow,
+  },
+  {
+    id: "dokploy",
+    label: "Dokploy",
+    description: "Staging deploy control plane (connect-only for local profile, provisioning later).",
+    icon: Server,
+  },
 ]
 
 const deploymentProfileLabels: Record<DeploymentProfile, string> = {
@@ -672,6 +711,7 @@ function createInitialFormState(): LaunchFormState {
     description: "",
     nodeId: "",
     nodeUrl: "",
+    initialApplications: { ...DEFAULT_INITIAL_APPLICATIONS },
     saneBootstrap: true,
     deploymentProfile,
     provisioningMode: "terraform_ansible",
@@ -682,6 +722,7 @@ function createInitialFormState(): LaunchFormState {
       grafanaUrl: SHIP_MONITORING_DEFAULTS.grafanaUrl,
       prometheusUrl: SHIP_MONITORING_DEFAULTS.prometheusUrl,
       kubeviewUrl: SHIP_MONITORING_DEFAULTS.kubeviewUrl,
+      langfuseUrl: SHIP_MONITORING_DEFAULTS.langfuseUrl,
     },
     cloudProvider: defaultCloudProviderConfig(),
     crewOverrides: createCrewOverrides(),
@@ -912,9 +953,46 @@ function DeploymentOverviewPanel({ title, subtitle, overview, derived = false }:
   )
 }
 
+function ToggleSwitch(props: {
+  enabled: boolean
+  disabled?: boolean
+  label: string
+  onChange: (next: boolean) => void
+}) {
+  const enabled = props.enabled
+  const disabled = props.disabled === true
+
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={enabled}
+      aria-label={props.label}
+      disabled={disabled}
+      onClick={() => {
+        if (disabled) return
+        props.onChange(!enabled)
+      }}
+      className={`relative inline-flex h-6 w-11 items-center rounded-full border transition-colors focus:outline-none focus:ring-2 focus:ring-cyan-500/40 focus:ring-offset-2 focus:ring-offset-white disabled:cursor-not-allowed disabled:opacity-60 dark:focus:ring-offset-slate-950 ${
+        enabled
+          ? "border-cyan-500/50 bg-cyan-500/20"
+          : "border-slate-300/70 bg-slate-200/60 dark:border-white/15 dark:bg-white/[0.04]"
+      }`}
+    >
+      <span
+        aria-hidden="true"
+        className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-sm ring-1 ring-slate-900/5 transition-transform dark:bg-slate-950 dark:ring-white/10 ${
+          enabled ? "translate-x-5" : "translate-x-1"
+        }`}
+      />
+    </button>
+  )
+}
+
 export default function ShipYardPage() {
   const { selectedShipDeploymentId, setSelectedShipDeploymentId } = useShipSelection()
   const runtimeRefreshGateRef = useRef(0)
+  const wizardFooterRef = useRef<HTMLDivElement | null>(null)
   const [stepIndex, setStepIndex] = useState(0)
   const [form, setForm] = useState<LaunchFormState>(() => createInitialFormState())
   const [isLaunchPanelOpen, setIsLaunchPanelOpen] = useState(true)
@@ -927,7 +1005,7 @@ export default function ShipYardPage() {
   const [isBillingLoading, setIsBillingLoading] = useState(false)
   const [isRefueling, setIsRefueling] = useState(false)
   const [refuelAmountEur, setRefuelAmountEur] = useState("5")
-  const [refuelingError, setRefuelingError] = useState<string | null>(null)
+  const [refuelingError, setRefuelingError] = useState<RefuelingErrorState | null>(null)
   const [ships, setShips] = useState<ShipDeployment[]>([])
   const [isLoadingShips, setIsLoadingShips] = useState(true)
   const [runtimeSnapshot, setRuntimeSnapshot] = useState<RuntimeSnapshot | null>(null)
@@ -940,6 +1018,7 @@ export default function ShipYardPage() {
     grafanaUrl: SHIP_MONITORING_DEFAULTS.grafanaUrl,
     prometheusUrl: SHIP_MONITORING_DEFAULTS.prometheusUrl,
     kubeviewUrl: SHIP_MONITORING_DEFAULTS.kubeviewUrl,
+    langfuseUrl: SHIP_MONITORING_DEFAULTS.langfuseUrl,
   })
   const [isSavingMonitoring, setIsSavingMonitoring] = useState(false)
   const [crewDrafts, setCrewDrafts] = useState<Record<string, CrewOverrideInput & { status: "active" | "inactive" }>>(
@@ -950,6 +1029,7 @@ export default function ShipYardPage() {
   const [transferTargetOwnerEmail, setTransferTargetOwnerEmail] = useState("")
   const [isTransferringOwnership, setIsTransferringOwnership] = useState(false)
   const [isUpgradingShip, setIsUpgradingShip] = useState(false)
+  const [isScrapRelaunching, setIsScrapRelaunching] = useState(false)
   const [fleetSearchQuery, setFleetSearchQuery] = useState("")
   const [fleetStatusFilter, setFleetStatusFilter] = useState<ShipStatusFilter>("all")
   const [secretValuesByProfile, setSecretValuesByProfile] =
@@ -967,6 +1047,29 @@ export default function ShipYardPage() {
   const [isSavingSecrets, setIsSavingSecrets] = useState(false)
   const [isClearingSecrets, setIsClearingSecrets] = useState(false)
   const [cloudSshKeyFingerprint, setCloudSshKeyFingerprint] = useState<string | null>(null)
+  type SecretSnippetKind = "env" | "tfvars"
+  const [secretSnippetExpanded, setSecretSnippetExpanded] = useState<Record<SecretSnippetKind, boolean>>({
+    env: false,
+    tfvars: false,
+  })
+  const [quickLaunchPendingScroll, setQuickLaunchPendingScroll] = useState(false)
+
+  const toggleSecretSnippetExpanded = useCallback((kind: SecretSnippetKind) => {
+    setSecretSnippetExpanded((current) => ({ ...current, [kind]: !current[kind] }))
+  }, [])
+
+  type N8NFieldKey = (typeof N8N_REQUIRED_SECRET_FIELDS)[number]
+  const [n8nFieldExpanded, setN8nFieldExpanded] = useState<Record<N8NFieldKey, boolean>>({
+    n8n_database_url: false,
+    n8n_basic_auth_user: false,
+    n8n_basic_auth_password: false,
+    n8n_encryption_key: false,
+    n8n_public_base_url: false,
+  })
+
+  const toggleN8nFieldExpanded = useCallback((field: N8NFieldKey) => {
+    setN8nFieldExpanded((current) => ({ ...current, [field]: !current[field] }))
+  }, [])
 
   const currentStep = steps[stepIndex]
   const [mainTab, setMainTab] = useState<MainTab>("build")
@@ -1004,6 +1107,7 @@ export default function ShipYardPage() {
         grafanaUrl: SHIP_MONITORING_DEFAULTS.grafanaUrl,
         prometheusUrl: SHIP_MONITORING_DEFAULTS.prometheusUrl,
         kubeviewUrl: SHIP_MONITORING_DEFAULTS.kubeviewUrl,
+        langfuseUrl: SHIP_MONITORING_DEFAULTS.langfuseUrl,
       })
       return
     }
@@ -1013,6 +1117,7 @@ export default function ShipYardPage() {
       grafanaUrl: monitoring.grafanaUrl || SHIP_MONITORING_DEFAULTS.grafanaUrl,
       prometheusUrl: monitoring.prometheusUrl || SHIP_MONITORING_DEFAULTS.prometheusUrl,
       kubeviewUrl: monitoring.kubeviewUrl || SHIP_MONITORING_DEFAULTS.kubeviewUrl,
+      langfuseUrl: monitoring.langfuseUrl || SHIP_MONITORING_DEFAULTS.langfuseUrl,
     })
   }, [selectedShip?.id, selectedShip?.updatedAt, selectedShip?.config])
 
@@ -1424,6 +1529,7 @@ export default function ShipYardPage() {
               grafanaUrl: monitoringDraft.grafanaUrl,
               prometheusUrl: monitoringDraft.prometheusUrl,
               kubeviewUrl: monitoringDraft.kubeviewUrl,
+              langfuseUrl: monitoringDraft.langfuseUrl,
             },
           },
         }),
@@ -1451,6 +1557,7 @@ export default function ShipYardPage() {
     monitoringDraft.grafanaUrl,
     monitoringDraft.prometheusUrl,
     monitoringDraft.kubeviewUrl,
+    monitoringDraft.langfuseUrl,
     refreshFleetView,
     selectedShip,
   ])
@@ -1489,8 +1596,18 @@ export default function ShipYardPage() {
 
         const quotePayload = await quoteResponse.json().catch(() => ({}))
         if (!quoteResponse.ok) {
-          const apiMessage = extractApiErrorMessage(quotePayload) || `Unable to load refueling quote (HTTP ${quoteResponse.status})`
-          setRefuelingError(apiMessage)
+          const ui = buildUiError(
+            quotePayload,
+            quoteResponse.status,
+            `Unable to load refueling quote (HTTP ${quoteResponse.status})`,
+          )
+          setRefuelingError({
+            text: ui.text,
+            code: ui.code,
+            ...(ui.suggestedCommands && ui.suggestedCommands.length > 0
+              ? { suggestedCommands: ui.suggestedCommands }
+              : {}),
+          })
           setBillingQuote(null)
           return
         }
@@ -1503,7 +1620,7 @@ export default function ShipYardPage() {
       } catch (error) {
         console.error("Failed to refresh Ship Yard refueling state:", error)
         setBillingQuote(null)
-        setRefuelingError("Unable to load refueling state.")
+        setRefuelingError({ text: "Unable to load refueling state.", code: null })
       } finally {
         setIsBillingLoading(false)
       }
@@ -1569,7 +1686,16 @@ export default function ShipYardPage() {
           | { error?: string }
           | null
         if (!response.ok) {
-          throw new Error(extractApiErrorMessage(payload) || `HTTP ${response.status}`)
+          const ui = buildUiError(payload, response.status, `HTTP ${response.status}`)
+          setMessage({
+            type: "error",
+            text: ui.text,
+            code: ui.code,
+            ...(ui.suggestedCommands && ui.suggestedCommands.length > 0
+              ? { suggestedCommands: ui.suggestedCommands }
+              : {}),
+          })
+          return
         }
 
         const parsed = payload as ShipyardSecretTemplateApiPayload
@@ -1717,7 +1843,16 @@ export default function ShipYardPage() {
         | { error?: string }
         | null
       if (!response.ok) {
-        throw new Error(extractApiErrorMessage(payload) || `HTTP ${response.status}`)
+        const ui = buildUiError(payload, response.status, `HTTP ${response.status}`)
+        setMessage({
+          type: "error",
+          text: ui.text,
+          code: ui.code,
+          ...(ui.suggestedCommands && ui.suggestedCommands.length > 0
+            ? { suggestedCommands: ui.suggestedCommands }
+            : {}),
+        })
+        return
       }
 
       const parsed = payload as ShipyardSecretTemplateApiPayload
@@ -1764,7 +1899,16 @@ export default function ShipYardPage() {
         | { error?: string; deleted?: boolean }
         | null
       if (!response.ok) {
-        throw new Error(extractApiErrorMessage(payload) || `HTTP ${response.status}`)
+        const ui = buildUiError(payload, response.status, `HTTP ${response.status}`)
+        setMessage({
+          type: "error",
+          text: ui.text,
+          code: ui.code,
+          ...(ui.suggestedCommands && ui.suggestedCommands.length > 0
+            ? { suggestedCommands: ui.suggestedCommands }
+            : {}),
+        })
+        return
       }
 
       setSecretValuesByProfile((current) => ({
@@ -1951,6 +2095,35 @@ export default function ShipYardPage() {
     return true
   }, [currentStep.id, resolvedNodeId, resolvedShipName])
 
+  const handleQuickLaunch = useCallback(() => {
+    const launchStepIndex = steps.findIndex((step) => step.id === "review")
+    const targetIndex = launchStepIndex >= 0 ? launchStepIndex : steps.length - 1
+
+    if (stepIndex !== targetIndex) {
+      setStepIndex(targetIndex)
+      setQuickLaunchPendingScroll(true)
+      return
+    }
+
+    wizardFooterRef.current?.scrollIntoView({ behavior: "smooth", block: "end" })
+  }, [stepIndex])
+
+  useEffect(() => {
+    if (!quickLaunchPendingScroll) {
+      return
+    }
+
+    const launchStepIndex = steps.findIndex((step) => step.id === "review")
+    const targetIndex = launchStepIndex >= 0 ? launchStepIndex : steps.length - 1
+
+    if (stepIndex !== targetIndex) {
+      return
+    }
+
+    setQuickLaunchPendingScroll(false)
+    wizardFooterRef.current?.scrollIntoView({ behavior: "smooth", block: "end" })
+  }, [quickLaunchPendingScroll, stepIndex])
+
   const updateCrewOverride = (role: BridgeCrewRole, patch: Partial<CrewOverrideInput>) => {
     setForm((current) => ({
       ...current,
@@ -1968,7 +2141,11 @@ export default function ShipYardPage() {
     if (launchBlockedByRefueling) {
       setMessage({
         type: "error",
-        text: refuelingError || "Refueling required before launch.",
+        text: refuelingError?.text || "Refueling required before launch.",
+        code: refuelingError?.code ?? null,
+        ...(refuelingError?.suggestedCommands && refuelingError.suggestedCommands.length > 0
+          ? { suggestedCommands: refuelingError.suggestedCommands }
+          : {}),
       })
       return
     }
@@ -2001,7 +2178,9 @@ export default function ShipYardPage() {
               grafanaUrl: form.monitoring.grafanaUrl,
               prometheusUrl: form.monitoring.prometheusUrl,
               kubeviewUrl: form.monitoring.kubeviewUrl,
+              langfuseUrl: form.monitoring.langfuseUrl,
             },
+            initialApplications: form.initialApplications,
             ...(form.deploymentProfile === "cloud_shipyard"
               ? {
                   cloudProvider: form.cloudProvider,
@@ -2048,6 +2227,7 @@ export default function ShipYardPage() {
         && typeof bootstrapN8N === "object"
         && typeof bootstrapN8N.status === "string"
         && bootstrapN8N.status !== "ready"
+        && bootstrapN8N.status !== "skipped"
       ) {
         const warningLines = Array.isArray(bootstrapN8N.warnings)
           ? bootstrapN8N.warnings.filter(
@@ -2198,6 +2378,124 @@ export default function ShipYardPage() {
       })
     } finally {
       setIsUpgradingShip(false)
+    }
+  }
+
+  const handleScrapAndRelaunch = async () => {
+    if (!selectedShip) {
+      setMessage({
+        type: "info",
+        text: "Select a ship to scrap and relaunch.",
+      })
+      return
+    }
+
+    const confirmed = window.confirm(
+      `Scrap & relaunch ${selectedShip.name}? This deletes the ship record in OrchWiz (it does not destroy cluster resources).`,
+    )
+    if (!confirmed) {
+      return
+    }
+
+    setIsScrapRelaunching(true)
+    setMessage(null)
+    try {
+      const scrapResponse = await fetch(`/api/ships/${selectedShip.id}`, {
+        method: "DELETE",
+      })
+
+      const scrapPayload = await scrapResponse.json().catch(() => ({}))
+      if (!scrapResponse.ok) {
+        throw new Error(
+          typeof scrapPayload?.error === "string"
+            ? scrapPayload.error
+            : `Unable to scrap ship (HTTP ${scrapResponse.status})`,
+        )
+      }
+
+      const existingConfig =
+        selectedShip.config && typeof selectedShip.config === "object" && !Array.isArray(selectedShip.config)
+          ? (selectedShip.config as Record<string, unknown>)
+          : {}
+
+      const existingMonitoring =
+        existingConfig.monitoring && typeof existingConfig.monitoring === "object" && !Array.isArray(existingConfig.monitoring)
+          ? (existingConfig.monitoring as Record<string, unknown>)
+          : {}
+
+      const relaunchConfig = {
+        ...existingConfig,
+        monitoring: {
+          ...existingMonitoring,
+          langfuseUrl: Object.prototype.hasOwnProperty.call(existingMonitoring, "langfuseUrl")
+            ? existingMonitoring.langfuseUrl
+            : SHIP_MONITORING_DEFAULTS.langfuseUrl,
+        },
+      }
+
+      const response = await fetch("/api/ship-yard/launch", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          name: selectedShip.name,
+          nodeId: selectedShip.nodeId,
+          saneBootstrap: selectedShip.deploymentProfile === "local_starship_build" ? true : undefined,
+          deploymentProfile: selectedShip.deploymentProfile,
+          provisioningMode: selectedShip.provisioningMode,
+          advancedNodeTypeOverride: selectedShip.nodeType === "hybrid",
+          nodeType: selectedShip.nodeType,
+          config: relaunchConfig,
+          crewRoles: REQUIRED_BRIDGE_CREW_ROLES,
+          crewOverrides: {},
+        }),
+      })
+
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        const suggestedCommands = Array.isArray(payload?.details?.suggestedCommands)
+          ? payload.details.suggestedCommands.filter(
+              (command: unknown): command is string =>
+                typeof command === "string" && command.trim().length > 0,
+            )
+          : []
+
+        if (typeof payload?.deployment?.id === "string") {
+          setSelectedShipDeploymentId(payload.deployment.id)
+        } else {
+          setSelectedShipDeploymentId(null)
+        }
+
+        setMessage({
+          type: "error",
+          text: typeof payload?.error === "string" ? payload.error : "Ship relaunch failed",
+          ...(suggestedCommands.length > 0 ? { suggestedCommands } : {}),
+        })
+        await refreshFleetView()
+        return
+      }
+
+      if (typeof payload?.deployment?.id === "string") {
+        setSelectedShipDeploymentId(payload.deployment.id)
+      } else {
+        setSelectedShipDeploymentId(null)
+      }
+
+      setMessage({
+        type: "success",
+        text: `Scrapped and relaunched ${selectedShip.name}.`,
+      })
+      await refreshFleetView()
+    } catch (error) {
+      console.error("Scrap & relaunch failed:", error)
+      setMessage({
+        type: "error",
+        text: error instanceof Error ? error.message : "Scrap & relaunch failed.",
+      })
+      await refreshFleetView()
+    } finally {
+      setIsScrapRelaunching(false)
     }
   }
 
@@ -2359,6 +2657,21 @@ export default function ShipYardPage() {
             <InlineNotice variant={message.type}>
               <div className="space-y-2">
                 <p>{message.text}</p>
+                {message.code ? (
+                  <p className="text-xs">
+                    Code: <code>{message.code}</code>
+                  </p>
+                ) : null}
+                {message.code && isWalletEnclaveCode(message.code) ? (
+                  <div className="space-y-1">
+                    <p className="text-xs font-medium">Next steps</p>
+                    <ul className="list-disc space-y-1 pl-5 text-xs">
+                      {walletEnclaveGuidance(message.code).steps.map((step) => (
+                        <li key={step}>{step}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
                 {message.suggestedCommands && message.suggestedCommands.length > 0 && (
                   <ul className="list-disc space-y-1 pl-5 text-xs">
                     {message.suggestedCommands.map((command) => (
@@ -2625,16 +2938,27 @@ export default function ShipYardPage() {
                 })}
               </div>
 
-          <div className="mt-4 rounded-xl border border-slate-300/70 bg-white/75 p-4 dark:border-white/10 dark:bg-white/[0.03]">
-            <div className="mb-4 flex items-center justify-between">
-              <div>
-                <p className="readout text-cyan-700 dark:text-cyan-300">{currentStep.subtitle}</p>
-                <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-50">{currentStep.title}</h2>
-              </div>
-              <span className="readout text-slate-500 dark:text-slate-400">
-                {stepIndex + 1} / {steps.length}
-              </span>
-            </div>
+	          <div className="mt-4 rounded-xl border border-slate-300/70 bg-white/75 p-4 dark:border-white/10 dark:bg-white/[0.03]">
+	            <div className="mb-4 flex items-center justify-between">
+	              <div>
+	                <p className="readout text-cyan-700 dark:text-cyan-300">{currentStep.subtitle}</p>
+	                <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-50">{currentStep.title}</h2>
+	              </div>
+	              <div className="flex items-center gap-2">
+	                <span className="readout text-slate-500 dark:text-slate-400">
+	                  {stepIndex + 1} / {steps.length}
+	                </span>
+	                <button
+	                  type="button"
+	                  onClick={handleQuickLaunch}
+	                  disabled={isLaunching}
+	                  className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/45 bg-amber-500/10 px-3 py-1 text-[11px] font-semibold text-amber-700 transition-colors hover:bg-amber-500/20 disabled:opacity-40 dark:border-amber-400/30 dark:text-amber-200"
+	                >
+	                  <Rocket className="h-3.5 w-3.5" />
+	                  Quick Launch
+	                </button>
+	              </div>
+	            </div>
 
             {currentStep.id === "mission" && (
               <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
@@ -2734,7 +3058,26 @@ export default function ShipYardPage() {
                         },
                       }))
                     }
-                    placeholder="http://kubeview.orchwiz-starship.localhost:18080/"
+                    placeholder="/api/bridge/runtime-ui/kubeview"
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
+                  />
+                </label>
+
+                <label>
+                  <span className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">Langfuse URL (optional)</span>
+                  <input
+                    type="url"
+                    value={form.monitoring.langfuseUrl}
+                    onChange={(e) =>
+                      setForm((current) => ({
+                        ...current,
+                        monitoring: {
+                          ...current.monitoring,
+                          langfuseUrl: e.target.value,
+                        },
+                      }))
+                    }
+                    placeholder="/api/bridge/runtime-ui/langfuse"
                     className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
                   />
                 </label>
@@ -3130,49 +3473,77 @@ export default function ShipYardPage() {
 
                 <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
                   <div className="rounded-lg border border-slate-300/70 bg-white/75 p-3 dark:border-white/10 dark:bg-white/[0.03]">
-                    <div className="flex items-center justify-between gap-2">
-                      <div>
-                        <p className="text-sm font-medium text-slate-800 dark:text-slate-100">.env snippet</p>
-                        <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
-                          Target: {form.infrastructure.terraformEnvDir}/.env
-                        </p>
-                      </div>
+                    <div className="flex items-start justify-between gap-2">
+                      <button
+                        type="button"
+                        onClick={() => toggleSecretSnippetExpanded("env")}
+                        aria-expanded={secretSnippetExpanded.env}
+                        className="group flex-1 text-left"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <p className="text-sm font-medium text-slate-800 dark:text-slate-100">.env snippet</p>
+                            <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
+                              Target: {form.infrastructure.terraformEnvDir}/.env
+                            </p>
+                          </div>
+                          <span className="mt-0.5 inline-flex h-6 w-6 items-center justify-center rounded-md border border-slate-300/70 bg-white/60 text-slate-700 transition-colors group-hover:bg-white dark:border-white/12 dark:bg-white/[0.04] dark:text-slate-200 dark:group-hover:bg-white/[0.08]">
+                            {secretSnippetExpanded.env ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                          </span>
+                        </div>
+                      </button>
                       <button
                         type="button"
                         onClick={() => copySecretSnippet("env")}
-                        className="inline-flex items-center gap-1 rounded-md border border-slate-300/70 bg-white/70 px-2 py-1 text-[11px] text-slate-700 dark:border-white/12 dark:bg-white/[0.04] dark:text-slate-200"
+                        className="inline-flex items-center gap-1 rounded-md border border-slate-300/70 bg-white/70 px-2 py-1 text-[11px] text-slate-700 transition-colors hover:bg-white dark:border-white/12 dark:bg-white/[0.04] dark:text-slate-200 dark:hover:bg-white/[0.08]"
                       >
                         <Copy className="h-3 w-3" />
                         Copy
                       </button>
                     </div>
-                    <pre className="mt-2 max-h-44 overflow-auto rounded-md border border-slate-300/70 bg-slate-100/70 p-2 text-[11px] text-slate-700 dark:border-white/12 dark:bg-white/[0.03] dark:text-slate-200">
-                      {activeSecretSnippets.envSnippet}
-                    </pre>
+                    {secretSnippetExpanded.env && (
+                      <pre className="mt-2 max-h-44 overflow-auto rounded-md border border-slate-300/70 bg-slate-100/70 p-2 text-[11px] text-slate-700 dark:border-white/12 dark:bg-white/[0.03] dark:text-slate-200">
+                        {activeSecretSnippets.envSnippet}
+                      </pre>
+                    )}
                   </div>
 
                   <div className="rounded-lg border border-slate-300/70 bg-white/75 p-3 dark:border-white/10 dark:bg-white/[0.03]">
-                    <div className="flex items-center justify-between gap-2">
-                      <div>
-                        <p className="text-sm font-medium text-slate-800 dark:text-slate-100">
-                          terraform.tfvars snippet
-                        </p>
-                        <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
-                          Target: {form.infrastructure.terraformEnvDir}/terraform.tfvars
-                        </p>
-                      </div>
+                    <div className="flex items-start justify-between gap-2">
+                      <button
+                        type="button"
+                        onClick={() => toggleSecretSnippetExpanded("tfvars")}
+                        aria-expanded={secretSnippetExpanded.tfvars}
+                        className="group flex-1 text-left"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <p className="text-sm font-medium text-slate-800 dark:text-slate-100">
+                              terraform.tfvars snippet
+                            </p>
+                            <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
+                              Target: {form.infrastructure.terraformEnvDir}/terraform.tfvars
+                            </p>
+                          </div>
+                          <span className="mt-0.5 inline-flex h-6 w-6 items-center justify-center rounded-md border border-slate-300/70 bg-white/60 text-slate-700 transition-colors group-hover:bg-white dark:border-white/12 dark:bg-white/[0.04] dark:text-slate-200 dark:group-hover:bg-white/[0.08]">
+                            {secretSnippetExpanded.tfvars ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                          </span>
+                        </div>
+                      </button>
                       <button
                         type="button"
                         onClick={() => copySecretSnippet("tfvars")}
-                        className="inline-flex items-center gap-1 rounded-md border border-slate-300/70 bg-white/70 px-2 py-1 text-[11px] text-slate-700 dark:border-white/12 dark:bg-white/[0.04] dark:text-slate-200"
+                        className="inline-flex items-center gap-1 rounded-md border border-slate-300/70 bg-white/70 px-2 py-1 text-[11px] text-slate-700 transition-colors hover:bg-white dark:border-white/12 dark:bg-white/[0.04] dark:text-slate-200 dark:hover:bg-white/[0.08]"
                       >
                         <Copy className="h-3 w-3" />
                         Copy
                       </button>
                     </div>
-                    <pre className="mt-2 max-h-44 overflow-auto rounded-md border border-slate-300/70 bg-slate-100/70 p-2 text-[11px] text-slate-700 dark:border-white/12 dark:bg-white/[0.03] dark:text-slate-200">
-                      {activeSecretSnippets.terraformTfvarsSnippet}
-                    </pre>
+                    {secretSnippetExpanded.tfvars && (
+                      <pre className="mt-2 max-h-44 overflow-auto rounded-md border border-slate-300/70 bg-slate-100/70 p-2 text-[11px] text-slate-700 dark:border-white/12 dark:bg-white/[0.03] dark:text-slate-200">
+                        {activeSecretSnippets.terraformTfvarsSnippet}
+                      </pre>
+                    )}
                   </div>
                 </div>
               </div>
@@ -3181,161 +3552,294 @@ export default function ShipYardPage() {
             {currentStep.id === "apps" && (
               <div className="space-y-3">
                 <div className="rounded-lg border border-cyan-400/35 bg-cyan-500/10 px-3 py-2 text-xs text-cyan-700 dark:text-cyan-200">
-                  <p className="font-medium">n8n bootstrap setup assistant.</p>
+                  <p className="font-medium">Bootstrap apps.</p>
                   <p className="mt-1">
-                    Use auto-fill to prepare missing n8n fields, then save the profile template. Launch remains fail-open if n8n bootstrap degrades.
+                    Toggle which apps Ship Yard should include in this launch. Launch remains fail-open if bootstrap apps degrade.
                   </p>
                 </div>
 
-                <div className="grid grid-cols-1 gap-2 md:grid-cols-4">
-                  <div className="rounded-lg border border-slate-300/70 bg-white/75 px-3 py-2 dark:border-white/12 dark:bg-white/[0.04]">
-                    <p className="text-[11px] uppercase tracking-wide text-slate-500 dark:text-slate-400">n8n Readiness</p>
-                    <p className="mt-1 text-xs font-medium text-slate-800 dark:text-slate-100">
-                      {missingRequiredN8NSecretFields.length === 0
-                        ? "Ready"
-                        : `${missingRequiredN8NSecretFields.length} required field(s) missing`}
-                    </p>
-                  </div>
-                  <div className="rounded-lg border border-slate-300/70 bg-white/75 px-3 py-2 dark:border-white/12 dark:bg-white/[0.04]">
-                    <p className="text-[11px] uppercase tracking-wide text-slate-500 dark:text-slate-400">Populated Required Fields</p>
-                    <p className="mt-1 text-xs font-medium text-slate-800 dark:text-slate-100">
-                      {n8nSecretPopulatedFieldCount}/{N8N_REQUIRED_SECRET_FIELDS.length}
-                    </p>
-                  </div>
-                  <div className="rounded-lg border border-slate-300/70 bg-white/75 px-3 py-2 dark:border-white/12 dark:bg-white/[0.04]">
-                    <p className="text-[11px] uppercase tracking-wide text-slate-500 dark:text-slate-400">Default Public URL</p>
-                    <p className="mt-1 break-all text-xs font-medium text-slate-800 dark:text-slate-100">
-                      {buildDefaultN8NPublicBaseUrl({
-                        deploymentProfile: form.deploymentProfile,
-                        nodeUrl: form.nodeUrl,
-                      })}
-                    </p>
-                  </div>
-                  <div className="rounded-lg border border-slate-300/70 bg-white/75 px-3 py-2 dark:border-white/12 dark:bg-white/[0.04]">
-                    <p className="text-[11px] uppercase tracking-wide text-slate-500 dark:text-slate-400">Last Saved</p>
-                    <p className="mt-1 text-xs font-medium text-slate-800 dark:text-slate-100">
-                      {activeSecretUpdatedAt ? formatRelativeTimestamp(activeSecretUpdatedAt) : "Not saved yet"}
-                    </p>
-                  </div>
-                </div>
-
-                {missingRequiredN8NSecretFields.length > 0 ? (
-                  <div className="rounded-lg border border-amber-400/35 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-200">
-                    Missing required n8n fields:{" "}
-                    {missingRequiredN8NSecretFields.map((field) => SECRET_FIELD_DESCRIPTORS[field].label).join(", ")}
-                  </div>
-                ) : (
-                  <div className="rounded-lg border border-emerald-400/35 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-700 dark:text-emerald-200">
-                    n8n bootstrap fields are complete for {deploymentProfileLabels[form.deploymentProfile]}.
-                  </div>
-                )}
-
-                <div className="rounded-lg border border-slate-300/70 bg-white/75 px-3 py-2 text-xs text-slate-700 dark:border-white/12 dark:bg-white/[0.03] dark:text-slate-200">
-                  <p>
-                    Required fields:{" "}
-                    {N8N_REQUIRED_SECRET_FIELDS.map((field) => SECRET_FIELD_DESCRIPTORS[field].label).join(", ")}
-                  </p>
-                  <p className="mt-1">
-                    Full ready state also requires server-side curated tool URI (`N8N_TOOL_URI`) for bridge import/grant.
-                  </p>
-                </div>
-
-                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-                  {N8N_REQUIRED_SECRET_FIELDS.map((field) => {
-                    const descriptor = SECRET_FIELD_DESCRIPTORS[field]
-                    const maskedValue = activeSecretSummary.fields[field]?.maskedValue || null
-                    const hasSavedValue = activeSecretSummary.fields[field]?.hasValue === true
-                    const value = activeSecretValues[field] || ""
-
-                    const showGenerate =
-                      field === "n8n_basic_auth_password" || field === "n8n_encryption_key"
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                  {BOOTSTRAP_APPS.map((app) => {
+                    const enabled = form.initialApplications[app.id]
+                    const Icon = app.icon
+                    const statusLine =
+                      app.id === "n8n"
+                        ? missingRequiredN8NSecretFields.length === 0
+                          ? "Ready"
+                          : `${missingRequiredN8NSecretFields.length} required field(s) missing`
+                        : form.deploymentProfile === "local_starship_build"
+                          ? "Connect-only (local)"
+                          : "Connect-only (for now)"
 
                     return (
-                      <label
-                        key={field}
-                        className="rounded-lg border border-slate-300/70 bg-white/75 p-3 dark:border-white/10 dark:bg-white/[0.03]"
+                      <div
+                        key={app.id}
+                        className={`rounded-xl border p-3 text-left transition-colors ${
+                          enabled
+                            ? "border-cyan-500/35 bg-cyan-500/8"
+                            : "border-slate-300/70 bg-white/70 dark:border-white/12 dark:bg-white/[0.03]"
+                        }`}
                       >
-                        <div className="mb-1 flex items-center justify-between gap-2">
-                          <span className="text-sm font-medium text-slate-700 dark:text-slate-300">
-                            {descriptor.label}
-                          </span>
-                          {showGenerate && (
-                            <button
-                              type="button"
-                              onClick={() =>
-                                updateSecretField(
-                                  form.deploymentProfile,
-                                  field,
-                                  generateRandomSecret(32),
-                                )
-                              }
-                              className="inline-flex items-center gap-1 rounded-md border border-cyan-500/40 bg-cyan-500/10 px-2 py-1 text-[10px] font-medium text-cyan-700 dark:text-cyan-200"
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="flex items-start gap-2">
+                            <span
+                              className={`mt-0.5 inline-flex h-9 w-9 items-center justify-center rounded-lg border ${
+                                enabled
+                                  ? "border-cyan-500/35 bg-cyan-500/10"
+                                  : "border-slate-300/70 bg-white/70 dark:border-white/12 dark:bg-white/[0.04]"
+                              }`}
                             >
-                              <KeyRound className="h-3 w-3" />
-                              Generate
-                            </button>
+                              <Icon
+                                className={`h-4 w-4 ${
+                                  enabled ? "text-cyan-700 dark:text-cyan-200" : "text-slate-500 dark:text-slate-300"
+                                }`}
+                              />
+                            </span>
+                            <div>
+                              <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{app.label}</p>
+                              <p className="mt-0.5 text-[11px] text-slate-600 dark:text-slate-300">
+                                {app.description}
+                              </p>
+                            </div>
+                          </div>
+
+                          <ToggleSwitch
+                            enabled={enabled}
+                            disabled={isLaunching}
+                            label={`${app.label} toggle`}
+                            onChange={(next) =>
+                              setForm((current) => ({
+                                ...current,
+                                initialApplications: {
+                                  ...current.initialApplications,
+                                  [app.id]: next,
+                                },
+                              }))
+                            }
+                          />
+                        </div>
+
+                        <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px]">
+                          <span
+                            className={`rounded-md border px-2 py-0.5 ${
+                              enabled
+                                ? "border-emerald-400/35 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200"
+                                : "border-slate-300/70 bg-white/70 text-slate-600 dark:border-white/12 dark:bg-white/[0.04] dark:text-slate-300"
+                            }`}
+                          >
+                            {enabled ? "Included" : "Not included"}
+                          </span>
+                          <span className="text-slate-500 dark:text-slate-400">{statusLine}</span>
+                          {app.id === "dokploy" && (
+                            <span className="text-slate-500 dark:text-slate-400">• Requires URL + API key</span>
                           )}
                         </div>
-                        <input
-                          type={descriptor.inputType}
-                          autoComplete="off"
-                          spellCheck={false}
-                          value={value}
-                          onChange={(event) =>
-                            updateSecretField(form.deploymentProfile, field, event.target.value)
-                          }
-                          placeholder={descriptor.placeholder}
-                          className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
-                        />
-                        <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">{descriptor.helper}</p>
-                        {field === "n8n_database_url" && form.deploymentProfile === "local_starship_build" && !hasNonEmptySecretValue(activeSecretValues.postgres_password) && (
-                          <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-300">
-                            Set <code>postgres_password</code> in Secrets to auto-derive this URL.
-                          </p>
-                        )}
-                        {field === "n8n_database_url" && form.deploymentProfile === "cloud_shipyard" && !hasNonEmptySecretValue(activeSecretValues.database_url) && (
-                          <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-300">
-                            Set <code>database_url</code> in Secrets to auto-derive this URL.
-                          </p>
-                        )}
-                        {hasSavedValue && maskedValue && (
-                          <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
-                            Saved: {maskedValue}
-                          </p>
-                        )}
-                      </label>
+                      </div>
                     )
                   })}
                 </div>
 
-                <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={autoFillN8NSetup}
-                    className="inline-flex items-center gap-2 rounded-md border border-cyan-500/45 bg-cyan-500/12 px-3 py-1.5 text-xs font-medium text-cyan-700 dark:border-cyan-300/45 dark:text-cyan-200"
-                  >
-                    <AppWindow className="h-3.5 w-3.5" />
-                    Auto-fill n8n setup
-                  </button>
-                  <button
-                    type="button"
-                    onClick={saveSecretTemplate}
-                    disabled={isSavingSecrets}
-                    className="inline-flex items-center gap-2 rounded-md border border-cyan-500/45 bg-cyan-500/12 px-3 py-1.5 text-xs font-medium text-cyan-700 disabled:opacity-50 dark:border-cyan-300/45 dark:text-cyan-200"
-                  >
-                    {isSavingSecrets ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <KeyRound className="h-3.5 w-3.5" />}
-                    Save Template
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => fetchSecretTemplate(form.deploymentProfile, true)}
-                    disabled={isLoadingSecrets}
-                    className="inline-flex items-center gap-2 rounded-md border border-slate-300/70 bg-white/70 px-3 py-1.5 text-xs font-medium text-slate-700 disabled:opacity-50 dark:border-white/12 dark:bg-white/[0.04] dark:text-slate-200"
-                  >
-                    {isLoadingSecrets ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-                    Reload Template
-                  </button>
-                </div>
+                {form.initialApplications.n8n ? (
+                  <>
+                    <div className="rounded-lg border border-cyan-400/35 bg-cyan-500/10 px-3 py-2 text-xs text-cyan-700 dark:text-cyan-200">
+                      <p className="font-medium">n8n bootstrap setup assistant.</p>
+                      <p className="mt-1">
+                        Use auto-fill to prepare missing n8n fields, then save the profile template. Launch remains fail-open if n8n bootstrap degrades.
+                      </p>
+                    </div>
+
+                    <div className="grid grid-cols-1 gap-2 md:grid-cols-4">
+                      <div className="rounded-lg border border-slate-300/70 bg-white/75 px-3 py-2 dark:border-white/12 dark:bg-white/[0.04]">
+                        <p className="text-[11px] uppercase tracking-wide text-slate-500 dark:text-slate-400">n8n Readiness</p>
+                        <p className="mt-1 text-xs font-medium text-slate-800 dark:text-slate-100">
+                          {missingRequiredN8NSecretFields.length === 0
+                            ? "Ready"
+                            : `${missingRequiredN8NSecretFields.length} required field(s) missing`}
+                        </p>
+                      </div>
+                      <div className="rounded-lg border border-slate-300/70 bg-white/75 px-3 py-2 dark:border-white/12 dark:bg-white/[0.04]">
+                        <p className="text-[11px] uppercase tracking-wide text-slate-500 dark:text-slate-400">Populated Required Fields</p>
+                        <p className="mt-1 text-xs font-medium text-slate-800 dark:text-slate-100">
+                          {n8nSecretPopulatedFieldCount}/{N8N_REQUIRED_SECRET_FIELDS.length}
+                        </p>
+                      </div>
+                      <div className="rounded-lg border border-slate-300/70 bg-white/75 px-3 py-2 dark:border-white/12 dark:bg-white/[0.04]">
+                        <p className="text-[11px] uppercase tracking-wide text-slate-500 dark:text-slate-400">Default Public URL</p>
+                        <p className="mt-1 break-all text-xs font-medium text-slate-800 dark:text-slate-100">
+                          {buildDefaultN8NPublicBaseUrl({
+                            deploymentProfile: form.deploymentProfile,
+                            nodeUrl: form.nodeUrl,
+                          })}
+                        </p>
+                      </div>
+                      <div className="rounded-lg border border-slate-300/70 bg-white/75 px-3 py-2 dark:border-white/12 dark:bg-white/[0.04]">
+                        <p className="text-[11px] uppercase tracking-wide text-slate-500 dark:text-slate-400">Last Saved</p>
+                        <p className="mt-1 text-xs font-medium text-slate-800 dark:text-slate-100">
+                          {activeSecretUpdatedAt ? formatRelativeTimestamp(activeSecretUpdatedAt) : "Not saved yet"}
+                        </p>
+                      </div>
+                    </div>
+
+                    {missingRequiredN8NSecretFields.length > 0 ? (
+                      <div className="rounded-lg border border-amber-400/35 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-200">
+                        Missing required n8n fields:{" "}
+                        {missingRequiredN8NSecretFields.map((field) => SECRET_FIELD_DESCRIPTORS[field].label).join(", ")}
+                      </div>
+                    ) : (
+                      <div className="rounded-lg border border-emerald-400/35 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-700 dark:text-emerald-200">
+                        n8n bootstrap fields are complete for {deploymentProfileLabels[form.deploymentProfile]}.
+                      </div>
+                    )}
+
+                    <div className="rounded-lg border border-slate-300/70 bg-white/75 px-3 py-2 text-xs text-slate-700 dark:border-white/12 dark:bg-white/[0.03] dark:text-slate-200">
+                      <p>
+                        Required fields:{" "}
+                        {N8N_REQUIRED_SECRET_FIELDS.map((field) => SECRET_FIELD_DESCRIPTORS[field].label).join(", ")}
+                      </p>
+                      <p className="mt-1">
+                        Full ready state also requires server-side curated tool URI (`N8N_TOOL_URI`) for bridge import/grant.
+                      </p>
+                    </div>
+
+                    <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                      {N8N_REQUIRED_SECRET_FIELDS.map((field) => {
+                        const descriptor = SECRET_FIELD_DESCRIPTORS[field]
+                        const maskedValue = activeSecretSummary.fields[field]?.maskedValue || null
+                        const hasSavedValue = activeSecretSummary.fields[field]?.hasValue === true
+                        const value = activeSecretValues[field] || ""
+                        const hasDraftValue = hasNonEmptySecretValue(value)
+                        const expanded = n8nFieldExpanded[field]
+
+                        const showGenerate =
+                          field === "n8n_basic_auth_password" || field === "n8n_encryption_key"
+
+                        return (
+                          <div
+                            key={field}
+                            className="rounded-lg border border-slate-300/70 bg-white/75 p-3 dark:border-white/10 dark:bg-white/[0.03]"
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <button
+                                type="button"
+                                onClick={() => toggleN8nFieldExpanded(field)}
+                                aria-expanded={expanded}
+                                className="group flex-1 text-left"
+                              >
+                                <div className="flex items-start justify-between gap-3">
+                                  <div>
+                                    <p className="text-sm font-medium text-slate-700 dark:text-slate-300">
+                                      {descriptor.label}
+                                    </p>
+                                    <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
+                                      {hasDraftValue ? "Draft set" : "Not set"}
+                                      {hasSavedValue && maskedValue ? ` • Saved: ${maskedValue}` : ""}
+                                    </p>
+                                  </div>
+                                  <span className="mt-0.5 inline-flex h-6 w-6 items-center justify-center rounded-md border border-slate-300/70 bg-white/60 text-slate-700 transition-colors group-hover:bg-white dark:border-white/12 dark:bg-white/[0.04] dark:text-slate-200 dark:group-hover:bg-white/[0.08]">
+                                    {expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                                  </span>
+                                </div>
+                              </button>
+                              {showGenerate && (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    updateSecretField(
+                                      form.deploymentProfile,
+                                      field,
+                                      generateRandomSecret(32),
+                                    )
+                                  }
+                                  className="inline-flex items-center gap-1 rounded-md border border-cyan-500/40 bg-cyan-500/10 px-2 py-1 text-[10px] font-medium text-cyan-700 transition-colors hover:bg-cyan-500/15 dark:text-cyan-200"
+                                >
+                                  <KeyRound className="h-3 w-3" />
+                                  Generate
+                                </button>
+                              )}
+                            </div>
+
+                            {expanded && (
+                              <>
+                                <input
+                                  type={descriptor.inputType}
+                                  autoComplete="off"
+                                  spellCheck={false}
+                                  value={value}
+                                  onChange={(event) =>
+                                    updateSecretField(form.deploymentProfile, field, event.target.value)
+                                  }
+                                  placeholder={descriptor.placeholder}
+                                  className="mt-2 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
+                                />
+                                <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">{descriptor.helper}</p>
+                                {field === "n8n_database_url" &&
+                                  form.deploymentProfile === "local_starship_build" &&
+                                  !hasNonEmptySecretValue(activeSecretValues.postgres_password) && (
+                                    <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-300">
+                                      Set <code>postgres_password</code> in Secrets to auto-derive this URL.
+                                    </p>
+                                  )}
+                                {field === "n8n_database_url" &&
+                                  form.deploymentProfile === "cloud_shipyard" &&
+                                  !hasNonEmptySecretValue(activeSecretValues.database_url) && (
+                                    <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-300">
+                                      Set <code>database_url</code> in Secrets to auto-derive this URL.
+                                    </p>
+                                  )}
+                              </>
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={autoFillN8NSetup}
+                        className="inline-flex items-center gap-2 rounded-md border border-cyan-500/45 bg-cyan-500/12 px-3 py-1.5 text-xs font-medium text-cyan-700 dark:border-cyan-300/45 dark:text-cyan-200"
+                      >
+                        <AppWindow className="h-3.5 w-3.5" />
+                        Auto-fill n8n setup
+                      </button>
+                      <button
+                        type="button"
+                        onClick={saveSecretTemplate}
+                        disabled={isSavingSecrets}
+                        className="inline-flex items-center gap-2 rounded-md border border-cyan-500/45 bg-cyan-500/12 px-3 py-1.5 text-xs font-medium text-cyan-700 disabled:opacity-50 dark:border-cyan-300/45 dark:text-cyan-200"
+                      >
+                        {isSavingSecrets ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <KeyRound className="h-3.5 w-3.5" />}
+                        Save Template
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => fetchSecretTemplate(form.deploymentProfile, true)}
+                        disabled={isLoadingSecrets}
+                        className="inline-flex items-center gap-2 rounded-md border border-slate-300/70 bg-white/70 px-3 py-1.5 text-xs font-medium text-slate-700 disabled:opacity-50 dark:border-white/12 dark:bg-white/[0.04] dark:text-slate-200"
+                      >
+                        {isLoadingSecrets ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                        Reload Template
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <div className="rounded-lg border border-slate-300/70 bg-white/75 px-3 py-2 text-xs text-slate-700 dark:border-white/12 dark:bg-white/[0.03] dark:text-slate-200">
+                    <p className="font-medium">n8n is not included in this launch.</p>
+                    <p className="mt-1 text-slate-600 dark:text-slate-300">
+                      Toggle n8n on to configure bootstrap secrets and auto-fill defaults.
+                    </p>
+                  </div>
+                )}
+
+                {form.initialApplications.dokploy && (
+                  <div className="rounded-lg border border-amber-400/35 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-200">
+                    <p className="font-medium">Dokploy is connect-only for now.</p>
+                    <p className="mt-1">
+                      Provisioning and Ship Yard-managed credentials will land next. Planned keys:{" "}
+                      <code>DOKPLOY_BASE_URL</code>, <code>DOKPLOY_API_KEY</code>.
+                    </p>
+                  </div>
+                )}
               </div>
             )}
 
@@ -3457,7 +3961,8 @@ export default function ShipYardPage() {
                   <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
                     Grafana {form.monitoring.grafanaUrl.trim() || "not set"} • Prometheus{" "}
                     {form.monitoring.prometheusUrl.trim() || "not set"} • KubeView{" "}
-                    {form.monitoring.kubeviewUrl.trim() || "not set"}
+                    {form.monitoring.kubeviewUrl.trim() || "not set"} • Langfuse{" "}
+                    {form.monitoring.langfuseUrl.trim() || "not set"}
                   </p>
                   {form.deploymentProfile === "cloud_shipyard" && (
                     <>
@@ -3486,28 +3991,38 @@ export default function ShipYardPage() {
                   )}
                 </div>
 
-                <div
-                  className={`rounded-lg border px-3 py-2 text-xs ${
-                    missingRequiredN8NSecretFields.length === 0
-                      ? "border-emerald-400/35 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200"
-                      : "border-amber-400/35 bg-amber-500/10 text-amber-700 dark:text-amber-200"
-                  }`}
-                >
-                  <p className="font-medium">n8n bootstrap preparation</p>
-                  {missingRequiredN8NSecretFields.length === 0 ? (
+                {form.initialApplications.n8n ? (
+                  <div
+                    className={`rounded-lg border px-3 py-2 text-xs ${
+                      missingRequiredN8NSecretFields.length === 0
+                        ? "border-emerald-400/35 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200"
+                        : "border-amber-400/35 bg-amber-500/10 text-amber-700 dark:text-amber-200"
+                    }`}
+                  >
+                    <p className="font-medium">n8n bootstrap preparation</p>
+                    {missingRequiredN8NSecretFields.length === 0 ? (
+                      <p className="mt-1">
+                        Required n8n fields are configured for this launch profile.
+                      </p>
+                    ) : (
+                      <p className="mt-1">
+                        Missing n8n fields:{" "}
+                        {missingRequiredN8NSecretFields.map((field) => SECRET_FIELD_DESCRIPTORS[field].label).join(", ")}.
+                      </p>
+                    )}
                     <p className="mt-1">
-                      Required n8n fields are configured for this launch profile.
+                      Launch remains fail-open. If n8n setup degrades, ship launch still succeeds with warnings.
                     </p>
-                  ) : (
-                    <p className="mt-1">
-                      Missing n8n fields:{" "}
-                      {missingRequiredN8NSecretFields.map((field) => SECRET_FIELD_DESCRIPTORS[field].label).join(", ")}.
+                  </div>
+                ) : (
+                  <div className="rounded-lg border border-slate-300/70 bg-white/75 px-3 py-2 text-xs text-slate-700 dark:border-white/12 dark:bg-white/[0.03] dark:text-slate-200">
+                    <p className="font-medium">n8n bootstrap</p>
+                    <p className="mt-1">n8n is not included in this launch.</p>
+                    <p className="mt-1 text-slate-600 dark:text-slate-300">
+                      Launch remains fail-open. Toggle n8n on in Apps if you want it included.
                     </p>
-                  )}
-                  <p className="mt-1">
-                    Launch remains fail-open. If n8n setup degrades, ship launch still succeeds with warnings.
-                  </p>
-                </div>
+                  </div>
+                )}
 
                 {form.deploymentProfile === "cloud_shipyard" && (
                   <div className="rounded-lg border border-amber-400/35 bg-amber-500/10 p-3 dark:border-amber-300/30">
@@ -3554,7 +4069,38 @@ export default function ShipYardPage() {
                       {isBillingLoading ? (
                         <p className="text-slate-600 dark:text-slate-300">Loading refueling quote...</p>
                       ) : refuelingError ? (
-                        <p className="text-rose-700 dark:text-rose-300">{refuelingError}</p>
+                        <div className="space-y-2">
+                          <p className="text-rose-700 dark:text-rose-300">{refuelingError.text}</p>
+                          {refuelingError.code ? (
+                            <p className="text-[11px] text-rose-700 dark:text-rose-300">
+                              Code: <code>{refuelingError.code}</code>
+                            </p>
+                          ) : null}
+                          {refuelingError.code && isWalletEnclaveCode(refuelingError.code) ? (
+                            <div className="space-y-1">
+                              <p className="text-[11px] font-medium text-rose-700 dark:text-rose-200">Next steps</p>
+                              <ul className="list-disc space-y-1 pl-5 text-[11px] text-rose-700 dark:text-rose-300">
+                                {walletEnclaveGuidance(refuelingError.code).steps.map((step) => (
+                                  <li key={step}>{step}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          ) : null}
+                          {refuelingError.suggestedCommands && refuelingError.suggestedCommands.length > 0 ? (
+                            <div className="space-y-1">
+                              <p className="text-[11px] font-medium text-rose-700 dark:text-rose-200">
+                                Suggested commands
+                              </p>
+                              <ul className="list-disc space-y-1 pl-5 text-[11px] text-rose-700 dark:text-rose-300">
+                                {refuelingError.suggestedCommands.map((command) => (
+                                  <li key={command}>
+                                    <code>{command}</code>
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          ) : null}
+                        </div>
                       ) : billingQuote ? (
                         billingQuote.canLaunch ? (
                           <p className="text-emerald-700 dark:text-emerald-300">Refueling complete. Launch can proceed.</p>
@@ -3781,12 +4327,12 @@ export default function ShipYardPage() {
               </p>
             )}
 
-            <div className="mt-4 flex items-center justify-between">
-              <button
-                type="button"
-                onClick={() => setStepIndex((current) => Math.max(0, current - 1))}
-                disabled={stepIndex === 0}
-                className="rounded-md border border-slate-300/70 bg-white/70 px-3 py-1.5 text-xs font-medium text-slate-700 disabled:opacity-40 dark:border-white/12 dark:bg-white/[0.04] dark:text-slate-200"
+	            <div ref={wizardFooterRef} className="mt-4 flex items-center justify-between">
+	              <button
+	                type="button"
+	                onClick={() => setStepIndex((current) => Math.max(0, current - 1))}
+	                disabled={stepIndex === 0}
+	                className="rounded-md border border-slate-300/70 bg-white/70 px-3 py-1.5 text-xs font-medium text-slate-700 disabled:opacity-40 dark:border-white/12 dark:bg-white/[0.04] dark:text-slate-200"
               >
                 Back
               </button>
@@ -4008,6 +4554,22 @@ export default function ShipYardPage() {
                         Upgrade available
                       </span>
                     )}
+                    {process.env.NODE_ENV !== "production" && (
+                      <button
+                        type="button"
+                        title="Debug: delete ship record and immediately relaunch a fresh deployment (does not destroy cluster resources)."
+                        onClick={() => void handleScrapAndRelaunch()}
+                        disabled={isScrapRelaunching || isLaunching || isUpgradingShip}
+                        className="inline-flex items-center gap-1.5 rounded-md border border-rose-500/45 bg-rose-500/12 px-2.5 py-1 text-xs font-medium text-rose-700 disabled:opacity-50 dark:border-rose-300/45 dark:text-rose-200"
+                      >
+                        {isScrapRelaunching ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Trash2 className="h-3.5 w-3.5" />
+                        )}
+                        Scrap &amp; Relaunch
+                      </button>
+                    )}
                   </div>
                 </div>
 
@@ -4166,7 +4728,7 @@ export default function ShipYardPage() {
                       Monitoring URLs
                     </h2>
                     <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
-                      Per-ship Grafana, Prometheus, and KubeView links used by Bridge quick actions and telemetry.
+                      Per-ship Grafana, Prometheus, KubeView, and Langfuse links used by Bridge quick actions and telemetry.
                     </p>
                   </div>
                   <button
@@ -4180,7 +4742,7 @@ export default function ShipYardPage() {
                   </button>
                 </div>
 
-                <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-3">
+                <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-4">
                   <label>
                     <span className="mb-1 block text-xs font-medium text-slate-700 dark:text-slate-300">Grafana URL</span>
                     <input
@@ -4222,7 +4784,22 @@ export default function ShipYardPage() {
                           kubeviewUrl: event.target.value,
                         }))
                       }
-                      placeholder="http://kubeview.orchwiz-starship.localhost:18080/"
+                      placeholder="/api/bridge/runtime-ui/kubeview"
+                      className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
+                    />
+                  </label>
+                  <label>
+                    <span className="mb-1 block text-xs font-medium text-slate-700 dark:text-slate-300">Langfuse URL</span>
+                    <input
+                      type="url"
+                      value={monitoringDraft.langfuseUrl}
+                      onChange={(event) =>
+                        setMonitoringDraft((current) => ({
+                          ...current,
+                          langfuseUrl: event.target.value,
+                        }))
+                      }
+                      placeholder="/api/bridge/runtime-ui/langfuse"
                       className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
                     />
                   </label>

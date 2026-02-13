@@ -17,6 +17,14 @@ services:
       timeout: 5s
       retries: 5
 
+  agent-lightning-store:
+    build:
+      context: ../services/agent-lightning-store
+    container_name: orchwiz-agent-lightning-store-dev-local
+    restart: unless-stopped
+    ports:
+      - "4747:4747"
+
 volumes:
   postgres_data_local:
     driver: local

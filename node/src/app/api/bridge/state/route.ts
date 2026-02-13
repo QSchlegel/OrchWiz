@@ -20,7 +20,7 @@ const MONITORING_STALE_WINDOW_MS = 15 * 60 * 1000
 
 type BridgeSystemState = "nominal" | "warning" | "critical"
 type MonitoringEventServiceKey = "grafana" | "prometheus"
-type MonitoringServiceKey = MonitoringEventServiceKey | "kubeview"
+type MonitoringServiceKey = MonitoringEventServiceKey | "kubeview" | "langfuse"
 type MonitoringSystemSource = "ship-monitoring" | "forwarded"
 
 interface BridgeStateSessionUser {
@@ -443,17 +443,29 @@ function buildKubeviewMonitoringCard(args: {
     }
   }
 
-  if (!args.href) {
-    return {
-      label: "KubeView",
-      service: "kubeview",
-      state: "warning",
-      detail: "Set KubeView URL in Ship Yard monitoring settings.",
-      href: null,
-      source: "ship-monitoring",
-      observedAt: null,
+  const proxyHref = (() => {
+    const query = new URLSearchParams()
+    query.set("shipDeploymentId", args.selectedShip.id)
+    return `/api/bridge/runtime-ui/kubeview?${query.toString()}`
+  })()
+
+  const isLoopbackOrLocalhostMonitoringUrl = (value: string): boolean => {
+    if (value.startsWith("/")) {
+      return false
+    }
+    try {
+      const parsed = new URL(value)
+      const hostname = parsed.hostname.trim().toLowerCase()
+      return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1" || hostname.endsWith(".localhost")
+    } catch {
+      return false
     }
   }
+
+  const resolvedHref =
+    args.href && !isLoopbackOrLocalhostMonitoringUrl(args.href)
+      ? args.href
+      : proxyHref
 
   if (args.selectedShip.status === "failed") {
     return {
@@ -461,7 +473,7 @@ function buildKubeviewMonitoringCard(args: {
       service: "kubeview",
       state: "critical",
       detail: "Ship status is failed; investigate KubeView and bridge runtime.",
-      href: args.href,
+      href: resolvedHref,
       source: "ship-monitoring",
       observedAt: null,
     }
@@ -471,8 +483,71 @@ function buildKubeviewMonitoringCard(args: {
     label: "KubeView",
     service: "kubeview",
     state: "nominal",
-    detail: "KubeView link configured for selected ship.",
-    href: args.href,
+    detail:
+      resolvedHref === proxyHref
+        ? "KubeView available via bridge proxy for selected ship."
+        : "KubeView link configured for selected ship.",
+    href: resolvedHref,
+    source: "ship-monitoring",
+    observedAt: null,
+  }
+}
+
+function resolveLangfuseUpstreamBaseUrl(): string | null {
+  const raw = asString(process.env.LANGFUSE_BASE_URL)
+  if (!raw) {
+    return null
+  }
+
+  try {
+    const parsed = new URL(raw)
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return null
+    }
+    return parsed.toString().replace(/\/+$/u, "")
+  } catch {
+    return null
+  }
+}
+
+function buildLangfuseMonitoringCard(args: {
+  href: string | null
+  selectedShip: BridgeStateSelectedShipMonitoringRecord | null
+}): BridgeStateMonitoringCard {
+  const upstreamBaseUrl = resolveLangfuseUpstreamBaseUrl()
+  const proxyHref = "/api/bridge/runtime-ui/langfuse"
+  const configuredHref = args.href
+
+  const wantsProxy =
+    !configuredHref || configuredHref === proxyHref || configuredHref.startsWith(`${proxyHref}/`)
+  const resolvedHref = wantsProxy
+    ? upstreamBaseUrl
+      ? configuredHref || proxyHref
+      : null
+    : configuredHref
+
+  if (args.selectedShip?.status === "failed") {
+    return {
+      label: "Langfuse",
+      service: "langfuse",
+      state: "critical",
+      detail: "Ship status is failed; investigate Langfuse and bridge runtime.",
+      href: resolvedHref,
+      source: "ship-monitoring",
+      observedAt: null,
+    }
+  }
+
+  return {
+    label: "Langfuse",
+    service: "langfuse",
+    state: resolvedHref ? "nominal" : "warning",
+    detail: resolvedHref
+      ? wantsProxy
+        ? "Langfuse available via bridge proxy."
+        : "Langfuse link configured for selected ship."
+      : "Langfuse upstream is not configured. Set LANGFUSE_BASE_URL to enable patch-through.",
+    href: resolvedHref,
     source: "ship-monitoring",
     observedAt: null,
   }
@@ -666,6 +741,10 @@ export async function handleGetBridgeState(
       href: selectedShipMonitoringConfig.kubeviewUrl,
       selectedShip: selectedShipMonitoring,
     })
+    const langfuseMonitoring = buildLangfuseMonitoringCard({
+      href: selectedShipMonitoringConfig.langfuseUrl,
+      selectedShip: selectedShipMonitoring,
+    })
 
     systems.push(monitoring.prometheus)
     systems.push(monitoring.grafana)
@@ -720,6 +799,7 @@ export async function handleGetBridgeState(
       monitoring: {
         ...monitoring,
         kubeview: kubeviewMonitoring,
+        langfuse: langfuseMonitoring,
       },
       runtimeUi,
       selectedShipDeploymentId: selectedShip?.id || null,

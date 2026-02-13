@@ -717,7 +717,7 @@ export async function POST(request: NextRequest) {
     deployment = await prisma.agentDeployment.update({
       where: { id: deployment.id },
       data: {
-        metadata: nextMetadata as Prisma.InputJsonValue,
+        metadata: nextMetadata as unknown as Prisma.InputJsonValue,
       },
     })
 

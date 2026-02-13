@@ -260,6 +260,30 @@ test("deleteVaultFile hard mode permanently removes note", async () => {
   }
 })
 
+test("saveVaultFile fail-closed preserves wallet enclave code when private memory encryption is required", async () => {
+  const repo = await setupTempVaultRepo()
+  const restoreEnv = applyEnv({
+    VAULT_REPO_ROOT: repo.root,
+    WALLET_ENCLAVE_ENABLED: "false",
+    WALLET_ENCLAVE_REQUIRE_PRIVATE_MEMORY_ENCRYPTION: "true",
+  })
+
+  try {
+    await assert.rejects(
+      () => saveVaultFile("agent-private", "notes/private.md", "top secret"),
+      (error: unknown) => {
+        assert.ok(error instanceof VaultRequestError)
+        assert.equal(error.status, 503)
+        assert.equal(error.code, "WALLET_ENCLAVE_DISABLED")
+        return true
+      },
+    )
+  } finally {
+    restoreEnv()
+    await repo.cleanup()
+  }
+})
+
 test("moveVaultFile re-encrypts private notes with destination path context", async () => {
   const repo = await setupTempVaultRepo()
   const restoreEnv = applyEnv({

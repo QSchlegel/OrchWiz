@@ -63,6 +63,7 @@ function resolveKubeviewPayload(
         deploymentProfile: string
         config: unknown
         metadata: unknown
+        id: string
       }
     | null,
 ): KubeviewPayload {
@@ -112,12 +113,15 @@ function resolveKubeviewPayload(
   }
 
   if (!ingressEnabled) {
+    const query = new URLSearchParams()
+    query.set("shipDeploymentId", selectedShip.id)
     return {
       enabled,
       ingressEnabled: false,
-      url: null,
+      // Use the built-in bridge proxy so local starships don't need separate ingress/port-forward.
+      url: `/api/bridge/runtime-ui/kubeview?${query.toString()}`,
       source: normalizedSource,
-      reason: "KubeView ingress is disabled for this ship.",
+      reason: null,
     }
   }
 

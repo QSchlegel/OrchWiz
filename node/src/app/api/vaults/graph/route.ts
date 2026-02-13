@@ -9,6 +9,13 @@ import { logDualReadDrift } from "@/lib/data-core/dual-read"
 
 export const dynamic = "force-dynamic"
 
+function vaultRequestErrorPayload(error: VaultRequestError): { error: string; code?: string } {
+  return {
+    error: error.message,
+    ...(error.code ? { code: error.code } : {}),
+  }
+}
+
 function parseBoolean(value: string | null, fallback: boolean): boolean {
   if (value === null) return fallback
   const normalized = value.trim().toLowerCase()
@@ -72,7 +79,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json(payload)
   } catch (error) {
     if (error instanceof VaultRequestError) {
-      return NextResponse.json({ error: error.message }, { status: error.status })
+      return NextResponse.json(vaultRequestErrorPayload(error), { status: error.status })
     }
 
     console.error("Error fetching vault graph:", error)

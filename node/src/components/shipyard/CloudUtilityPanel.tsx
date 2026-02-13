@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { RefreshCw } from "lucide-react"
+import { buildUiError, isWalletEnclaveCode, walletEnclaveGuidance } from "@/lib/api-errors"
 import type { CloudProviderConfig } from "@/lib/shipyard/cloud/types"
 
 interface CloudUtilityPanelProps {
@@ -131,7 +132,12 @@ export function CloudUtilityPanel({
   disabled = false,
 }: CloudUtilityPanelProps) {
   const [isLoading, setIsLoading] = useState(false)
-  const [message, setMessage] = useState<{ type: "info" | "error" | "success"; text: string } | null>(null)
+  const [message, setMessage] = useState<{
+    type: "info" | "error" | "success"
+    text: string
+    code?: string | null
+    suggestedCommands?: string[]
+  } | null>(null)
 
   const [providers, setProviders] = useState<NonNullable<ProviderReadinessResponse["providers"]>>([])
   const [credentialConfigured, setCredentialConfigured] = useState(false)
@@ -281,7 +287,16 @@ export function CloudUtilityPanel({
 
       const payload = await response.json().catch(() => ({}))
       if (!response.ok) {
-        throw new Error(payload?.error || `HTTP ${response.status}`)
+        const ui = buildUiError(payload, response.status, `HTTP ${response.status}`)
+        setMessage({
+          type: "error",
+          text: ui.text,
+          code: ui.code,
+          ...(ui.suggestedCommands && ui.suggestedCommands.length > 0
+            ? { suggestedCommands: ui.suggestedCommands }
+            : {}),
+        })
+        return
       }
 
       setCredentialToken("")
@@ -301,7 +316,16 @@ export function CloudUtilityPanel({
 
       const payload = await response.json().catch(() => ({}))
       if (!response.ok) {
-        throw new Error(payload?.error || `HTTP ${response.status}`)
+        const ui = buildUiError(payload, response.status, `HTTP ${response.status}`)
+        setMessage({
+          type: "error",
+          text: ui.text,
+          code: ui.code,
+          ...(ui.suggestedCommands && ui.suggestedCommands.length > 0
+            ? { suggestedCommands: ui.suggestedCommands }
+            : {}),
+        })
+        return
       }
 
       await refreshCredentials()
@@ -536,7 +560,36 @@ export function CloudUtilityPanel({
               : "border-slate-300/70 bg-white/70 text-slate-700 dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-200"
           }`}
         >
-          {message.text}
+          <div className="space-y-2">
+            <p>{message.text}</p>
+            {message.code ? (
+              <p className="text-[11px] opacity-90">
+                Code: <code>{message.code}</code>
+              </p>
+            ) : null}
+            {message.code && isWalletEnclaveCode(message.code) ? (
+              <div className="space-y-1">
+                <p className="text-[11px] font-medium">Next steps</p>
+                <ul className="list-disc space-y-1 pl-5 text-[11px]">
+                  {walletEnclaveGuidance(message.code).steps.map((step) => (
+                    <li key={step}>{step}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+            {message.suggestedCommands && message.suggestedCommands.length > 0 ? (
+              <div className="space-y-1">
+                <p className="text-[11px] font-medium">Suggested commands</p>
+                <ul className="list-disc space-y-1 pl-5 text-[11px]">
+                  {message.suggestedCommands.map((command) => (
+                    <li key={command}>
+                      <code>{command}</code>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+          </div>
         </div>
       )}
 

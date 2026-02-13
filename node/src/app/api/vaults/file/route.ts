@@ -16,6 +16,13 @@ import { logDualReadDrift } from "@/lib/data-core/dual-read"
 
 export const dynamic = "force-dynamic"
 
+function vaultRequestErrorPayload(error: VaultRequestError): { error: string; code?: string } {
+  return {
+    error: error.message,
+    ...(error.code ? { code: error.code } : {}),
+  }
+}
+
 function parseFileReadMode(value: string | null): VaultFileReadMode {
   return value === "full" ? "full" : "preview"
 }
@@ -69,7 +76,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json(payload)
   } catch (error) {
     if (error instanceof VaultRequestError) {
-      return NextResponse.json({ error: error.message }, { status: error.status })
+      return NextResponse.json(vaultRequestErrorPayload(error), { status: error.status })
     }
 
     console.error("Error fetching vault note:", error)
@@ -113,7 +120,7 @@ export async function PATCH(request: NextRequest) {
     return NextResponse.json(payload)
   } catch (error) {
     if (error instanceof VaultRequestError) {
-      return NextResponse.json({ error: error.message }, { status: error.status })
+      return NextResponse.json(vaultRequestErrorPayload(error), { status: error.status })
     }
 
     console.error("Error moving vault note:", error)
@@ -157,7 +164,7 @@ export async function DELETE(request: NextRequest) {
     return NextResponse.json(payload)
   } catch (error) {
     if (error instanceof VaultRequestError) {
-      return NextResponse.json({ error: error.message }, { status: error.status })
+      return NextResponse.json(vaultRequestErrorPayload(error), { status: error.status })
     }
 
     console.error("Error deleting vault note:", error)
@@ -205,7 +212,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(payload, { status: 201 })
   } catch (error) {
     if (error instanceof VaultRequestError) {
-      return NextResponse.json({ error: error.message }, { status: error.status })
+      return NextResponse.json(vaultRequestErrorPayload(error), { status: error.status })
     }
 
     console.error("Error saving vault note:", error)

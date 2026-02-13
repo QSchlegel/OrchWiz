@@ -8,6 +8,7 @@ import {
   MessageSquareText,
   SendHorizontal,
 } from "lucide-react"
+import { OrchWizMark } from "@/components/brand/OrchWizMark"
 import { authClient, signIn, useSession } from "@/lib/auth-client"
 import {
   buildInitialXoMessages,
@@ -421,7 +422,7 @@ export function XoTeaserChatWindow() {
             <>
               <div className="xo-panel-header">
                 <div className="xo-panel-title">
-                  <MessageSquareText className="w-4 h-4" />
+                  <OrchWizMark size={18} className="shrink-0 drop-shadow-[0_12px_28px_rgba(0,0,0,0.45)]" />
                   XO
                 </div>
                 <button type="button" onClick={() => setIsOpen(false)} className="xo-close-btn" aria-expanded="true">

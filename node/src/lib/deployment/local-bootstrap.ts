@@ -1022,68 +1022,55 @@ async function prepareLocalKindAppImage(args: {
   }
 
   const forceRebuild = localShipyardForceRebuildEnabled(args.runtime)
-  let buildPerformed = false
+  const imageIdBeforeResult = await args.runtime.runCommand(
+    "docker",
+    ["image", "inspect", imageTag, "--format", "{{.Id}}"],
+    { timeoutMs: CONTEXT_CHECK_TIMEOUT_MS },
+  )
+  const imageIdBefore = imageIdBeforeResult.ok ? asNonEmptyString(imageIdBeforeResult.stdout) : null
 
+  // Always run `docker build` when sane bootstrap is enabled. Docker layer caching keeps this fast when
+  // nothing changed, and it ensures ship launches don't reuse stale images after code changes.
+  const buildArgs = ["build", "-f", dockerfilePath, "-t", imageTag]
   if (forceRebuild) {
-    const buildResult = await args.runtime.runCommand(
-      "docker",
-      ["build", "-f", dockerfilePath, "-t", imageTag, dockerContextPath],
+    buildArgs.push("--no-cache")
+  }
+  buildArgs.push(dockerContextPath)
+
+  const buildResult = await args.runtime.runCommand("docker", buildArgs, {
+    cwd: args.paths.repoRoot,
+    timeoutMs: args.timeoutMs,
+  })
+
+  if (!buildResult.ok) {
+    return toFailure(
+      "LOCAL_PROVISIONING_FAILED",
+      "Failed to build local app image for kind launch.",
       {
-        cwd: args.paths.repoRoot,
-        timeoutMs: args.timeoutMs,
+        details: {
+          suggestedCommands: [
+            `docker build -f ${dockerfilePath} -t ${imageTag} ${dockerContextPath}`,
+          ],
+        },
+        metadata: {
+          appImageBuildOutputTail: outputTail(buildResult),
+        },
       },
     )
-
-    if (!buildResult.ok) {
-      return toFailure(
-        "LOCAL_PROVISIONING_FAILED",
-        "Failed to build local app image for kind launch.",
-        {
-          details: {
-            suggestedCommands: [
-              `docker build -f ${dockerfilePath} -t ${imageTag} ${dockerContextPath}`,
-            ],
-          },
-          metadata: {
-            appImageBuildOutputTail: outputTail(buildResult),
-          },
-        },
-      )
-    }
-
-    buildPerformed = true
-  } else {
-    const inspectResult = await args.runtime.runCommand("docker", ["image", "inspect", imageTag], {
-      timeoutMs: CONTEXT_CHECK_TIMEOUT_MS,
-    })
-    if (!inspectResult.ok) {
-      const buildResult = await args.runtime.runCommand(
-        "docker",
-        ["build", "-f", dockerfilePath, "-t", imageTag, dockerContextPath],
-        {
-          cwd: args.paths.repoRoot,
-          timeoutMs: args.timeoutMs,
-        },
-      )
-      if (!buildResult.ok) {
-        return toFailure(
-          "LOCAL_PROVISIONING_FAILED",
-          "Failed to build local app image for kind launch.",
-          {
-            details: {
-              suggestedCommands: [
-                `docker build -f ${dockerfilePath} -t ${imageTag} ${dockerContextPath}`,
-              ],
-            },
-            metadata: {
-              appImageBuildOutputTail: outputTail(buildResult),
-            },
-          },
-        )
-      }
-      buildPerformed = true
-    }
   }
+
+  const imageIdAfterResult = await args.runtime.runCommand(
+    "docker",
+    ["image", "inspect", imageTag, "--format", "{{.Id}}"],
+    { timeoutMs: CONTEXT_CHECK_TIMEOUT_MS },
+  )
+  const imageIdAfter = imageIdAfterResult.ok ? asNonEmptyString(imageIdAfterResult.stdout) : null
+  // Be conservative: if we cannot detect the image ID, assume it changed so we can force a rollout.
+  const imageChanged = imageIdAfter === null
+    ? true
+    : imageIdBefore === null
+      ? true
+      : imageIdBefore !== imageIdAfter
 
   const clusterName = args.runtime.env.LOCAL_SHIPYARD_KIND_CLUSTER_NAME?.trim()
     || kindClusterNameFromContext(args.input.infrastructure.kubeContext)
@@ -1118,10 +1105,12 @@ async function prepareLocalKindAppImage(args: {
     image: imageTag,
     metadata: {
       imageTag,
+      imageIdBefore,
+      imageIdAfter,
+      imageChanged,
       dockerfilePath,
       dockerContextPath,
       clusterName,
-      buildPerformed,
       forceRebuild,
     },
   }
@@ -1402,6 +1391,61 @@ export async function runLocalBootstrap(
         },
       },
     )
+  }
+
+  const localAppImageMetadata = installMetadata.localAppImage as Record<string, unknown> | undefined
+  const localAppImageChanged = localAppImageMetadata ? (localAppImageMetadata.imageChanged === true) : false
+  if (localAppImageChanged && input.infrastructure.kind === "kind") {
+    const appName = runtime.env.ORCHWIZ_APP_NAME || "orchwiz"
+    const rolloutTimeoutMs = Math.max(timeoutMs, 320_000)
+    const restartResult = await runtime.runCommand(
+      "kubectl",
+      kubectlArgs(input.infrastructure, ["rollout", "restart", `deployment/${appName}`]),
+      { timeoutMs: rolloutTimeoutMs },
+    )
+    if (!restartResult.ok) {
+      return toFailure(
+        "LOCAL_PROVISIONING_FAILED",
+        "Failed to restart local starship app deployment after rebuilding the image.",
+        {
+          details: {
+            suggestedCommands: [
+              `kubectl --context ${input.infrastructure.kubeContext} -n ${input.infrastructure.namespace} rollout restart deployment/${appName}`,
+              `kubectl --context ${input.infrastructure.kubeContext} -n ${input.infrastructure.namespace} rollout status deployment/${appName} --timeout=300s`,
+            ],
+          },
+          metadata: {
+            appName,
+            appRestartOutputTail: outputTail(restartResult),
+            ...installMetadata,
+          },
+        },
+      )
+    }
+
+    const rolloutResult = await runtime.runCommand(
+      "kubectl",
+      kubectlArgs(input.infrastructure, ["rollout", "status", `deployment/${appName}`, "--timeout=300s"]),
+      { timeoutMs: rolloutTimeoutMs },
+    )
+    if (!rolloutResult.ok) {
+      return toFailure(
+        "LOCAL_PROVISIONING_FAILED",
+        "Local starship app deployment did not become ready after restart.",
+        {
+          metadata: {
+            appName,
+            appRolloutOutputTail: outputTail(rolloutResult),
+            ...installMetadata,
+          },
+        },
+      )
+    }
+
+    installMetadata.localAppImage = {
+      ...(localAppImageMetadata || {}),
+      appRolloutRestarted: true,
+    }
   }
 
   const openClawContextInjection = await injectOpenClawContextBundle(input, runtime, timeoutMs)

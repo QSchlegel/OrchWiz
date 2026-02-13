@@ -9,6 +9,9 @@ import type {
   Prisma,
   Subagent,
 } from "@prisma/client"
+import { getAgentLightningConfig } from "@/lib/agent-lightning/config"
+import { AgentLightningClient } from "@/lib/agent-lightning/client"
+import { buildAgentLightningSpan, clamp, sha256Hex } from "@/lib/agent-lightning/spans"
 import { prisma } from "@/lib/prisma"
 import { publishRealtimeEvent } from "@/lib/realtime/events"
 import {
@@ -26,7 +29,7 @@ import {
   isLowRiskAgentSyncFileName,
   normalizeAgentSyncFileName,
 } from "./constants"
-import { buildAgentSyncSuggestionsForFiles } from "./context-patches"
+import { buildAgentSyncSuggestionsForFiles, type AgentSyncGuidanceTemplate } from "./context-patches"
 import { aggregateAgentSyncRewards } from "./rewards"
 
 export class AgentSyncError extends Error {
@@ -57,6 +60,160 @@ interface ProcessSubagentResult {
   failed: boolean
   fileSyncFailed: boolean
   error?: string
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {}
+  }
+  return value as Record<string, unknown>
+}
+
+function asNonEmptyString(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null
+  }
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : null
+}
+
+function computeAcceptedReward(args: { base: number; fileSyncStatus?: AgentSyncFileSyncStatus | null }): number {
+  let value = args.base
+  if (args.fileSyncStatus === "filesystem_sync_failed") {
+    value -= 0.25
+  }
+  return clamp(value, -1, 1)
+}
+
+function resolveAgentLightningClientForAgentSync(): { client: AgentLightningClient; resourceName: string } | null {
+  const config = getAgentLightningConfig()
+  if (!config.enabled || !config.agentSyncEnabled) {
+    return null
+  }
+
+  return {
+    client: new AgentLightningClient(config),
+    resourceName: config.agentSyncResourceName,
+  }
+}
+
+async function resolveGuidanceTemplateFromAgentLightning(args: {
+  client: AgentLightningClient
+  resourceName: string
+}): Promise<AgentSyncGuidanceTemplate | null> {
+  try {
+    const latest = await args.client.getLatestResources()
+    if (!latest || latest.resources.length === 0) {
+      return null
+    }
+
+    for (const resource of latest.resources) {
+      const record = asRecord(resource)
+      if (record.name !== args.resourceName) {
+        continue
+      }
+
+      const resourceType = record.resource_type ?? record.resourceType
+      const engine = record.engine
+      const template = asNonEmptyString(record.template)
+
+      if (resourceType !== "prompt_template" || engine !== "f-string" || !template) {
+        return null
+      }
+
+      return {
+        source: "agent_lightning",
+        template,
+        resourcesId: latest.resourcesId,
+      }
+    }
+
+    return null
+  } catch {
+    return null
+  }
+}
+
+type AgentLightningAttemptIds = { rollout_id: string; attempt_id: string }
+
+function extractAgentLightningAttemptIds(metadata: unknown): AgentLightningAttemptIds | null {
+  const record = asRecord(metadata)
+  const agentLightning = asRecord(record.agentLightning)
+  const rolloutId = asNonEmptyString(agentLightning.rollout_id ?? agentLightning.rolloutId)
+  const attemptId = asNonEmptyString(agentLightning.attempt_id ?? agentLightning.attemptId)
+
+  if (!rolloutId || !attemptId) {
+    return null
+  }
+
+  return { rollout_id: rolloutId, attempt_id: attemptId }
+}
+
+function extractAgentLightningExportedEvents(metadata: unknown): Record<string, unknown> {
+  const record = asRecord(metadata)
+  const agentLightning = asRecord(record.agentLightning)
+  return asRecord(agentLightning.exportedEvents)
+}
+
+function buildAgentLightningMetadataUpdate(args: {
+  existingMetadata: unknown
+  patch: Record<string, unknown>
+}): Prisma.InputJsonValue {
+  const base = asRecord(args.existingMetadata)
+  const existingAgentLightning = asRecord(base.agentLightning)
+  const nextAgentLightning = {
+    ...existingAgentLightning,
+    ...args.patch,
+  }
+
+  return {
+    ...base,
+    agentLightning: nextAgentLightning,
+  } as Prisma.InputJsonValue
+}
+
+async function exportAgentLightningEventSpan(args: {
+  client: AgentLightningClient
+  ids: AgentLightningAttemptIds
+  name: string
+  attributes?: Record<string, string | number | boolean | null>
+  status_code?: "OK" | "ERROR"
+  status_message?: string
+}): Promise<boolean> {
+  const spanSequenceId = await args.client.nextSpanSequenceId(args.ids)
+  if (spanSequenceId === null) {
+    return false
+  }
+
+  const span = buildAgentLightningSpan({
+    rollout_id: args.ids.rollout_id,
+    attempt_id: args.ids.attempt_id,
+    span_sequence_id: spanSequenceId,
+    name: args.name,
+    attributes: args.attributes,
+    status_code: args.status_code,
+    status_message: args.status_message,
+  })
+
+  return args.client.addSpan(span as unknown as Record<string, unknown>)
+}
+
+async function exportAgentLightningAcceptedReward(args: {
+  client: AgentLightningClient
+  ids: AgentLightningAttemptIds
+  accepted: number
+  attributes?: Record<string, string | number | boolean | null>
+}): Promise<boolean> {
+  return exportAgentLightningEventSpan({
+    client: args.client,
+    ids: args.ids,
+    name: "agentlightning.annotation",
+    attributes: {
+      "agentlightning.reward.0.name": "accepted",
+      "agentlightning.reward.0.value": args.accepted,
+      ...(args.attributes || {}),
+    },
+  })
 }
 
 function resolveWorkspaceRoot(): string {
@@ -181,6 +338,8 @@ async function processSubagentRun(args: {
   repoRoot: string
   lookbackStart: Date
   minSignals: number
+  guidanceTemplate: AgentSyncGuidanceTemplate | null
+  agentLightningClient: AgentLightningClient | null
 }): Promise<ProcessSubagentResult> {
   const signals = await prisma.agentSyncSignal.findMany({
     where: {
@@ -248,6 +407,7 @@ async function processSubagentRun(args: {
     files: editableFiles,
     aggregate,
     subagentName: args.subagent.name,
+    guidanceTemplate: args.guidanceTemplate || undefined,
   }).filter((suggestion) => {
     return isAgentSyncManagedFile(suggestion.fileName)
   })
@@ -287,6 +447,76 @@ async function processSubagentRun(args: {
     ),
   )
 
+  const agentLightningBySuggestionId = new Map<string, AgentLightningAttemptIds>()
+  if (args.agentLightningClient?.isEnabledForAgentSync()) {
+    await Promise.all(
+      created.map(async (suggestion) => {
+        const ids = await args.agentLightningClient?.startRollout({
+          kind: "agentsync_suggestion",
+          runId: args.runId,
+          suggestionId: suggestion.id,
+          userId: args.userId,
+          subagentId: args.subagent.id,
+          subagentName: args.subagent.name,
+          fileName: suggestion.fileName,
+          risk: suggestion.risk,
+          existingContentSha256: suggestion.existingContent ? sha256Hex(suggestion.existingContent) : null,
+          suggestedContentSha256: sha256Hex(suggestion.suggestedContent),
+          existingLength: suggestion.existingContent?.length ?? 0,
+          suggestedLength: suggestion.suggestedContent.length,
+          aggregateAtCreation: {
+            signalCount: aggregate.signalCount,
+            totalReward: aggregate.totalReward,
+            meanReward: aggregate.meanReward,
+            trend: aggregate.trend,
+          },
+          guidanceTemplateResourcesId: args.guidanceTemplate?.resourcesId ?? null,
+        })
+
+        if (!ids) {
+          return
+        }
+
+        agentLightningBySuggestionId.set(suggestion.id, ids)
+        const createdSpanOk = await exportAgentLightningEventSpan({
+          client: args.agentLightningClient as AgentLightningClient,
+          ids,
+          name: "created",
+          attributes: {
+            "agentsync.event": "created",
+            "agentsync.suggestion_id": suggestion.id,
+            "agentsync.run_id": suggestion.runId,
+            "agentsync.subagent_id": suggestion.subagentId,
+            "agentsync.file_name": suggestion.fileName,
+            "agentsync.risk": suggestion.risk,
+          },
+        })
+
+        const exportedEvents = extractAgentLightningExportedEvents(suggestion.metadata)
+        const nextMetadata = buildAgentLightningMetadataUpdate({
+          existingMetadata: suggestion.metadata,
+          patch: {
+            rollout_id: ids.rollout_id,
+            attempt_id: ids.attempt_id,
+            exportedEvents: {
+              ...exportedEvents,
+              ...(createdSpanOk ? { created: true } : {}),
+            },
+          },
+        })
+
+        await prisma.agentSyncSuggestion.update({
+          where: {
+            id: suggestion.id,
+          },
+          data: {
+            metadata: nextMetadata,
+          },
+        })
+      }),
+    )
+  }
+
   const { lowRiskSuggestions, highRiskSuggestions } = splitAgentSyncSuggestionsByRisk(created)
 
   if (lowRiskSuggestions.length === 0) {
@@ -318,6 +548,7 @@ async function processSubagentRun(args: {
   })
 
   let fileSyncFailed = false
+  let lowRiskFileSyncStatus: AgentSyncFileSyncStatus = "synced"
   try {
     const persisted = await persistSubagentContextFiles({
       repoRoot: args.repoRoot,
@@ -343,6 +574,7 @@ async function processSubagentRun(args: {
       fileSyncStatus: "synced",
       appliedAt: new Date(),
     })
+    lowRiskFileSyncStatus = "synced"
   } catch (error) {
     fileSyncFailed = true
     await markSuggestions(lowRiskSuggestions.map((suggestion) => suggestion.id), {
@@ -351,6 +583,69 @@ async function processSubagentRun(args: {
       appliedAt: new Date(),
       reason: error instanceof Error ? error.message : "Filesystem sync failed",
     })
+    lowRiskFileSyncStatus = "filesystem_sync_failed"
+  }
+
+  if (args.agentLightningClient?.isEnabledForAgentSync()) {
+    await Promise.all(
+      lowRiskSuggestions.map(async (suggestion) => {
+        const ids = agentLightningBySuggestionId.get(suggestion.id) || extractAgentLightningAttemptIds(suggestion.metadata)
+        if (!ids) {
+          return
+        }
+
+        const accepted = computeAcceptedReward({ base: 1.0, fileSyncStatus: lowRiskFileSyncStatus })
+        const appliedSpanOk = await exportAgentLightningEventSpan({
+          client: args.agentLightningClient as AgentLightningClient,
+          ids,
+          name: "applied_auto",
+          attributes: {
+            "agentsync.event": "applied_auto",
+            "agentsync.suggestion_id": suggestion.id,
+            "agentsync.file_sync_status": lowRiskFileSyncStatus,
+          },
+        })
+
+        const rewardSpanOk = await exportAgentLightningAcceptedReward({
+          client: args.agentLightningClient as AgentLightningClient,
+          ids,
+          accepted,
+          attributes: {
+            "agentsync.file_sync_status": lowRiskFileSyncStatus,
+          },
+        })
+
+        const terminalOk = await args.agentLightningClient?.updateAttemptTerminal({
+          rollout_id: ids.rollout_id,
+          attempt_id: ids.attempt_id,
+          status: "succeeded",
+        })
+
+        const exportedEvents = extractAgentLightningExportedEvents(suggestion.metadata)
+        const nextMetadata = buildAgentLightningMetadataUpdate({
+          existingMetadata: suggestion.metadata,
+          patch: {
+            rollout_id: ids.rollout_id,
+            attempt_id: ids.attempt_id,
+            exportedEvents: {
+              ...exportedEvents,
+              ...(appliedSpanOk ? { applied_auto: true } : {}),
+              ...(rewardSpanOk ? { reward: true } : {}),
+              ...(terminalOk ? { terminal: true } : {}),
+            },
+          },
+        })
+
+        await prisma.agentSyncSuggestion.update({
+          where: {
+            id: suggestion.id,
+          },
+          data: {
+            metadata: nextMetadata,
+          },
+        })
+      }),
+    )
   }
 
   return {
@@ -385,6 +680,14 @@ export async function runAgentSyncForUser(args: {
   if (!agentSyncEnabled()) {
     throw new AgentSyncError("AgentSync is disabled by configuration", 503)
   }
+
+  const agentLightning = resolveAgentLightningClientForAgentSync()
+  const guidanceTemplate = agentLightning
+    ? await resolveGuidanceTemplateFromAgentLightning({
+        client: agentLightning.client,
+        resourceName: agentLightning.resourceName,
+      })
+    : null
 
   const targets = await resolveTargetSubagents({
     userId: args.userId,
@@ -431,6 +734,8 @@ export async function runAgentSyncForUser(args: {
         repoRoot,
         lookbackStart,
         minSignals: agentSyncMinSignals(),
+        guidanceTemplate,
+        agentLightningClient: agentLightning?.client || null,
       })
 
       if (result.processed) {
@@ -639,6 +944,8 @@ export async function applyAgentSyncSuggestion(args: {
   userId: string
   suggestionId: string
 }) {
+  const agentLightning = resolveAgentLightningClientForAgentSync()
+
   const suggestion = await prisma.agentSyncSuggestion.findFirst({
     where: {
       id: args.suggestionId,
@@ -685,6 +992,61 @@ export async function applyAgentSyncSuggestion(args: {
       },
     })
 
+    if (agentLightning?.client && agentLightning.client.isEnabledForAgentSync()) {
+      const ids = extractAgentLightningAttemptIds(suggestion.metadata)
+      const exported = extractAgentLightningExportedEvents(suggestion.metadata)
+
+      if (ids && exported.applied_manual !== true) {
+        const accepted = computeAcceptedReward({ base: 1.0, fileSyncStatus })
+        const appliedSpanOk = await exportAgentLightningEventSpan({
+          client: agentLightning.client,
+          ids,
+          name: "applied_manual",
+          attributes: {
+            "agentsync.event": "applied_manual",
+            "agentsync.suggestion_id": suggestion.id,
+            "agentsync.file_sync_status": fileSyncStatus,
+          },
+        })
+
+        const rewardSpanOk = await exportAgentLightningAcceptedReward({
+          client: agentLightning.client,
+          ids,
+          accepted,
+          attributes: {
+            "agentsync.file_sync_status": fileSyncStatus,
+          },
+        })
+
+        const terminalOk = await agentLightning.client.updateAttemptTerminal({
+          rollout_id: ids.rollout_id,
+          attempt_id: ids.attempt_id,
+          status: "succeeded",
+        })
+
+        const nextMetadata = buildAgentLightningMetadataUpdate({
+          existingMetadata: suggestion.metadata,
+          patch: {
+            exportedEvents: {
+              ...exported,
+              ...(appliedSpanOk ? { applied_manual: true } : {}),
+              ...(rewardSpanOk ? { reward: true } : {}),
+              ...(terminalOk ? { terminal: true } : {}),
+            },
+          },
+        })
+
+        await prisma.agentSyncSuggestion.update({
+          where: {
+            id: suggestion.id,
+          },
+          data: {
+            metadata: nextMetadata,
+          },
+        })
+      }
+    }
+
     if (fileSyncStatus === "filesystem_sync_failed") {
       await prisma.agentSyncRun.update({
         where: {
@@ -720,6 +1082,29 @@ export async function applyAgentSyncSuggestion(args: {
       },
     })
 
+    if (agentLightning?.client && agentLightning.client.isEnabledForAgentSync()) {
+      const ids = extractAgentLightningAttemptIds(suggestion.metadata)
+      if (ids) {
+        await exportAgentLightningEventSpan({
+          client: agentLightning.client,
+          ids,
+          name: "apply_failed",
+          status_code: "ERROR",
+          status_message: error instanceof Error ? error.message : "Failed to apply suggestion",
+          attributes: {
+            "agentsync.event": "apply_failed",
+            "agentsync.suggestion_id": suggestion.id,
+            "agentsync.file_sync_status": fileSyncStatus,
+          },
+        })
+        await agentLightning.client.updateAttemptTerminal({
+          rollout_id: ids.rollout_id,
+          attempt_id: ids.attempt_id,
+          status: "failed",
+        })
+      }
+    }
+
     publishRealtimeEvent({
       type: "agentsync.updated",
       userId: args.userId,
@@ -739,6 +1124,8 @@ export async function rejectAgentSyncSuggestion(args: {
   userId: string
   suggestionId: string
 }) {
+  const agentLightning = resolveAgentLightningClientForAgentSync()
+
   const suggestion = await prisma.agentSyncSuggestion.findFirst({
     where: {
       id: args.suggestionId,
@@ -762,6 +1149,56 @@ export async function rejectAgentSyncSuggestion(args: {
       status: "rejected",
     },
   })
+
+  if (agentLightning?.client && agentLightning.client.isEnabledForAgentSync()) {
+    const ids = extractAgentLightningAttemptIds(suggestion.metadata)
+    const exported = extractAgentLightningExportedEvents(suggestion.metadata)
+
+    if (ids && exported.rejected !== true) {
+      const rejectedSpanOk = await exportAgentLightningEventSpan({
+        client: agentLightning.client,
+        ids,
+        name: "rejected",
+        attributes: {
+          "agentsync.event": "rejected",
+          "agentsync.suggestion_id": suggestion.id,
+        },
+      })
+
+      const rewardSpanOk = await exportAgentLightningAcceptedReward({
+        client: agentLightning.client,
+        ids,
+        accepted: -1.0,
+      })
+
+      const terminalOk = await agentLightning.client.updateAttemptTerminal({
+        rollout_id: ids.rollout_id,
+        attempt_id: ids.attempt_id,
+        status: "failed",
+      })
+
+      const nextMetadata = buildAgentLightningMetadataUpdate({
+        existingMetadata: suggestion.metadata,
+        patch: {
+          exportedEvents: {
+            ...exported,
+            ...(rejectedSpanOk ? { rejected: true } : {}),
+            ...(rewardSpanOk ? { reward: true } : {}),
+            ...(terminalOk ? { terminal: true } : {}),
+          },
+        },
+      })
+
+      await prisma.agentSyncSuggestion.update({
+        where: {
+          id: suggestion.id,
+        },
+        data: {
+          metadata: nextMetadata,
+        },
+      })
+    }
+  }
 
   publishRealtimeEvent({
     type: "agentsync.updated",

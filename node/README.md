@@ -70,6 +70,13 @@ Copy `node/.env.example`. Key groups:
 - Knowledge ingest orchestration (provider-agnostic): `KNOWLEDGE_INGEST_PROVIDER`, `KNOWLEDGE_INGEST_DELETE_MISSING`, `KNOWLEDGE_INGEST_INCLUDE_TRASH`, `KNOWLEDGE_INGEST_POST_PROCESS`
 - llm-graph-builder provider config: `LGB_API_URL`, `LGB_NEO4J_URI`, `LGB_NEO4J_USERNAME`, `LGB_NEO4J_PASSWORD`, `LGB_NEO4J_DATABASE`, `LGB_MODEL`, `LGB_EMBEDDING_PROVIDER`, `LGB_EMBEDDING_MODEL`
 
+### Wallet Enclave Strict Mode (Local Dev)
+
+If you see HTTP `503` errors with code `WALLET_ENCLAVE_UNREACHABLE` while creating Bridge connections, saving Ship Yard secrets, or accessing the private vault, the app is failing closed because `WALLET_ENCLAVE_REQUIRE_PRIVATE_MEMORY_ENCRYPTION=true`.
+
+- Ensure wallet-enclave is running and reachable at `WALLET_ENCLAVE_URL` (default `http://127.0.0.1:3377`).
+- See `../infra/README.md` ("Wallet Enclave Sidecar Pattern") for the sidecar deployment posture.
+
 Optional magic-link email config used by auth in non-local environments:
 
 - `RESEND_API_KEY`
@@ -112,9 +119,10 @@ Create flows for both agent and application deployments support profile-aware fi
 - Assisted mode (`saneBootstrap=true`) can auto-install missing local CLIs when `ENABLE_LOCAL_INFRA_AUTO_INSTALL=true`
 - Local provisioning execution still requires `ENABLE_LOCAL_COMMAND_EXECUTION=true`
 - Docker-first local app image bootstrap is enabled by default when `saneBootstrap=true` and `infrastructure.kind=kind`
-  - Builds local app image from `node/Dockerfile.shipyard` (unless image already exists locally)
+  - Builds local app image from `node/Dockerfile.shipyard` (Docker cache keeps this fast when unchanged)
   - `node/Dockerfile.shipyard` uses a local-friendly Next dev runtime to avoid production build blockers during bootstrap loops
   - Loads image into the `kind` cluster before running Terraform/Ansible
+  - If the built image changes, Ship Yard restarts the in-cluster `orchwiz` Deployment to ensure the new image is picked up even when the tag is unchanged
   - Sets `TF_VAR_app_image` automatically for the provisioning run
   - Controls: `LOCAL_SHIPYARD_AUTO_BUILD_APP_IMAGE`, `LOCAL_SHIPYARD_FORCE_REBUILD_APP_IMAGE`, `LOCAL_SHIPYARD_APP_IMAGE`, `LOCAL_SHIPYARD_DOCKERFILE`, `LOCAL_SHIPYARD_DOCKER_CONTEXT`, `LOCAL_SHIPYARD_KIND_CLUSTER_NAME`
 - Local launch requests are rejected when `CLOUD_DEPLOY_ONLY=true`

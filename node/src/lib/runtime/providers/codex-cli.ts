@@ -42,6 +42,18 @@ function codexTimeoutMs(): number {
   return 120000
 }
 
+function codexProviderProxyUrl(): string | null {
+  return asString(process.env.CODEX_PROVIDER_PROXY_URL)
+}
+
+function codexProviderProxyApiKey(): string | null {
+  return asString(process.env.CODEX_PROVIDER_PROXY_API_KEY)
+}
+
+function normalizeProxyBaseUrl(value: string): string {
+  return value.replace(/\/+$/u, "")
+}
+
 function resolveRuntimeIntelligenceModel(request: RuntimeRequest): string | null {
   const metadata = asRecord(request.metadata)
   const runtimeMetadata = asRecord(metadata.runtime)
@@ -194,6 +206,78 @@ function classifyCodexExecFailure(error: unknown): RuntimeProviderError {
 async function runCodexCliRuntime(request: RuntimeRequest): Promise<RuntimeResult> {
   const model = resolveCodexRuntimeModel(request)
   await enforceQuartermasterPolicy(request, model)
+
+  const proxyUrlRaw = codexProviderProxyUrl()
+  if (proxyUrlRaw) {
+    const apiKey = codexProviderProxyApiKey()
+    if (!apiKey) {
+      throw createRecoverableRuntimeError({
+        provider: "codex-cli",
+        code: "CODEX_PROVIDER_PROXY_API_KEY_MISSING",
+        message: "CODEX_PROVIDER_PROXY_API_KEY is required when CODEX_PROVIDER_PROXY_URL is set.",
+      })
+    }
+
+    const proxyUrl = normalizeProxyBaseUrl(proxyUrlRaw)
+    const startedAt = Date.now()
+
+    let response: Response
+    try {
+      response = await fetch(`${proxyUrl}/v1/orchwiz/runtime/codex-cli`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify(request),
+      })
+    } catch (error) {
+      throw createRecoverableRuntimeError({
+        provider: "codex-cli",
+        code: "CODEX_PROVIDER_PROXY_UNREACHABLE",
+        message: `Codex provider proxy request failed: ${(error as Error).message || "Unknown error"}`,
+        details: {
+          proxyUrl,
+        },
+      })
+    }
+
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({})) as Record<string, unknown>
+      throw createRecoverableRuntimeError({
+        provider: "codex-cli",
+        code: "CODEX_PROVIDER_PROXY_HTTP_ERROR",
+        message: `Codex provider proxy responded with status ${response.status}.`,
+        details: {
+          proxyUrl,
+          payload,
+        },
+      })
+    }
+
+    const runtimeResult = await response.json().catch(() => ({})) as RuntimeResult
+    if (!runtimeResult || typeof runtimeResult.output !== "string" || runtimeResult.output.trim().length === 0) {
+      throw createRecoverableRuntimeError({
+        provider: "codex-cli",
+        code: "CODEX_PROVIDER_PROXY_INVALID_RESPONSE",
+        message: "Codex provider proxy did not return a valid runtime result.",
+        details: {
+          proxyUrl,
+          runtimeResult,
+        },
+      })
+    }
+
+    return {
+      ...runtimeResult,
+      provider: "codex-cli",
+      metadata: {
+        ...(runtimeResult.metadata || {}),
+        proxyUrl,
+        durationMs: (runtimeResult.metadata as Record<string, unknown> | undefined)?.durationMs || (Date.now() - startedAt),
+      },
+    }
+  }
 
   const executable = codexCliPath()
   const workspace = codexWorkspace()

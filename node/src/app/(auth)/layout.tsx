@@ -1,7 +1,7 @@
 "use client"
 
 import { useSession } from "@/lib/auth-client"
-import { WandSparkles } from "lucide-react"
+import { OrchWizMark } from "@/components/brand/OrchWizMark"
 import { useEffect } from "react"
 
 export default function AuthLayout({ children }: { children: React.ReactNode }) {
@@ -36,7 +36,7 @@ export default function AuthLayout({ children }: { children: React.ReactNode }) 
 
         <div className="relative z-10">
           <div className="flex items-center gap-2.5 mb-16">
-            <WandSparkles className="w-6 h-6 text-white/90" strokeWidth={1.5} />
+            <OrchWizMark size={24} className="shrink-0 drop-shadow-[0_14px_34px_rgba(0,0,0,0.35)]" />
             <span className="text-lg font-semibold text-white/90 tracking-tight">OrchWiz</span>
           </div>
 
@@ -57,7 +57,7 @@ export default function AuthLayout({ children }: { children: React.ReactNode }) 
 
       {/* Mobile brand header */}
       <div className="flex items-center gap-2.5 px-6 pt-8 pb-2 lg:hidden">
-        <WandSparkles className="w-5 h-5 text-violet-500 dark:text-violet-400" strokeWidth={1.5} />
+        <OrchWizMark size={20} className="shrink-0 drop-shadow-[0_8px_18px_rgba(15,23,42,0.25)]" />
         <span className="text-base font-semibold text-slate-900 dark:text-white tracking-tight">OrchWiz</span>
       </div>
 

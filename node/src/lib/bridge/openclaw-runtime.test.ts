@@ -95,6 +95,7 @@ test("resolveOpenClawRuntimeUrlForStation honors explicit gateway singleton befo
     {
       OPENCLAW_UI_URL: undefined,
       OPENCLAW_GATEWAY_URL: "http://127.0.0.1:18789",
+      KUBERNETES_SERVICE_HOST: undefined,
       OPENCLAW_GATEWAY_URLS: undefined,
       OPENCLAW_GATEWAY_URL_TEMPLATE: undefined,
       OPENCLAW_CLUSTER_SERVICE_URL_TEMPLATE: "http://openclaw-{stationKey}.{namespace}.svc.cluster.local:18789",
@@ -106,6 +107,27 @@ test("resolveOpenClawRuntimeUrlForStation honors explicit gateway singleton befo
       })
       assert.equal(resolved.href, "http://127.0.0.1:18789")
       assert.equal(resolved.source, "openclaw_gateway_url")
+    },
+  )
+})
+
+test("resolveOpenClawRuntimeUrlForStation skips loopback gateway singleton when running in Kubernetes", async () => {
+  await withEnv(
+    {
+      OPENCLAW_UI_URL: undefined,
+      OPENCLAW_GATEWAY_URL: "http://127.0.0.1:18789",
+      KUBERNETES_SERVICE_HOST: "10.96.0.1",
+      OPENCLAW_GATEWAY_URLS: undefined,
+      OPENCLAW_GATEWAY_URL_TEMPLATE: undefined,
+      OPENCLAW_CLUSTER_SERVICE_URL_TEMPLATE: "http://openclaw-{stationKey}.{namespace}.svc.cluster.local:18789",
+    },
+    async () => {
+      const resolved = resolveOpenClawRuntimeUrlForStation({
+        stationKey: "sec",
+        namespace: "orchwiz-starship",
+      })
+      assert.equal(resolved.href, "http://openclaw-sec.orchwiz-starship.svc.cluster.local:18789")
+      assert.equal(resolved.source, "cluster_service_fallback")
     },
   )
 })

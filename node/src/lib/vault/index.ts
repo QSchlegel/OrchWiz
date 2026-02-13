@@ -121,10 +121,14 @@ export function __setVaultRagMutationSyncForTests(nextImpl: VaultRagMutationSync
 
 export class VaultRequestError extends Error {
   status: number
+  code?: string
 
-  constructor(message: string, status = 400) {
+  constructor(message: string, status = 400, code?: string) {
     super(message)
     this.status = status
+    if (typeof code === "string" && code.trim().length > 0) {
+      this.code = code.trim()
+    }
   }
 }
 
@@ -173,9 +177,9 @@ function isPrivatePhysicalVault(vaultId: PhysicalVaultId): boolean {
 
 function throwPrivateEncryptionVaultError(error: unknown): never {
   if (error instanceof PrivateVaultEncryptionError) {
-    throw new VaultRequestError(error.message, error.status >= 400 ? error.status : 503)
+    throw new VaultRequestError(error.message, error.status >= 400 ? error.status : 503, error.code)
   }
-  throw new VaultRequestError("Private vault encryption/decryption failed.", 503)
+  throw new VaultRequestError("Private vault encryption/decryption failed.", 503, "PRIVATE_VAULT_ENCRYPTION_FAILED")
 }
 
 async function readPrivateVaultContent(input: {

@@ -30,6 +30,23 @@ function asString(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null
 }
 
+function isLoopbackHostname(value: string): boolean {
+  const normalized = value.trim().toLowerCase()
+  return normalized === "127.0.0.1" || normalized === "::1" || normalized === "localhost"
+}
+
+function isLoopbackUrl(value: string): boolean {
+  try {
+    return isLoopbackHostname(new URL(value).hostname)
+  } catch {
+    return false
+  }
+}
+
+function isRunningInKubernetes(): boolean {
+  return asString(process.env.KUBERNETES_SERVICE_HOST) !== null
+}
+
 function asRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return {}
@@ -202,9 +219,15 @@ export function resolveOpenClawRuntimeUrlForStation(args: {
 
   const gatewaySingleton = normalizeUrl(asString(process.env.OPENCLAW_GATEWAY_URL))
   if (gatewaySingleton) {
+    // When running in-cluster, treat loopback singleton URLs as misconfiguration and
+    // fall back to the per-station service template instead.
+    if (namespace && isRunningInKubernetes() && isLoopbackUrl(gatewaySingleton)) {
+      // Skip.
+    } else {
     return {
       href: gatewaySingleton,
       source: "openclaw_gateway_url",
+    }
     }
   }
 

@@ -99,6 +99,26 @@ variable "app_env" {
   default     = {}
 }
 
+variable "openclaw_image" {
+  type        = string
+  description = "Container image for OpenClaw gateway/control UI instances"
+  default     = "ghcr.io/openclaw/openclaw:latest"
+}
+
+variable "openclaw_gateway_token" {
+  type        = string
+  description = "Token seed used to derive per-station OpenClaw gateway tokens when openclaw_gateway_tokens is empty."
+  sensitive   = true
+  default     = "orchwiz-openclaw-dev-token"
+}
+
+variable "openclaw_gateway_tokens" {
+  type        = map(string)
+  description = "Optional explicit per-station OpenClaw gateway tokens (keys: xo, ops, eng, sec, med, cou). When empty, tokens are derived from openclaw_gateway_token."
+  sensitive   = true
+  default     = {}
+}
+
 variable "enable_kubeview" {
   type        = bool
   description = "Whether to deploy kubeview for cluster visualization"
@@ -145,4 +165,35 @@ variable "kubeview_ingress_annotations" {
   type        = map(string)
   description = "Additional ingress annotations for kubeview"
   default     = {}
+}
+
+variable "provider_proxy_image" {
+  type        = string
+  description = "Container image for provider-proxy"
+  default     = "ghcr.io/qschlegel/orchwiz-provider-proxy:latest"
+}
+
+variable "provider_proxy_port" {
+  type        = number
+  description = "Service port for provider-proxy"
+  default     = 4000
+}
+
+variable "provider_proxy_api_key" {
+  type        = string
+  description = "Shared bearer token for provider-proxy"
+  sensitive   = true
+  default     = "orchwiz-provider-proxy-dev-key"
+}
+
+variable "provider_proxy_storage_size" {
+  type        = string
+  description = "PVC size for provider-proxy CODEX_HOME"
+  default     = "1Gi"
+}
+
+variable "provider_proxy_default_model" {
+  type        = string
+  description = "Default model used via provider-proxy"
+  default     = "gpt-5"
 }

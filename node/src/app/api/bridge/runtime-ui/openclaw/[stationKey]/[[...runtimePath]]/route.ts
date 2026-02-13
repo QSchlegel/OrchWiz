@@ -31,9 +31,60 @@ function asString(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null
 }
 
+function asRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {}
+  }
+  return value as Record<string, unknown>
+}
+
 function stripTrailingSlash(value: string): string {
   const trimmed = value.replace(/\/+$/u, "")
   return trimmed.length > 0 ? trimmed : "/"
+}
+
+function parseGatewayTokenMap(
+  raw: string | undefined,
+): Partial<Record<string, string>> {
+  const normalized = asString(raw)
+  if (!normalized) {
+    return {}
+  }
+
+  try {
+    const decoded = JSON.parse(normalized) as unknown
+    const record = asRecord(decoded)
+    const out: Partial<Record<string, string>> = {}
+    for (const [key, value] of Object.entries(record)) {
+      const stationKey = key.trim().toLowerCase()
+      if (!isBridgeStationKey(stationKey)) {
+        continue
+      }
+      const token = asString(value)
+      if (!token) {
+        continue
+      }
+      out[stationKey] = token
+    }
+    return out
+  } catch {
+    // Fall through to CSV parsing.
+  }
+
+  const out: Partial<Record<string, string>> = {}
+  for (const entry of normalized.split(",")) {
+    const [rawKey, ...rawValueParts] = entry.split("=")
+    const stationKey = rawKey?.trim().toLowerCase() || ""
+    if (!isBridgeStationKey(stationKey)) {
+      continue
+    }
+    const token = asString(rawValueParts.join("="))
+    if (!token) {
+      continue
+    }
+    out[stationKey] = token
+  }
+  return out
 }
 
 function buildUpstreamUrl(args: {
@@ -54,6 +105,8 @@ function buildUpstreamUrl(args: {
 
   const nextSearch = new URLSearchParams(args.searchParams)
   nextSearch.delete("shipDeploymentId")
+  // Deprecated: older Bridge links used this query param to toggle websocket proxying.
+  nextSearch.delete("directWs")
   upstream.search = nextSearch.toString()
 
   return upstream
@@ -61,6 +114,20 @@ function buildUpstreamUrl(args: {
 
 function proxyBasePath(stationKey: string): string {
   return `/api/bridge/runtime-ui/openclaw/${stationKey}`
+}
+
+function wsUrlForHttpBase(value: string): string | null {
+  try {
+    const parsed = new URL(value)
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return null
+    }
+    parsed.protocol = parsed.protocol === "https:" ? "wss:" : "ws:"
+    parsed.search = ""
+    return parsed.toString()
+  } catch {
+    return null
+  }
 }
 
 function rewriteUpstreamLocation(args: {
@@ -97,16 +164,42 @@ function rewriteUpstreamLocation(args: {
 function rewriteHtmlForProxy(args: {
   html: string
   stationKey: string
+  gatewayUrl: string
+  gatewayToken: string | null
 }): string {
   const baseHref = `${proxyBasePath(args.stationKey)}/`
-  const withBaseTag = /<base\s/iu.test(args.html)
-    ? args.html
-    : args.html.replace(/<head(\s[^>]*)?>/iu, (match) => `${match}<base href="${baseHref}">`)
+  const injections: string[] = []
 
-  return withBaseTag.replace(
+  if (!/<base\s/iu.test(args.html)) {
+    injections.push(`<base href="${baseHref}">`)
+  }
+
+  injections.push(
+    `<script>(function(){try{var key="openclaw.control.settings.v1";var deviceKey="openclaw.device.auth.v1";var raw=window.localStorage.getItem(key);var current=null;try{current=raw?JSON.parse(raw):null;}catch(e){current=null;}var next=(current&&typeof current==="object")?current:{};var prevGatewayUrl=typeof next.gatewayUrl==="string"?next.gatewayUrl:"";var prevToken=typeof next.token==="string"?next.token:"";next.gatewayUrl=${JSON.stringify(
+      args.gatewayUrl,
+    )};${
+      args.gatewayToken
+        ? `next.token=${JSON.stringify(args.gatewayToken)};`
+        : ""
+    }window.localStorage.setItem(key,JSON.stringify(next));${
+      // Device auth tokens are cached per browser identity, but not namespaced by gateway URL.
+      // When we proxy multiple OpenClaw instances through one origin, that cache can become stale.
+      args.gatewayToken
+        ? `try{if(prevGatewayUrl!==next.gatewayUrl||prevToken!==next.token){window.localStorage.removeItem(deviceKey);}}catch(e){}`
+        : ""
+    }}catch(e){}})();</script>`,
+  )
+
+  // Rewrite root-absolute URLs ("/...") so runtime UI assets/actions stay within the proxy base path.
+  // Do this before injecting `<base>` so the injected tag doesn't get double-prefixed.
+  const rewritten = args.html.replace(
     /(href|src|action)=(["'])\/(?!\/)/giu,
     `$1=$2${baseHref}`,
   )
+
+  return injections.length === 0
+    ? rewritten
+    : rewritten.replace(/<head(\s[^>]*)?>/iu, (match) => `${match}${injections.join("")}`)
 }
 
 function errorMessage(error: unknown): string {
@@ -213,6 +306,9 @@ async function handleRuntimeUiProxy(
         error: "Runtime UI upstream is unreachable.",
         details: {
           stationKey: params.stationKey,
+          namespace,
+          source: resolvedRuntime.source,
+          runtimeBaseUrl: resolvedRuntime.href,
           upstreamUrl: upstreamUrl.toString(),
           reason: errorMessage(error),
         },
@@ -242,9 +338,32 @@ async function handleRuntimeUiProxy(
 
   const contentType = responseHeaders.get("content-type") || ""
   if (request.method === "GET" && contentType.toLowerCase().includes("text/html")) {
+    const gatewayUrl = wsUrlForHttpBase(resolvedRuntime.href)
+    if (!gatewayUrl) {
+      return NextResponse.json(
+        {
+          error: "OpenClaw runtime websocket URL is invalid.",
+          details: {
+            stationKey: params.stationKey,
+            namespace,
+            source: resolvedRuntime.source,
+            runtimeBaseUrl: resolvedRuntime.href,
+          },
+        },
+        { status: 500 },
+      )
+    }
+    const stationTokenKey = `OPENCLAW_GATEWAY_TOKEN_${params.stationKey.toUpperCase()}`
+    const gatewayToken =
+      asString(process.env[stationTokenKey])
+      || parseGatewayTokenMap(process.env.OPENCLAW_GATEWAY_TOKENS)[params.stationKey]
+      || asString(process.env.OPENCLAW_GATEWAY_TOKEN)
+
     const body = rewriteHtmlForProxy({
       html: await upstream.text(),
       stationKey: params.stationKey,
+      gatewayUrl,
+      gatewayToken,
     })
     return new NextResponse(body, {
       status: upstream.status,

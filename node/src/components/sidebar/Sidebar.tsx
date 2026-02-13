@@ -1,10 +1,11 @@
 "use client"
 
 import Link from "next/link"
-import { PanelLeftClose, PanelLeftOpen, WandSparkles } from "lucide-react"
+import { PanelLeftClose, PanelLeftOpen } from "lucide-react"
 import { sidebarNav } from "./sidebarNav"
 import { useSidebar } from "./useSidebar"
 import { SidebarGroup } from "./SidebarGroup"
+import { OrchWizMark } from "@/components/brand/OrchWizMark"
 
 export function Sidebar() {
   const { collapsed, displayCollapsed, toggleCollapsed, setHoverExpanded, mobileOpen, setMobileOpen } = useSidebar()
@@ -19,7 +20,7 @@ export function Sidebar() {
             displayCollapsed ? "justify-center w-full" : ""
           }`}
         >
-          <WandSparkles className="h-4 w-4 shrink-0 text-violet-500 dark:text-violet-300" />
+          <OrchWizMark size={18} className="shrink-0 drop-shadow-[0_1px_6px_rgba(15,23,42,0.2)]" />
           {!displayCollapsed && <span>OrchWiz</span>}
         </Link>
       </div>
@@ -92,7 +93,7 @@ export function Sidebar() {
             href="/sessions"
             className="inline-flex items-center gap-2 rounded-lg px-1 py-1 text-sm font-semibold text-slate-900 hover:bg-slate-100 dark:text-slate-100 dark:hover:bg-white/[0.06]"
           >
-            <WandSparkles className="h-4 w-4 shrink-0 text-violet-500 dark:text-violet-300" />
+            <OrchWizMark size={18} className="shrink-0 drop-shadow-[0_1px_6px_rgba(15,23,42,0.2)]" />
             <span>OrchWiz</span>
           </Link>
         </div>

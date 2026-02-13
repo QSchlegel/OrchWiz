@@ -1,26 +1,41 @@
 import type { Metadata } from "next";
+import { Suspense } from "react";
 import "./globals.css";
 import { ThemeProvider } from "@/components/theme/ThemeProvider";
 import { ThemeFooter } from "@/components/theme/ThemeFooter";
 import { NotificationProvider } from "@/components/notifications";
 
+const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000";
+
 export const metadata: Metadata = {
+  metadataBase: new URL(siteUrl),
   title: "OrchWiz | Agent VPC for AI Systems",
   description:
     "OrchWiz is the Agent VPC for AI infra engineers: run agents across local and cloud nodes with policy controls and full decision traceability.",
+  icons: {
+    icon: [
+      { url: "/favicon.ico" },
+      { url: "/favicon-32x32.png", sizes: "32x32", type: "image/png" },
+      { url: "/favicon-16x16.png", sizes: "16x16", type: "image/png" },
+    ],
+    apple: [{ url: "/apple-touch-icon.png", sizes: "180x180", type: "image/png" }],
+  },
+  manifest: "/site.webmanifest",
   openGraph: {
     title: "OrchWiz | Agent VPC for AI Systems",
     description:
       "Private-by-default runtime boundaries, policy controls, and auditable agent operations across local and cloud nodes.",
-    url: "https://github.com/QSchlegel/OrchWiz",
+    url: siteUrl,
     siteName: "OrchWiz",
     type: "website",
+    images: [{ url: "/opengraph-image", width: 1200, height: 630, alt: "OrchWiz" }],
   },
   twitter: {
     card: "summary_large_image",
     title: "OrchWiz | Agent VPC for AI Systems",
     description:
       "Run agents across local and cloud nodes with policy controls and full decision traceability.",
+    images: ["/opengraph-image"],
   },
 };
 
@@ -56,11 +71,13 @@ export default function RootLayout({
           rel="stylesheet"
         />
       </head>
-      <body>
+      <body className="owz-launch">
         <ThemeProvider>
           <NotificationProvider>
             {children}
-            <ThemeFooter />
+            <Suspense fallback={null}>
+              <ThemeFooter />
+            </Suspense>
           </NotificationProvider>
         </ThemeProvider>
       </body>

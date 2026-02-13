@@ -260,6 +260,56 @@
     animation: fade-up 0.7s cubic-bezier(0.16, 1, 0.3, 1) both;
   }
 
+  /* App launch — quick bridge boot scan */
+  @keyframes owz-launch-scan {
+    0% {
+      opacity: 0;
+      transform: translate3d(0, -18%, 0);
+    }
+    18% {
+      opacity: 0.9;
+    }
+    55% {
+      opacity: 0.5;
+    }
+    100% {
+      opacity: 0;
+      transform: translate3d(0, 18%, 0);
+    }
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    body.owz-launch::after {
+      content: '';
+      position: fixed;
+      inset: -20%;
+      pointer-events: none;
+      z-index: 2147483647;
+      opacity: 0;
+      transform: translate3d(0, -18%, 0);
+      background:
+        radial-gradient(ellipse 58% 38% at 50% 25%, rgba(34, 211, 238, 0.16), transparent 62%),
+        linear-gradient(
+          to bottom,
+          transparent 0%,
+          rgba(34, 211, 238, 0) 36%,
+          rgba(34, 211, 238, 0.14) 49%,
+          rgba(168, 85, 247, 0.14) 51%,
+          rgba(34, 211, 238, 0) 64%,
+          transparent 100%
+        );
+      animation: owz-launch-scan 650ms cubic-bezier(0.16, 1, 0.3, 1) 70ms both;
+      mix-blend-mode: screen;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    body.owz-launch::after {
+      animation: none;
+      opacity: 0;
+    }
+  }
+
   /* Glow pulse for accent elements */
   @keyframes glow-pulse {
     0%, 100% {

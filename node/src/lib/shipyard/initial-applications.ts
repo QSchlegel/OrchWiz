@@ -68,6 +68,11 @@ export interface ShipBootstrapTarget {
   config: Prisma.JsonValue | null
 }
 
+interface InitialApplicationsSelection {
+  n8n: boolean
+  dokploy: boolean
+}
+
 interface N8NDbConfig {
   host: string
   port: string
@@ -136,6 +141,19 @@ function envInt(name: string, fallback: number, min: number, max: number): numbe
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function readInitialApplicationsSelection(rawConfig: unknown): InitialApplicationsSelection {
+  const config = asRecord(rawConfig)
+  const initial = asRecord(config.initialApplications)
+
+  const n8nValue = initial.n8n
+  const dokployValue = initial.dokploy
+
+  return {
+    n8n: typeof n8nValue === "boolean" ? n8nValue : true,
+    dokploy: typeof dokployValue === "boolean" ? dokployValue : false,
+  }
 }
 
 function createN8NBootstrapResult(
@@ -440,6 +458,11 @@ export async function bootstrapInitialApplicationsForShip(
   },
   dependencies: InitialApplicationDependencies = {},
 ): Promise<InitialApplicationsBootstrapResult> {
+  const selection = readInitialApplicationsSelection(args.ship.config)
+  if (!selection.n8n) {
+    return createSkippedInitialApplicationsBootstrap("n8n bootstrap skipped by app selection.")
+  }
+
   const prismaClient = dependencies.prismaClient || prisma
   const runDeploymentAdapterFn = dependencies.runDeploymentAdapterFn || runDeploymentAdapter
   const publishShipApplicationUpdatedFn =
