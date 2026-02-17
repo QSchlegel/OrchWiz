@@ -23,16 +23,34 @@ export async function handleGetNodeRuntimeMetrics(
   _request: NextRequest,
   deps: RuntimeNodeMetricsRouteDeps = defaultDeps,
 ) {
+  let userId: string | null
   try {
-    const userId = await deps.getSessionUserId()
-    if (!userId) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+    userId = await deps.getSessionUserId()
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error))
+    console.error("[node/metrics] getSessionUserId failed:", err.message)
+    if (process.env.NODE_ENV !== "production" && err.stack) {
+      console.error(err.stack)
     }
+    return NextResponse.json(
+      { error: "Service unavailable", code: "AUTH_UNAVAILABLE" },
+      { status: 503, headers: { "Retry-After": "5" } },
+    )
+  }
 
+  if (!userId) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  }
+
+  try {
     const payload = deps.getMetrics()
     return NextResponse.json(payload)
   } catch (error) {
-    console.error("Failed to load node runtime metrics:", error)
+    const err = error instanceof Error ? error : new Error(String(error))
+    console.error("[node/metrics] getMetrics failed:", err.message)
+    if (process.env.NODE_ENV !== "production" && err.stack) {
+      console.error(err.stack)
+    }
     return NextResponse.json({ error: "Internal server error" }, { status: 500 })
   }
 }

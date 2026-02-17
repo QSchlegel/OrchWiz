@@ -21,6 +21,9 @@ const nextConfig = {
     resolveAlias: {
       tailwindcss: path.join(appRoot, 'node_modules', 'tailwindcss'),
       '@tailwindcss/postcss': path.join(appRoot, 'node_modules', '@tailwindcss/postcss'),
+      // Work around libsodium-wrappers-sumo 0.7.x shipping a broken ESM entrypoint that imports a missing file.
+      // The CJS build correctly depends on the `libsodium-sumo` package.
+      'libsodium-wrappers-sumo': 'libsodium-wrappers-sumo/dist/modules-sumo/libsodium-wrappers.js',
     },
   },
 }

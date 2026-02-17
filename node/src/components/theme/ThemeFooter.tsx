@@ -1,13 +1,20 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useState } from "react"
+import Link from "next/link"
 import { usePathname } from "next/navigation"
 import type { ElementType } from "react"
-import { Bot, LayoutGrid, Monitor, MoonStar, Ship, Sun } from "lucide-react"
+import { Bot, LayoutGrid, Monitor, MoonStar, Network, Ship, Sun } from "lucide-react"
+import { useAppSurface } from "@/components/app-surface/AppSurfaceProvider"
+import { AgentChatPasskeyLockCard } from "@/components/agent-chat/AgentChatPasskeyLockCard"
+import { useAgentChatAbsenceLock } from "@/components/agent-chat/useAgentChatAbsenceLock"
 import { type ThemeMode } from "@/components/theme/ThemeProvider"
 import { NodeRuntimeIndicator } from "@/components/theme/NodeRuntimeIndicator"
 import { ShipQuartermasterPanel } from "@/components/quartermaster/ShipQuartermasterPanel"
 import { useTheme } from "@/components/theme/useTheme"
+import { useSession } from "@/lib/auth-client"
+import { isTextInputElement } from "@/lib/bridge-chat/voice"
+import { getAgentChatLockTimeoutMsFromEnv } from "@/lib/agent-chat/presenceLock"
 import { useEventStream } from "@/lib/realtime/useEventStream"
 import { useShipSelection } from "@/lib/shipyard/useShipSelection"
 import {
@@ -48,14 +55,20 @@ function routeMatchesPrefix(pathname: string | null, prefix: string): boolean {
 export function ThemeFooter() {
   const { mode, resolvedTheme, setMode } = useTheme()
   const pathname = usePathname()
+  const { surface } = useAppSurface()
+  const { data: session } = useSession()
   const { selectedShipDeploymentId, setSelectedShipDeploymentId } = useShipSelection()
   const [hasMounted, setHasMounted] = useState(false)
 
   const hiddenForPath = pathname === "/bridge-chat" || pathname?.startsWith("/bridge-chat/")
-  const quartermasterAvailable =
-    pathname?.startsWith("/ship-yard") ||
-    pathname?.startsWith("/ships") ||
-    pathname?.startsWith("/uss-k8s")
+  const isDashboardSurface = surface === "dashboard"
+  const agentChatAvailable = isDashboardSurface && Boolean(session?.user?.id)
+  const coraUiActive = pathname?.startsWith("/uss-k8s") || false
+
+  const lockTimeoutMs = useMemo(
+    () => getAgentChatLockTimeoutMsFromEnv(process.env.NEXT_PUBLIC_AGENT_CHAT_LOCK_TIMEOUT_MS),
+    [],
+  )
 
   const shipSelectorAvailable = useMemo(
     () => SHIP_SELECTOR_PATH_PREFIXES.some((prefix) => routeMatchesPrefix(pathname, prefix)),
@@ -64,8 +77,19 @@ export function ThemeFooter() {
 
   const [dockItems, setDockItems] = useState<DockWindowItem[]>([])
   const [quartermasterOpen, setQuartermasterOpen] = useState(false)
+  const [agentChatFocusSignal, setAgentChatFocusSignal] = useState(0)
   const [ships, setShips] = useState<ShipFooterItem[]>([])
   const [isLoadingShips, setIsLoadingShips] = useState(false)
+
+  const closeAgentChat = useCallback(() => {
+    setQuartermasterOpen(false)
+  }, [])
+
+  const { locked: agentChatLocked, unlock: unlockAgentChat } = useAgentChatAbsenceLock({
+    enabled: agentChatAvailable,
+    timeoutMs: lockTimeoutMs,
+    onLock: closeAgentChat,
+  })
 
   const dockScope = useMemo<DockScope | null>(() => {
     return pathname?.startsWith("/uss-k8s") ? "uss-k8s" : null
@@ -89,10 +113,65 @@ export function ThemeFooter() {
   }, [dockScope])
 
   useEffect(() => {
-    if (!quartermasterAvailable) {
+    if (!agentChatAvailable) {
       setQuartermasterOpen(false)
     }
-  }, [quartermasterAvailable])
+  }, [agentChatAvailable])
+
+  const openAgentChat = useCallback(() => {
+    setQuartermasterOpen(true)
+    setAgentChatFocusSignal((signal) => signal + 1)
+  }, [])
+
+  const toggleAgentChat = useCallback(() => {
+    setQuartermasterOpen((open) => {
+      const next = !open
+      if (next) {
+        setAgentChatFocusSignal((signal) => signal + 1)
+      }
+      return next
+    })
+  }, [])
+
+  const handleAgentChatUnlocked = useCallback(() => {
+    unlockAgentChat()
+    openAgentChat()
+  }, [openAgentChat, unlockAgentChat])
+
+  useEffect(() => {
+    if (!agentChatAvailable) {
+      return
+    }
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (isTextInputElement(event.target)) {
+        return
+      }
+
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault()
+        openAgentChat()
+        return
+      }
+
+      if (event.key === "Escape" && quartermasterOpen) {
+        event.preventDefault()
+        setQuartermasterOpen(false)
+      }
+    }
+
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [agentChatAvailable, openAgentChat, quartermasterOpen])
+
+  const coraUiHref = useMemo(() => {
+    if (!selectedShipDeploymentId) {
+      return "/uss-k8s"
+    }
+
+    const params = new URLSearchParams({ shipDeploymentId: selectedShipDeploymentId })
+    return `/uss-k8s?${params.toString()}`
+  }, [selectedShipDeploymentId])
 
   const loadShips = useCallback(async () => {
     if (!shipSelectorAvailable) {
@@ -159,16 +238,22 @@ export function ThemeFooter() {
 
   return (
     <>
-      {quartermasterAvailable && quartermasterOpen && (
+      {agentChatAvailable && quartermasterOpen && (
         <div className="theme-footer pointer-events-none fixed inset-x-0 bottom-[calc(var(--theme-footer-height)+env(safe-area-inset-bottom)+0.65rem)] z-[65]">
           <div className="mx-auto w-full max-w-7xl px-4 sm:px-6 lg:px-8">
             <div className="pointer-events-auto ml-auto w-full max-w-[min(92vw,78rem)]">
-              <ShipQuartermasterPanel
-                shipDeploymentId={selectedShipDeploymentId}
-                className="shadow-[0_16px_44px_rgba(15,23,42,0.3)]"
-                compact
-                onShipNotFound={handleShipNotFound}
-              />
+              {agentChatLocked ? (
+                <AgentChatPasskeyLockCard timeoutMs={lockTimeoutMs} onUnlocked={handleAgentChatUnlocked} />
+              ) : (
+                <ShipQuartermasterPanel
+                  shipDeploymentId={selectedShipDeploymentId}
+                  className="shadow-[0_16px_44px_rgba(15,23,42,0.3)]"
+                  compact
+                  autoFocusPrompt
+                  focusSignal={agentChatFocusSignal}
+                  onShipNotFound={handleShipNotFound}
+                />
+              )}
             </div>
           </div>
         </div>
@@ -207,22 +292,48 @@ export function ThemeFooter() {
             Appearance
           </div>
 
-          {quartermasterAvailable && (
+          {shipSelectorAvailable && (
+            <Link
+              href={coraUiHref}
+              aria-current={coraUiActive ? "page" : undefined}
+              onClick={closeAgentChat}
+              className={`inline-flex min-h-8 items-center gap-2 rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500/60 ${
+                coraUiActive
+                  ? "border-sky-500/45 bg-sky-500/12 text-sky-700 dark:border-sky-300/45 dark:text-sky-100"
+                  : "border-slate-300/70 bg-white/75 text-slate-700 hover:bg-slate-100 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-300 dark:hover:bg-white/[0.12]"
+              }`}
+            >
+              <Network className="h-3.5 w-3.5" />
+              Cora UI
+            </Link>
+          )}
+
+          {agentChatAvailable && (
             <button
               type="button"
-              onClick={() => setQuartermasterOpen((open) => !open)}
+              onClick={toggleAgentChat}
               aria-expanded={quartermasterOpen}
               className={`inline-flex min-h-8 items-center gap-2 rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500/60 ${
-                quartermasterOpen
+                agentChatLocked
+                  ? "border-amber-500/45 bg-amber-500/12 text-amber-800 dark:border-amber-300/45 dark:text-amber-100"
+                  : quartermasterOpen
                   ? "border-cyan-500/45 bg-cyan-500/12 text-cyan-700 dark:border-cyan-300/45 dark:text-cyan-100"
                   : "border-slate-300/70 bg-white/75 text-slate-700 hover:bg-slate-100 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-300 dark:hover:bg-white/[0.12]"
               }`}
             >
               <Bot className="h-3.5 w-3.5" />
-              Quartermaster
+              Agent Chat
+              <span className="hidden sm:inline-flex readout rounded bg-slate-200/80 px-1.5 py-0.5 text-[10px] text-slate-600 dark:bg-white/[0.1] dark:text-slate-300">
+                Cmd K
+              </span>
               {!selectedShipDeploymentId && (
                 <span className="readout rounded bg-slate-200/80 px-1.5 py-0.5 text-[10px] text-slate-600 dark:bg-white/[0.1] dark:text-slate-300">
                   No Ship
+                </span>
+              )}
+              {agentChatLocked && (
+                <span className="readout rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] text-amber-800 dark:text-amber-100">
+                  Locked
                 </span>
               )}
             </button>

@@ -25,6 +25,36 @@ services:
     ports:
       - "4747:4747"
 
+  wallet-enclave:
+    build:
+      context: ../services/wallet-enclave
+    container_name: orchwiz-wallet-enclave-dev-local
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3377:3377"
+    env_file:
+      - ../services/wallet-enclave/.env
+    environment:
+      WALLET_ENCLAVE_HOST: "0.0.0.0"
+      WALLET_ENCLAVE_PORT: "3377"
+      WALLET_ENCLAVE_DATA_DIR: "/data"
+    volumes:
+      - wallet_enclave_data_local:/data
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3377/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
 volumes:
   postgres_data_local:
+    driver: local
+  wallet_enclave_data_local:
     driver: local

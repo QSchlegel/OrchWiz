@@ -129,9 +129,18 @@ export function NodeRuntimeIndicator() {
   const pollerRef = useRef<number | null>(null)
   const abortRef = useRef<AbortController | null>(null)
   const unauthorizedRef = useRef(false)
+  const failureCountRef = useRef(0)
+  const backoffUntilRef = useRef(0)
+  const lastLoggedStatusRef = useRef<number | "network" | null>(null)
 
   const fetchMetrics = useCallback(async () => {
     if (unauthorizedRef.current) {
+      return
+    }
+
+    const now = Date.now()
+    if (now < backoffUntilRef.current) {
+      setLoadedOnce(true)
       return
     }
 
@@ -149,11 +158,26 @@ export function NodeRuntimeIndicator() {
         unauthorizedRef.current = true
         setIsVisibleForUser(false)
         setMetrics(null)
+        failureCountRef.current = 0
+        backoffUntilRef.current = 0
+        lastLoggedStatusRef.current = null
         return
       }
 
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`)
+        setMetrics(null)
+        failureCountRef.current += 1
+        const cappedExponent = Math.min(failureCountRef.current - 1, 4)
+        const backoffMs = Math.min(60_000, 5_000 * Math.pow(2, cappedExponent))
+        backoffUntilRef.current = Date.now() + backoffMs
+
+        if (lastLoggedStatusRef.current !== response.status) {
+          lastLoggedStatusRef.current = response.status
+          console.warn(
+            `Node runtime metrics unavailable (HTTP ${response.status}). Backing off for ${Math.round(backoffMs / 1000)}s.`,
+          )
+        }
+        return
       }
 
       const payload = (await response.json()) as NodeRuntimeMetricsPayload
@@ -174,11 +198,27 @@ export function NodeRuntimeIndicator() {
         return next.slice(-MAX_HISTORY_POINTS)
       })
       setIsVisibleForUser(true)
+      failureCountRef.current = 0
+      backoffUntilRef.current = 0
+      lastLoggedStatusRef.current = null
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") {
         return
       }
-      console.error("Failed to load Node runtime footer metrics:", error)
+
+      setMetrics(null)
+      failureCountRef.current += 1
+      const cappedExponent = Math.min(failureCountRef.current - 1, 4)
+      const backoffMs = Math.min(60_000, 5_000 * Math.pow(2, cappedExponent))
+      backoffUntilRef.current = Date.now() + backoffMs
+
+      if (lastLoggedStatusRef.current !== "network") {
+        lastLoggedStatusRef.current = "network"
+        console.warn(
+          `Node runtime metrics unavailable (network error). Backing off for ${Math.round(backoffMs / 1000)}s.`,
+          error,
+        )
+      }
     } finally {
       setLoadedOnce(true)
     }

@@ -23,7 +23,10 @@ import {
   Database,
   Video,
   Gauge,
+  Eye,
   Wrench,
+  KeyRound,
+  Landmark,
   Settings2,
 } from "lucide-react"
 // Github is imported from lucide-react as "Github"
@@ -104,6 +107,8 @@ export const sidebarNav: NavGroup[] = [
       navItem("/performance", "Performance", Gauge),
       navItem("/verification", "Verification", BadgeCheck),
       navItem("/security", "Security", ShieldCheck),
+      navItem("/wallet-enclave", "Wallet Enclave", KeyRound),
+      navItem("/treasury", "Treasury", Landmark),
       navItem("/settings", "Settings", Settings2),
       navItem("/hooks", "Hooks", Webhook),
       navItem("/github/prs", "GitHub PRs", Github),
@@ -116,6 +121,7 @@ export const sidebarNav: NavGroup[] = [
     icon: Globe,
     items: [
       navItem("/projects", "Projects", FolderKanban),
+      navItem("/views", "Views", Eye),
     ],
   },
 ]

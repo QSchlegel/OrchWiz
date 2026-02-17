@@ -8,7 +8,7 @@ import { SidebarGroup } from "./SidebarGroup"
 import { OrchWizMark } from "@/components/brand/OrchWizMark"
 
 export function Sidebar() {
-  const { collapsed, displayCollapsed, toggleCollapsed, setHoverExpanded, mobileOpen, setMobileOpen } = useSidebar()
+  const { collapsed, displayCollapsed, toggleCollapsed, mobileOpen, setMobileOpen } = useSidebar()
 
   const sidebarContent = (
     <>
@@ -37,6 +37,8 @@ export function Sidebar() {
         <button
           type="button"
           onClick={toggleCollapsed}
+          aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
           className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700 dark:text-slate-500 dark:hover:bg-white/[0.06] dark:hover:text-slate-300 ${
             displayCollapsed ? "justify-center" : ""
           }`}
@@ -58,12 +60,6 @@ export function Sidebar() {
     <>
       {/* Desktop sidebar */}
       <aside
-        onMouseEnter={() => {
-          if (collapsed) {
-            setHoverExpanded(true)
-          }
-        }}
-        onMouseLeave={() => setHoverExpanded(false)}
         className={`fixed inset-y-0 left-0 z-40 hidden flex-col border-r border-slate-200/80 bg-white/90 backdrop-blur-sm transition-[width,box-shadow] duration-300 ease-in-out md:flex dark:border-white/10 dark:bg-slate-900/90 ${
           displayCollapsed ? "w-16" : "w-60 shadow-xl shadow-slate-900/20 dark:shadow-black/40"
         }`}

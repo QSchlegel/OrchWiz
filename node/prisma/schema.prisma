@@ -75,11 +75,31 @@ model User {
   ragPerformanceSamples RagPerformanceSample[]
   runtimePerformanceSamples RuntimePerformanceSample[]
   runtimeIntelligencePolicyState RuntimeIntelligencePolicyState?
+
+  securityIncidents   SecurityIncident[]
+  securityIntegrationSecrets SecurityIntegrationSecrets?
+  treasuryConfigsUpdated TreasuryConfig[] @relation("TreasuryConfigUpdatedBy")
 }
 
 enum UserRole {
   captain
   admin
+}
+
+enum SecurityIncidentStatus {
+  open
+  investigating
+  contained
+  eradicated
+  recovered
+  closed
+}
+
+enum SecurityIncidentSeverity {
+  low
+  medium
+  high
+  critical
 }
 
 model AuthSession {
@@ -181,6 +201,8 @@ model Session {
   bridgeAgentChatReplyJobs BridgeAgentChatReplyJob[] @relation("BridgeAgentChatReplyRecipientSession")
   ragPerformanceSamples RagPerformanceSample[]
   runtimePerformanceSamples RuntimePerformanceSample[]
+
+  securityIncident SecurityIncident?
 }
 
 enum SessionStatus {
@@ -279,6 +301,51 @@ model BridgeThread {
   @@index([userId])
   @@index([stationKey])
   @@index([updatedAt])
+}
+
+model SecurityIncident {
+  id            String                  @id @default(cuid())
+  ownerUserId   String
+  title         String
+  summary       String?
+  status        SecurityIncidentStatus  @default(open)
+  severity      SecurityIncidentSeverity @default(medium)
+  isShared      Boolean                 @default(false)
+
+  // Canonical Aurora case JSON (import/export compatible)
+  caseFile      Json
+
+  // Optional link to an OrchWiz Session for traceability + agent runs
+  sessionId     String?                 @unique
+
+  // MISP linkage (push-only v1)
+  mispEventId   String?
+  mispPushedAt  DateTime?
+
+  createdAt     DateTime                @default(now())
+  updatedAt     DateTime                @updatedAt
+  closedAt      DateTime?
+
+  owner         User                    @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+  session       Session?                @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+
+  @@index([ownerUserId, updatedAt(sort: Desc)])
+  @@index([ownerUserId, status, severity, updatedAt(sort: Desc)])
+}
+
+model SecurityIntegrationSecrets {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+
+  // Encrypted/plaintext-fallback envelope for integration secrets.
+  stored    Json
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
 }
 
 model BridgeMessage {
@@ -2261,4 +2328,32 @@ model ShipTopology {
   @@index([userId])
   @@index([teamId])
   @@index([isDefault])
+}
+
+enum TreasuryBackend {
+  mesh_multisig
+}
+
+enum TreasuryNetwork {
+  preview
+  preprod
+  mainnet
+}
+
+model TreasuryConfig {
+  id              String          @id @default(cuid())
+  key             String          @unique // always "default"
+  backend         TreasuryBackend @default(mesh_multisig)
+  network         TreasuryNetwork @default(preprod)
+
+  meshBaseUrl     String
+  meshWalletId    String
+
+  updatedByUserId String?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  updatedBy       User?           @relation("TreasuryConfigUpdatedBy", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([updatedAt])
 }

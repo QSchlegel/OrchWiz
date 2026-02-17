@@ -1,0 +1,22 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: orchwiz
+      POSTGRES_PASSWORD: orchwiz_dev
+      POSTGRES_DB: orchis
+    ports:
+      - "5435:5432"
+    volumes:
+      - orchwiz_postgres_data_desktop:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orchwiz -d orchis"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  orchwiz_postgres_data_desktop:
+    driver: local
+

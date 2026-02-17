@@ -102,13 +102,15 @@ export async function GET(...args: Parameters<typeof defaultHandlers.GET>) {
     const handlers = getHandlersForRequest(request)
     return handlers.GET(...args)
   } catch (error) {
-    console.error("Auth GET route error:", error)
+    const err = error instanceof Error ? error : new Error(String(error))
+    console.error("Auth GET route error:", err.message)
+    if (process.env.NODE_ENV !== "production" && err.stack) {
+      console.error(err.stack)
+    }
     const message =
       process.env.NODE_ENV === "production"
         ? "Internal server error"
-        : error instanceof Error
-          ? error.message
-          : "Internal server error"
+        : err.message
     return NextResponse.json({ error: message }, { status: 500 })
   }
 }
@@ -125,13 +127,15 @@ export async function POST(...args: Parameters<typeof defaultHandlers.POST>) {
     const handlers = getHandlersForRequest(request)
     return handlers.POST(...args)
   } catch (error) {
-    console.error("Auth POST route error:", error)
+    const err = error instanceof Error ? error : new Error(String(error))
+    console.error("Auth POST route error:", err.message)
+    if (process.env.NODE_ENV !== "production" && err.stack) {
+      console.error(err.stack)
+    }
     const message =
       process.env.NODE_ENV === "production"
         ? "Internal server error"
-        : error instanceof Error
-          ? error.message
-          : "Internal server error"
+        : err.message
     return NextResponse.json({ error: message }, { status: 500 })
   }
 }

@@ -4,6 +4,7 @@ import { useSession } from "@/lib/auth-client"
 import { usePathname } from "next/navigation"
 import { useEffect, useMemo } from "react"
 import { Menu } from "lucide-react"
+import { useSetAppSurface } from "@/components/app-surface/AppSurfaceProvider"
 import { WelcomeModal } from "@/components/onboarding/WelcomeModal"
 import {
   SidebarProvider,
@@ -81,6 +82,8 @@ export default function DashboardLayout({
 }) {
   const { data: session, isPending } = useSession()
   const pathname = usePathname()
+
+  useSetAppSurface("dashboard")
 
   useEffect(() => {
     if (!isPending && !session && pathname !== "/login") {

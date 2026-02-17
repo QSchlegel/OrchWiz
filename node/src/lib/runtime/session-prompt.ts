@@ -1,4 +1,5 @@
 import type { Prisma, SessionInteraction } from "@prisma/client"
+import crypto from "node:crypto"
 import { prisma } from "@/lib/prisma"
 import { runSessionRuntime } from "@/lib/runtime"
 import { publishRealtimeEvent } from "@/lib/realtime/events"
@@ -32,6 +33,8 @@ import {
   recordRuntimePerformanceSample,
   type RuntimePerformanceSampleInput,
 } from "@/lib/performance/tracker"
+import { emitTrace } from "@/lib/observability"
+import type { TraceEmitInput } from "@/lib/observability/trace-gateway"
 
 function asRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object") {
@@ -369,6 +372,80 @@ export function enforceQuartermasterCitationFooter(
   return `${trimmed}\n\n${footer}`
 }
 
+export function buildSessionPromptTracePayload(args: {
+  prompt: string
+  outputText?: string | null
+  interactionId?: string | null
+  responseInteractionId?: string | null
+  provider?: string | null
+  fallbackUsed?: boolean | null
+  runtimeProfile?: string | null
+  executionKind?: string | null
+  durationMs?: number | null
+  bridge?: {
+    shipDeploymentId?: string | null
+    stationKey?: string | null
+    bridgeCrewId?: string | null
+  } | null
+  error?: {
+    name: string
+    message: string
+    provider?: string | null
+    code?: string | null
+    status?: number | null
+  } | null
+}): Record<string, unknown> {
+  const bridge = args.bridge ?? {}
+  const runtime: Record<string, unknown> = {}
+  if (args.runtimeProfile) runtime.profile = args.runtimeProfile
+  if (args.executionKind) runtime.executionKind = args.executionKind
+
+  const payload: Record<string, unknown> = {
+    input: {
+      prompt: args.prompt,
+    },
+    output: args.outputText ? { text: args.outputText } : {},
+    interactionId: args.interactionId ?? null,
+    responseInteractionId: args.responseInteractionId ?? null,
+    provider: args.provider ?? null,
+    fallbackUsed: args.fallbackUsed ?? null,
+    runtime,
+    bridge: {
+      shipDeploymentId: bridge.shipDeploymentId ?? null,
+      stationKey: bridge.stationKey ?? null,
+      bridgeCrewId: bridge.bridgeCrewId ?? null,
+    },
+  }
+
+  if (args.durationMs !== undefined) {
+    payload.durationMs = args.durationMs
+  }
+
+  if (args.error) {
+    payload.error = {
+      name: args.error.name,
+      message: args.error.message,
+      provider: args.error.provider ?? null,
+      code: args.error.code ?? null,
+      status: args.error.status ?? null,
+    }
+  }
+
+  return payload
+}
+
+async function emitRuntimeTraceSafe(input: TraceEmitInput): Promise<void> {
+  try {
+    await emitTrace(input)
+  } catch (error) {
+    console.error("runtime_session_prompt_trace_failed", {
+      traceId: input.traceId,
+      source: input.source,
+      message: error instanceof Error ? error.message : "unknown",
+    })
+  }
+}
+
 async function resolveBridgeShipDeploymentId(args: {
   userId: string
   bridgeMetadata: Record<string, unknown>
@@ -448,6 +525,7 @@ export async function executeSessionPrompt(args: ExecuteSessionPromptArgs): Prom
     ? { ...metadataAsRecord, subagentId: resolvedSubagentId }
     : { ...metadataAsRecord }
   const harnessWarnings: string[] = []
+  const traceId = crypto.randomUUID()
 
   const promptResolution = resolveSessionRuntimePrompt({
     userPrompt: args.prompt,
@@ -525,6 +603,29 @@ export async function executeSessionPrompt(args: ExecuteSessionPromptArgs): Prom
     },
   })
 
+  const bridgeMetadata = asRecord(metadataForRuntime.bridge)
+  const quartermasterMetadata = asRecord(metadataForRuntime.quartermaster)
+  const isQuartermasterChannel = quartermasterMetadata.channel === "ship-quartermaster"
+  const isBridgeAgentChannel = bridgeMetadata.channel === "bridge-agent"
+  const bridgeCrewId = nonEmptyString(bridgeMetadata.bridgeCrewId)
+  const bridgeStationKey = nonEmptyString(bridgeMetadata.stationKey)
+
+  const resolveTraceBridgeShipDeploymentId = async (): Promise<string | null> => {
+    let shipDeploymentId = nonEmptyString(bridgeMetadata.shipDeploymentId)
+    if (!shipDeploymentId && isBridgeAgentChannel && bridgeCrewId) {
+      try {
+        shipDeploymentId = await resolveBridgeShipDeploymentId({
+          userId: args.userId,
+          bridgeMetadata,
+        })
+      } catch (error) {
+        console.error("Failed to resolve ship deployment id for trace context (fail-open):", error)
+      }
+    }
+
+    return shipDeploymentId
+  }
+
   try {
     await enqueueSessionToThreadMirrorJob({
       interactionId: interaction.id,
@@ -545,6 +646,7 @@ export async function executeSessionPrompt(args: ExecuteSessionPromptArgs): Prom
   const runtimeProfile = nonEmptyString(runtimeMetadataRecord.profile)
   const runtimeExecutionKind = nonEmptyString(runtimeMetadataRecord.executionKind)
   const runtimeStartedAt = Date.now()
+  let runtimeDurationMs: number | null = null
   let runtimeResult: RuntimeResult
   try {
     runtimeResult = await runSessionRuntime({
@@ -554,6 +656,7 @@ export async function executeSessionPrompt(args: ExecuteSessionPromptArgs): Prom
       metadata: metadataForRuntime,
     })
 
+    runtimeDurationMs = Date.now() - runtimeStartedAt
     const runtimeIntelligence = runtimeIntelligencePerformanceFields(runtimeResult.metadata)
 
     await recordRuntimePerformanceSample({
@@ -564,12 +667,12 @@ export async function executeSessionPrompt(args: ExecuteSessionPromptArgs): Prom
       provider: runtimeResult.provider,
       status: "success",
       fallbackUsed: runtimeResult.fallbackUsed,
-      durationMs: Date.now() - runtimeStartedAt,
+      durationMs: runtimeDurationMs,
       executionKind: runtimeExecutionKind,
       ...runtimeIntelligence,
     })
   } catch (error) {
-    const runtimeDurationMs = Date.now() - runtimeStartedAt
+    runtimeDurationMs = Date.now() - runtimeStartedAt
     if (error instanceof RuntimeProviderError) {
       await recordRuntimePerformanceSample({
         userId: args.userId,
@@ -582,6 +685,37 @@ export async function executeSessionPrompt(args: ExecuteSessionPromptArgs): Prom
         durationMs: runtimeDurationMs,
         errorCode: error.code,
         executionKind: runtimeExecutionKind,
+      })
+
+      const shipDeploymentId = await resolveTraceBridgeShipDeploymentId()
+      await emitRuntimeTraceSafe({
+        traceId,
+        userId: args.userId,
+        sessionId: args.sessionId,
+        source: "runtime.session-prompt",
+        status: "error",
+        payload: buildSessionPromptTracePayload({
+          prompt: args.prompt,
+          interactionId: interaction.id,
+          responseInteractionId: null,
+          provider: error.provider,
+          fallbackUsed: false,
+          runtimeProfile,
+          executionKind: runtimeExecutionKind,
+          durationMs: runtimeDurationMs,
+          bridge: {
+            shipDeploymentId,
+            stationKey: bridgeStationKey,
+            bridgeCrewId,
+          },
+          error: {
+            name: error.name,
+            message: error.message,
+            provider: error.provider,
+            code: error.code,
+            status: error.status,
+          },
+        }),
       })
 
       throw new SessionPromptError(error.message, error.status, {
@@ -604,19 +738,43 @@ export async function executeSessionPrompt(args: ExecuteSessionPromptArgs): Prom
       errorCode: "INTERNAL_ERROR",
       executionKind: runtimeExecutionKind,
     })
+
+    const shipDeploymentId = await resolveTraceBridgeShipDeploymentId()
+    const errorName = error instanceof Error ? error.name : "Error"
+    const errorMessage = error instanceof Error ? error.message : String(error)
+    await emitRuntimeTraceSafe({
+      traceId,
+      userId: args.userId,
+      sessionId: args.sessionId,
+      source: "runtime.session-prompt",
+      status: "error",
+      payload: buildSessionPromptTracePayload({
+        prompt: args.prompt,
+        interactionId: interaction.id,
+        responseInteractionId: null,
+        provider: null,
+        fallbackUsed: false,
+        runtimeProfile,
+        executionKind: runtimeExecutionKind,
+        durationMs: runtimeDurationMs,
+        bridge: {
+          shipDeploymentId,
+          stationKey: bridgeStationKey,
+          bridgeCrewId,
+        },
+        error: {
+          name: errorName,
+          message: errorMessage,
+        },
+      }),
+    })
     throw error
   }
 
-  const bridgeMetadata = asRecord(metadataForRuntime.bridge)
-  const quartermasterMetadata = asRecord(metadataForRuntime.quartermaster)
-  const isQuartermasterChannel = quartermasterMetadata.channel === "ship-quartermaster"
   const finalOutput = isQuartermasterChannel
     ? enforceQuartermasterCitationFooter(runtimeResult.output, quartermasterCitationSources(metadataForRuntime))
     : runtimeResult.output
 
-  const isBridgeAgentChannel = bridgeMetadata.channel === "bridge-agent"
-  const bridgeCrewId = nonEmptyString(bridgeMetadata.bridgeCrewId)
-  const bridgeStationKey = nonEmptyString(bridgeMetadata.stationKey)
   const shouldRequireSignature = isBridgeAgentChannel && requireBridgeSignatures()
   let signatureMetadata: BridgeMessageSignatureMetadata | undefined
 
@@ -725,6 +883,31 @@ export async function executeSessionPrompt(args: ExecuteSessionPromptArgs): Prom
       content: finalOutput,
       metadata: responseMetadata,
     },
+  })
+
+  const traceShipDeploymentId = await resolveTraceBridgeShipDeploymentId()
+  await emitRuntimeTraceSafe({
+    traceId,
+    userId: args.userId,
+    sessionId: args.sessionId,
+    source: "runtime.session-prompt",
+    status: "success",
+    payload: buildSessionPromptTracePayload({
+      prompt: args.prompt,
+      outputText: finalOutput,
+      interactionId: interaction.id,
+      responseInteractionId: responseInteraction.id,
+      provider: runtimeResult.provider,
+      fallbackUsed: runtimeResult.fallbackUsed,
+      runtimeProfile,
+      executionKind: runtimeExecutionKind,
+      durationMs: runtimeDurationMs,
+      bridge: {
+        shipDeploymentId: traceShipDeploymentId,
+        stationKey: bridgeStationKey,
+        bridgeCrewId,
+      },
+    }),
   })
 
   if (isBridgeAgentChannel && bridgeStationKey === "cou") {

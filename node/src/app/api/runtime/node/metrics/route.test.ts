@@ -68,3 +68,30 @@ test("handleGetNodeRuntimeMetrics returns 500 when metrics provider throws", asy
   const payload = await response.json()
   assert.equal(payload.error, "Internal server error")
 })
+
+test("handleGetNodeRuntimeMetrics returns 503 when session provider throws", async () => {
+  const response = await handleGetNodeRuntimeMetrics(requestFor(), {
+    getSessionUserId: async () => {
+      throw new Error("boom")
+    },
+    getMetrics: () => ({
+      capturedAt: "2026-02-12T00:00:00.000Z",
+      status: "healthy",
+      signals: {
+        cpuPercent: 10,
+        heapPressurePercent: 40,
+        eventLoopLagP95Ms: 5,
+        rssBytes: 1000,
+        heapUsedBytes: 800,
+        heapTotalBytes: 1600,
+        uptimeSec: 120,
+      },
+    }),
+  })
+
+  assert.equal(response.status, 503)
+  assert.equal(response.headers.get("retry-after"), "5")
+  const payload = await response.json()
+  assert.equal(payload.error, "Service unavailable")
+  assert.equal(payload.code, "AUTH_UNAVAILABLE")
+})

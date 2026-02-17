@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react"
 import { SessionCard } from "@/components/shared/SessionCard"
 import { authClient, useSession } from "@/lib/auth-client"
 import Link from "next/link"
+import { useSearchParams } from "next/navigation"
 import { Session } from "@prisma/client"
 import { KeyRound, ShieldCheck } from "lucide-react"
 import { OrchestrationSurface } from "@/components/orchestration/OrchestrationSurface"
@@ -35,6 +36,7 @@ const nodeTypes = {
 
 export default function SessionsPage() {
   const { data: session } = useSession()
+  const searchParams = useSearchParams()
   const [sessions, setSessions] = useState<SessionWithCount[]>([])
   const [tasks, setTasks] = useState<TaskSummary[]>([])
   const [isLoading, setIsLoading] = useState(true)
@@ -43,8 +45,8 @@ export default function SessionsPage() {
     status?: string
     mode?: string
   }>({})
-  const [includeForwarded, setIncludeForwarded] = useState(false)
-  const [sourceNodeId, setSourceNodeId] = useState("")
+  const [includeForwarded, setIncludeForwarded] = useState(() => searchParams.get("includeForwarded") === "true")
+  const [sourceNodeId, setSourceNodeId] = useState(() => searchParams.get("sourceNodeId") ?? "")
   const [passkeyCount, setPasskeyCount] = useState<number | null>(null)
   const [isPasskeyLoading, setIsPasskeyLoading] = useState(false)
   const [isPasskeyActionLoading, setIsPasskeyActionLoading] = useState(false)

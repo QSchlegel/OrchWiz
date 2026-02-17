@@ -35,7 +35,7 @@ export function SidebarGroup({ group }: SidebarGroupProps) {
   if (displayCollapsed) {
     return (
       <div className="space-y-0.5 px-2">
-        <div className="relative flex justify-center py-2">
+        <div className="group relative flex justify-center py-2" title={group.label}>
           <GroupIcon
             className={`h-4 w-4 ${
               hasActiveItem
@@ -48,6 +48,9 @@ export function SidebarGroup({ group }: SidebarGroupProps) {
               {groupBadgeLabel}
             </span>
           )}
+          <span className="pointer-events-none absolute left-full z-50 ml-3 whitespace-nowrap rounded-md bg-slate-900 px-2.5 py-1.5 text-xs font-medium text-white opacity-0 shadow-lg transition-opacity duration-150 group-hover:opacity-100 dark:bg-slate-700">
+            {group.label}
+          </span>
         </div>
         {group.items.map((item) => (
           <SidebarItem

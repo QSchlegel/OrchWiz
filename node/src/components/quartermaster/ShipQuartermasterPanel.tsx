@@ -86,6 +86,8 @@ interface ShipQuartermasterPanelProps {
   shipName?: string
   className?: string
   compact?: boolean
+  autoFocusPrompt?: boolean
+  focusSignal?: number
   onShipNotFound?: (shipDeploymentId: string) => void | Promise<void>
 }
 
@@ -274,6 +276,8 @@ export function ShipQuartermasterPanel({
   shipName,
   className,
   compact = false,
+  autoFocusPrompt = false,
+  focusSignal,
   onShipNotFound,
 }: ShipQuartermasterPanelProps) {
   const { getUnread, registerActiveChannels } = useNotifications()
@@ -324,6 +328,8 @@ export function ShipQuartermasterPanel({
   const [chatWindowHeightPx, setChatWindowHeightPx] = useState(compact ? 260 : 320)
   const [chatWindowWidthPx, setChatWindowWidthPx] = useState(compact ? 560 : 680)
   const chatLogRef = useRef<HTMLDivElement | null>(null)
+  const promptRef = useRef<HTMLTextAreaElement | null>(null)
+  const pendingPromptFocusRef = useRef(false)
   const chatResizeStartRef = useRef<{
     startX: number
     startY: number
@@ -331,6 +337,49 @@ export function ShipQuartermasterPanel({
     startHeightPx: number
   } | null>(null)
   const shipNotFoundNotifiedRef = useRef<Set<string>>(new Set())
+
+  const focusPromptSoon = useCallback(() => {
+    window.requestAnimationFrame(() => {
+      promptRef.current?.focus()
+    })
+  }, [])
+
+  const requestPromptFocus = useCallback(() => {
+    if (tab === "chat") {
+      focusPromptSoon()
+      return
+    }
+
+    pendingPromptFocusRef.current = true
+    setTab("chat")
+  }, [focusPromptSoon, setTab, tab])
+
+  useEffect(() => {
+    if (!pendingPromptFocusRef.current) {
+      return
+    }
+
+    if (tab !== "chat") {
+      return
+    }
+
+    pendingPromptFocusRef.current = false
+    focusPromptSoon()
+  }, [focusPromptSoon, tab])
+
+  useEffect(() => {
+    if (autoFocusPrompt) {
+      requestPromptFocus()
+    }
+  }, [autoFocusPrompt, requestPromptFocus])
+
+  useEffect(() => {
+    if (typeof focusSignal !== "number") {
+      return
+    }
+
+    requestPromptFocus()
+  }, [focusSignal, requestPromptFocus])
 
   const handleShipNotFound = useCallback(
     async (error: unknown): Promise<boolean> => {
@@ -1397,6 +1446,7 @@ export function ShipQuartermasterPanel({
 
                 <div className="mt-3">
                   <textarea
+                    ref={promptRef}
                     value={prompt}
                     onChange={(event) => setPrompt(event.target.value)}
                     onKeyDown={handlePromptKeyDown}

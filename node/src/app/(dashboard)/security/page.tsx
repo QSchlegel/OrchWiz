@@ -1,6 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useState } from "react"
+import Link from "next/link"
 import { EmptyState, InlineNotice, PageLayout, SurfaceCard } from "@/components/dashboard/PageLayout"
 
 interface AuditSummary {
@@ -30,9 +31,25 @@ interface BridgeCrewScorecard {
   sampleSize: number
 }
 
+interface IncidentSummaryRow {
+  id: string
+  title: string
+  status: string
+  severity: string
+  updatedAt: string
+  createdAt: string
+  mispEventId: string | null
+  sessionId: string | null
+}
+
 export default function SecurityPage() {
   const [audit, setAudit] = useState<AuditSummary | null>(null)
   const [scorecard, setScorecard] = useState<BridgeCrewScorecard | null>(null)
+  const [incidentSummary, setIncidentSummary] = useState<{
+    openCount: number
+    totalShown: number
+    lastUpdatedAt: string | null
+  } | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [isRunningAudit, setIsRunningAudit] = useState(false)
   const [isRunningStress, setIsRunningStress] = useState(false)
@@ -41,9 +58,10 @@ export default function SecurityPage() {
   const loadData = useCallback(async () => {
     setIsLoading(true)
     try {
-      const [auditResponse, scorecardResponse] = await Promise.all([
+      const [auditResponse, scorecardResponse, incidentResponse] = await Promise.all([
         fetch("/api/security/audits/latest", { cache: "no-store" }),
         fetch("/api/security/bridge-crew/scorecard", { cache: "no-store" }),
+        fetch("/api/security/incidents?includeClosed=false", { cache: "no-store" }),
       ])
 
       if (auditResponse.ok) {
@@ -56,6 +74,16 @@ export default function SecurityPage() {
         setScorecard((await scorecardResponse.json()) as BridgeCrewScorecard)
       } else {
         setScorecard(null)
+      }
+
+      if (incidentResponse.ok) {
+        const payload = (await incidentResponse.json().catch(() => ({}))) as { incidents?: IncidentSummaryRow[] }
+        const incidents = Array.isArray(payload.incidents) ? payload.incidents : []
+        const openCount = incidents.filter((i) => i.status !== "closed").length
+        const lastUpdatedAt = incidents.length > 0 ? incidents[0].updatedAt : null
+        setIncidentSummary({ openCount, totalShown: incidents.length, lastUpdatedAt })
+      } else {
+        setIncidentSummary(null)
       }
     } catch (error) {
       console.error("Failed to load security dashboard data:", error)
@@ -233,6 +261,52 @@ export default function SecurityPage() {
             </div>
           </SurfaceCard>
         ) : null}
+
+        <SurfaceCard>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Incident Response</h2>
+              <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
+                Aurora-compatible incident cases with Vault snapshots and integrations.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Link
+                href="/security/incidents"
+                className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 dark:border-white/20 dark:text-slate-200 dark:hover:bg-white/[0.06]"
+              >
+                Incidents
+              </Link>
+              <Link
+                href="/security/integrations"
+                className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 dark:border-white/20 dark:text-slate-200 dark:hover:bg-white/[0.06]"
+              >
+                Integrations
+              </Link>
+            </div>
+          </div>
+
+          <div className="mt-3 grid grid-cols-1 gap-3 text-sm md:grid-cols-2">
+            <p>
+              <span className="font-medium">Open incidents:</span>{" "}
+              {incidentSummary ? incidentSummary.openCount : "n/a"}
+            </p>
+            <p>
+              <span className="font-medium">Last updated:</span>{" "}
+              {incidentSummary?.lastUpdatedAt ? new Date(incidentSummary.lastUpdatedAt).toLocaleString() : "n/a"}
+            </p>
+          </div>
+
+          {incidentSummary ? (
+            <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">
+              Showing {incidentSummary.totalShown} most-recent incident case(s).
+            </p>
+          ) : (
+            <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">
+              Incident Response module may be disabled (set `ENABLE_SECURITY_INCIDENTS=true`).
+            </p>
+          )}
+        </SurfaceCard>
       </div>
     </PageLayout>
   )

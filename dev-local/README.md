@@ -67,6 +67,10 @@ docker compose down -v
 docker compose up -d
 ```
 
+## Troubleshooting
+
+- Postgres is `unhealthy` / logs show `No space left on device`: free Docker disk space (`docker image prune -f`, `docker builder prune -f`, optionally `docker volume prune -f`) or increase Docker Desktop’s disk allocation, then restart Postgres (`docker compose restart postgres`).
+
 ## Optional: llm-graph-builder ingest stack
 
 Use this only when running `knowledge:ingest` with provider `llm_graph_builder`.

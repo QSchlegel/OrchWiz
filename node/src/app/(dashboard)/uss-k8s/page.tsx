@@ -71,6 +71,7 @@ import {
 } from "@/lib/uss-k8s/window-state"
 import { useSelectionHistory } from "@/lib/uss-k8s/useSelectionHistory"
 import { useShipSelection } from "@/lib/shipyard/useShipSelection"
+import { mintRuntimeJwtCookie } from "@/lib/runtime-jwt-client"
 import { LoadingSkeleton } from "@/components/uss-k8s/LoadingSkeleton"
 import { BridgeCrewCard } from "@/components/uss-k8s/BridgeCrewCard"
 import { ComponentDetailPanel } from "@/components/uss-k8s/ComponentDetailPanel"
@@ -271,6 +272,7 @@ export default function UssK8sPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [kubeviewOpenError, setKubeviewOpenError] = useState<string | null>(null)
 
   const [highlightNodeId, setHighlightNodeId] = useState<string | null>(null)
   const [visibleEdgeTypes, setVisibleEdgeTypes] = useState<Set<EdgeType>>(() => new Set(ALL_EDGE_TYPES))
@@ -425,10 +427,19 @@ export default function UssK8sPage() {
     return kubeview.reason || "KubeView URL is unavailable for the selected ship."
   }, [kubeview.reason, kubeview.url])
 
-  const openKubeview = useCallback(() => {
+  const openKubeview = useCallback(async () => {
+    setKubeviewOpenError(null)
     if (!kubeview.url) {
       return
     }
+
+    const minted = await mintRuntimeJwtCookie()
+    if (!minted.ok) {
+      const base = "Unable to mint runtime auth token. Check ORCHWIZ_RUNTIME_JWT_* configuration."
+      setKubeviewOpenError(minted.detail ? `${base} (${minted.detail})` : base)
+      return
+    }
+
     window.open(kubeview.url, "_blank", "noopener,noreferrer")
   }, [kubeview.url])
 
@@ -1442,6 +1453,11 @@ export default function UssK8sPage() {
               {!kubeview.url && kubeviewUnavailableReason && (
                 <span className="max-w-[260px] truncate text-[11px] text-amber-700 dark:text-amber-300">
                   {kubeviewUnavailableReason}
+                </span>
+              )}
+              {kubeviewOpenError && (
+                <span className="max-w-[260px] truncate text-[11px] text-rose-700 dark:text-rose-200">
+                  {kubeviewOpenError}
                 </span>
               )}
 

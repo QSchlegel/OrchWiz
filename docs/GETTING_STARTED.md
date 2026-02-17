@@ -236,6 +236,7 @@ After login, verify these paths:
 ## Troubleshooting
 
 - `Prisma can't connect`: check `DATABASE_URL` points to port `5435` and Postgres is running.
+- Postgres crash-looping with `No space left on device`: free Docker disk space (`docker image prune -f`, `docker builder prune -f`, optionally `docker volume prune -f`) or increase Docker Desktop’s disk allocation, then restart Postgres (`cd dev-local && docker compose restart postgres`).
 - `BETTER_AUTH_SECRET` errors: ensure it is set and non-empty.
 - Wallet enclave errors (`WALLET_ENCLAVE_DISABLED`/`WALLET_ENCLAVE_UNREACHABLE`):
   - Start wallet-enclave, or disable enclave-required flags in local `.env`.

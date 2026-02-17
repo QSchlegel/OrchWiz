@@ -22,6 +22,8 @@ export function SidebarItem({ item, active }: SidebarItemProps) {
     <Link
       href={item.href}
       aria-current={active ? "page" : undefined}
+      aria-label={displayCollapsed ? item.label : undefined}
+      title={displayCollapsed ? item.label : undefined}
       onClick={() => setMobileOpen(false)}
       className={`group/item relative flex items-center gap-3 rounded-lg px-3 py-2 text-[13px] font-medium transition-colors ${
         active

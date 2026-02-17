@@ -12,6 +12,7 @@ import {
 } from "@/lib/bridge/connections/dispatch-runtime"
 import { BridgeDeckScene3D } from "@/components/bridge/BridgeDeckScene3D"
 import { useShipSelection } from "@/lib/shipyard/useShipSelection"
+import { mintRuntimeJwtCookie } from "@/lib/runtime-jwt-client"
 import {
   ArrowRight,
   Bot,
@@ -688,6 +689,13 @@ export default function BridgePage() {
   }, [selectedShipDeploymentId, setSelectedShipDeploymentId])
 
   const ensureRuntimeEdgeAvailable = useCallback(async (targetHref: string | null): Promise<boolean> => {
+    const minted = await mintRuntimeJwtCookie()
+    if (!minted.ok) {
+      const base = "Unable to mint runtime auth token. Check ORCHWIZ_RUNTIME_JWT_* configuration."
+      setError(minted.detail ? `${base} (${minted.detail})` : base)
+      return false
+    }
+
     if (!selectedShipDeploymentId) {
       return true
     }

@@ -1,3 +1,20 @@
+DO $$ BEGIN
+  CREATE TYPE "PermissionType" AS ENUM (
+    'bash_command',
+    'tool_command'
+  );
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+DO $$ BEGIN
+  CREATE TYPE "PermissionStatus" AS ENUM (
+    'allow',
+    'ask',
+    'deny'
+  );
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
 CREATE TABLE IF NOT EXISTS "PermissionPolicy" (
   "id" TEXT NOT NULL,
   "slug" TEXT NOT NULL,

@@ -989,6 +989,33 @@ function ToggleSwitch(props: {
   )
 }
 
+function LaunchProgressIndicator(props: { percent: number; status: string }) {
+  const percent = Number.isFinite(props.percent) ? Math.max(0, Math.min(100, props.percent)) : 0
+  const percentLabel = `${Math.round(percent)}%`
+
+  return (
+    <div className="w-64 max-w-[78vw]">
+      <div className="mb-1 flex items-center justify-between gap-2 text-[11px] text-slate-600 dark:text-slate-300">
+        <span className="min-w-0 flex-1 truncate">{props.status}</span>
+        <span className="shrink-0 tabular-nums text-slate-500 dark:text-slate-400">{percentLabel}</span>
+      </div>
+      <div
+        role="progressbar"
+        aria-label="Ship launch progress"
+        aria-valuenow={Math.round(percent)}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        className="h-2 overflow-hidden rounded-full border border-amber-500/40 bg-amber-500/10 shadow-[0_1px_0_rgba(15,23,42,0.04)_inset] dark:border-amber-400/30 dark:bg-white/[0.04] dark:shadow-[0_1px_0_rgba(255,255,255,0.06)_inset]"
+      >
+        <div
+          className="h-full rounded-full bg-gradient-to-r from-amber-400 to-orange-500 shadow-[0_0_0_1px_rgba(255,255,255,0.25)_inset] transition-[width] duration-300 ease-out"
+          style={{ width: `${percent}%` }}
+        />
+      </div>
+    </div>
+  )
+}
+
 export default function ShipYardPage() {
   const { selectedShipDeploymentId, setSelectedShipDeploymentId } = useShipSelection()
   const runtimeRefreshGateRef = useRef(0)
@@ -999,6 +1026,12 @@ export default function ShipYardPage() {
   const [launchPanelPreferenceLocked, setLaunchPanelPreferenceLocked] = useState(false)
   const [showAdvancedInfrastructure, setShowAdvancedInfrastructure] = useState(false)
   const [isLaunching, setIsLaunching] = useState(false)
+  const [launchRequestId, setLaunchRequestId] = useState<string | null>(null)
+  const [launchProgress, setLaunchProgress] = useState(0)
+  const [launchStatus, setLaunchStatus] = useState("")
+  const launchFallbackStartedAtRef = useRef(0)
+  const launchFallbackTimerRef = useRef<number | null>(null)
+  const launchHasServerProgressRef = useRef(false)
   const [message, setMessage] = useState<LaunchMessage | null>(null)
   const [billingWallet, setBillingWallet] = useState<ShipyardBillingWalletState | null>(null)
   const [billingQuote, setBillingQuote] = useState<ShipyardBillingQuoteState | null>(null)
@@ -1964,8 +1997,69 @@ export default function ShipYardPage() {
     [activeSecretSnippets.envSnippet, activeSecretSnippets.terraformTfvarsSnippet],
   )
 
+  const stopLaunchFallbackProgress = useCallback(() => {
+    if (launchFallbackTimerRef.current === null) {
+      return
+    }
+    window.clearInterval(launchFallbackTimerRef.current)
+    launchFallbackTimerRef.current = null
+  }, [])
+
+  const startLaunchFallbackProgress = useCallback(() => {
+    stopLaunchFallbackProgress()
+    launchFallbackStartedAtRef.current = Date.now()
+
+    launchFallbackTimerRef.current = window.setInterval(() => {
+      if (launchHasServerProgressRef.current) {
+        stopLaunchFallbackProgress()
+        return
+      }
+
+      const elapsedSeconds = Math.max(0, (Date.now() - launchFallbackStartedAtRef.current) / 1000)
+      const suggestedProgress = Math.min(90, 90 * (1 - Math.exp(-elapsedSeconds / 8)))
+
+      setLaunchProgress((current) => Math.max(current, suggestedProgress))
+
+      setLaunchStatus(() => {
+        if (suggestedProgress < 12) return "Validating launch plan"
+        if (suggestedProgress < 35) return "Creating deployment record"
+        if (suggestedProgress < 70) return "Provisioning infrastructure"
+        if (suggestedProgress < 86) return "Bootstrapping bridge crew"
+        return "Finalizing ship systems"
+      })
+    }, 250)
+  }, [stopLaunchFallbackProgress])
+
+  useEffect(() => {
+    return () => {
+      stopLaunchFallbackProgress()
+    }
+  }, [stopLaunchFallbackProgress])
+
   const handleRealtimeShipEvent = useCallback(
-    (event: { payload: unknown }) => {
+    (event: { type: string; payload: unknown }) => {
+      if (event.type === "ship.launch.progress") {
+        const payload = event.payload as Record<string, unknown>
+        const requestId = typeof payload.requestId === "string" ? payload.requestId : null
+        if (!requestId || !launchRequestId || requestId !== launchRequestId) {
+          return
+        }
+
+        launchHasServerProgressRef.current = true
+        stopLaunchFallbackProgress()
+
+        const percent = typeof payload.percent === "number" ? payload.percent : null
+        const message = typeof payload.message === "string" ? payload.message : null
+
+        if (typeof percent === "number" && Number.isFinite(percent)) {
+          setLaunchProgress((current) => Math.max(current, Math.max(0, Math.min(100, percent))))
+        }
+        if (message && message.trim().length > 0) {
+          setLaunchStatus(message)
+        }
+        return
+      }
+
       void fetchShips()
 
       const now = Date.now()
@@ -1992,15 +2086,27 @@ export default function ShipYardPage() {
       fetchConnectionSummary,
       fetchRuntimeSnapshot,
       fetchShips,
+      launchRequestId,
       selectedShipDeploymentId,
+      stopLaunchFallbackProgress,
     ],
   )
 
   useEventStream({
     enabled: true,
-    types: ["ship.updated", "deployment.updated"],
+    types: ["ship.updated", "deployment.updated", "ship.launch.progress"],
     onEvent: handleRealtimeShipEvent,
   })
+
+  useEffect(() => {
+    if (isLaunching) {
+      return
+    }
+    launchHasServerProgressRef.current = false
+    setLaunchRequestId(null)
+    setLaunchProgress(0)
+    setLaunchStatus("")
+  }, [isLaunching])
 
   useEffect(() => {
     void fetchShips()
@@ -2152,6 +2258,15 @@ export default function ShipYardPage() {
 
     setIsLaunching(true)
     setMessage(null)
+    launchHasServerProgressRef.current = false
+    const requestId =
+      typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(16).slice(2)}`
+    setLaunchRequestId(requestId)
+    setLaunchProgress(0)
+    setLaunchStatus("Preparing ship launch")
+    startLaunchFallbackProgress()
     try {
       const selectedOverrides = Object.fromEntries(
         REQUIRED_BRIDGE_CREW_ROLES.map((role) => [role, form.crewOverrides[role]]),
@@ -2163,6 +2278,7 @@ export default function ShipYardPage() {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
+          requestId,
           name: resolvedShipName,
           description: form.description || null,
           nodeId: resolvedNodeId,
@@ -2270,6 +2386,7 @@ export default function ShipYardPage() {
       console.error("Ship launch failed:", error)
       setMessage({ type: "error", text: "Ship launch failed" })
     } finally {
+      stopLaunchFallbackProgress()
       setIsLaunching(false)
     }
   }
@@ -4327,12 +4444,12 @@ export default function ShipYardPage() {
               </p>
             )}
 
-	            <div ref={wizardFooterRef} className="mt-4 flex items-center justify-between">
-	              <button
-	                type="button"
-	                onClick={() => setStepIndex((current) => Math.max(0, current - 1))}
-	                disabled={stepIndex === 0}
-	                className="rounded-md border border-slate-300/70 bg-white/70 px-3 py-1.5 text-xs font-medium text-slate-700 disabled:opacity-40 dark:border-white/12 dark:bg-white/[0.04] dark:text-slate-200"
+            <div ref={wizardFooterRef} className="mt-4 flex items-start justify-between gap-3">
+              <button
+                type="button"
+                onClick={() => setStepIndex((current) => Math.max(0, current - 1))}
+                disabled={stepIndex === 0}
+                className="rounded-md border border-slate-300/70 bg-white/70 px-3 py-1.5 text-xs font-medium text-slate-700 disabled:opacity-40 dark:border-white/12 dark:bg-white/[0.04] dark:text-slate-200"
               >
                 Back
               </button>
@@ -4347,15 +4464,24 @@ export default function ShipYardPage() {
                   Next Step
                 </button>
               ) : (
-                <button
-                  type="button"
-                  onClick={handleLaunch}
-                  disabled={isLaunching || !canAdvance || launchBlockedByRefueling}
-                  className="inline-flex items-center gap-2 rounded-lg bg-gradient-to-r from-amber-500 to-orange-500 px-5 py-2 text-sm font-semibold text-white shadow-lg shadow-amber-500/20 transition-all hover:shadow-xl hover:shadow-amber-500/30 hover:brightness-110 disabled:opacity-40 active:scale-[0.98] dark:from-amber-500/90 dark:to-orange-500/90"
-                >
-                  {isLaunching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Rocket className="h-4 w-4" />}
-                  Launch Ship
-                </button>
+                <div className="flex flex-col items-end gap-2">
+                  <button
+                    type="button"
+                    onClick={handleLaunch}
+                    disabled={isLaunching || !canAdvance || launchBlockedByRefueling}
+                    className="inline-flex items-center gap-2 rounded-lg bg-gradient-to-r from-amber-500 to-orange-500 px-5 py-2 text-sm font-semibold text-white shadow-lg shadow-amber-500/20 transition-all hover:shadow-xl hover:shadow-amber-500/30 hover:brightness-110 disabled:opacity-40 active:scale-[0.98] dark:from-amber-500/90 dark:to-orange-500/90"
+                  >
+                    {isLaunching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Rocket className="h-4 w-4" />}
+                    Launch Ship
+                  </button>
+
+                  {isLaunching && (
+                    <LaunchProgressIndicator
+                      percent={launchProgress}
+                      status={launchStatus.length > 0 ? launchStatus : "Launching ship"}
+                    />
+                  )}
+                </div>
               )}
             </div>
           </div>

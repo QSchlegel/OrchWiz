@@ -15,6 +15,8 @@ import {
 import Link from "next/link"
 import { OnboardingWizard } from "@/components/onboarding/OnboardingWizard"
 import { XoTeaserChatWindow } from "@/components/landing/XoTeaserChatWindow"
+import { DownloadSection } from "@/components/landing/DownloadSection"
+import { LandingMarkBackdrop3D } from "@/components/landing/LandingMarkBackdrop3D"
 
 const links = {
   startLocal: "/login?ref=landing_start_local_15m",
@@ -149,6 +151,9 @@ export default function Home() {
         <div className="absolute -bottom-40 left-1/3 w-[450px] h-[450px] bg-blue-500/8 dark:bg-blue-600/10 rounded-full blur-[110px] animate-glow delay-3000" />
       </div>
 
+      {/* 3D mark (lazy-loaded last) */}
+      <LandingMarkBackdrop3D />
+
       {/* Grid overlay */}
       <div className="absolute inset-0 bridge-grid pointer-events-none opacity-25 dark:opacity-40" aria-hidden />
 
@@ -156,12 +161,6 @@ export default function Home() {
         {/* ── Hero ── */}
         <section id="hero" className="flex flex-col items-center justify-center min-h-[90vh] px-6 md:px-12 text-center">
           <div className="animate-fade-up max-w-3xl">
-            {/* Badge */}
-            <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full border border-slate-300/80 dark:border-white/10 bg-white/75 dark:bg-white/[0.03] text-xs tracking-widest uppercase text-slate-600 dark:text-gray-400 mb-8 shadow-sm shadow-slate-900/5 dark:shadow-none" style={{ fontFamily: 'var(--font-mono)' }}>
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-              Starfleet-grade Agent VPC for AI infra engineers
-            </div>
-
             {/* Title */}
             <h1 className="text-5xl sm:text-6xl md:text-7xl font-extrabold tracking-tight leading-[0.95] mb-6">
               <span className="bg-gradient-to-br from-violet-600 via-fuchsia-500 to-orange-500 dark:from-violet-400 dark:via-pink-400 dark:to-amber-300 bg-clip-text text-transparent">
@@ -243,6 +242,8 @@ export default function Home() {
         </section>
 
         <XoTeaserChatWindow />
+
+        <DownloadSection />
 
         {/* ── Pain Points ── */}
         <section id="bridge-risks" className="px-6 md:px-12 pb-24">

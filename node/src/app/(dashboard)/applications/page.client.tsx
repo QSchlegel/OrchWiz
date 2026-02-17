@@ -30,6 +30,7 @@ import {
 } from "lucide-react"
 import type { Node } from "reactflow"
 import Link from "next/link"
+import { useSearchParams } from "next/navigation"
 import { OrchestrationSurface } from "@/components/orchestration/OrchestrationSurface"
 import { UseCaseBadge, NodeInfoCard } from "@/components/orchestration/NodeInfoCard"
 import { FlowCanvas } from "@/components/flow/FlowCanvas"
@@ -426,6 +427,7 @@ function asApplicationListItem(application: Application): ApplicationListItem {
 export default function ApplicationsPage() {
   const initialDeploymentProfile: DeploymentProfile = "local_starship_build"
   const { selectedShipDeploymentId, setSelectedShipDeploymentId } = useShipSelection()
+  const searchParams = useSearchParams()
 
   const [applications, setApplications] = useState<Application[]>([])
   const [ships, setShips] = useState<ShipSelectorItem[]>([])
@@ -439,8 +441,8 @@ export default function ApplicationsPage() {
   const [showTopology, setShowTopology] = useState(true)
   const [showAdvancedDeployConfig, setShowAdvancedDeployConfig] = useState(false)
 
-  const [includeForwarded, setIncludeForwarded] = useState(false)
-  const [sourceNodeId, setSourceNodeId] = useState("")
+  const [includeForwarded, setIncludeForwarded] = useState(() => searchParams.get("includeForwarded") === "true")
+  const [sourceNodeId, setSourceNodeId] = useState(() => searchParams.get("sourceNodeId") ?? "")
 
   const [search, setSearch] = useState("")
   const [statusFilter, setStatusFilter] = useState<"all" | Application["status"]>("all")

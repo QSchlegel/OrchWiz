@@ -15,6 +15,10 @@
 # production
 /build
 
+# local output artifacts
+/output/coin-toss/
+/output/playwright/
+
 # misc
 .DS_Store
 *.pem

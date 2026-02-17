@@ -36,6 +36,9 @@ github_client_secret = ""
 
 app_env = {
   ENABLE_LOCAL_COMMAND_EXECUTION = "false"
+  # LANGFUSE_BASE_URL   = "https://langfuse.example.com"
+  # LANGFUSE_PUBLIC_KEY = "replace-with-langfuse-public-key"
+  # LANGFUSE_SECRET_KEY = "replace-with-langfuse-secret-key"
 }
 
 # Kubeview is deployed by default in local profile.

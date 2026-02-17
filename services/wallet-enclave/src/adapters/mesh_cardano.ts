@@ -20,7 +20,9 @@ export interface AddressInput {
 
 interface MeshWalletLike {
   getChangeAddress(): Promise<string>
-  signData(address: string, payload: string): Promise<{ key: string; signature: string }>
+  // MeshWallet.signData signature is (payload, address?) and expects payload as hex string
+  // (it forwards to EmbeddedWallet.signData(address, payloadHex, ...)).
+  signData(payload: string, address?: string): Promise<{ key: string; signature: string }>
 }
 
 function keyRefMnemonicEnvName(keyRef: string): string {
@@ -108,7 +110,7 @@ export class MeshCardanoAdapter {
     const wallet = await this.walletFor(input.keyRef)
     const address = input.address || (await wallet.getChangeAddress())
     const payloadHash = crypto.createHash("sha256").update(input.payload, "utf8").digest("hex")
-    const signed = await wallet.signData(address, payloadToHex(input.payload))
+    const signed = await wallet.signData(payloadToHex(input.payload), address)
 
     if (!signed?.key || !signed?.signature) {
       throw new Error("Mesh signData response missing key/signature")

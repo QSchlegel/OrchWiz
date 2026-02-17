@@ -14,6 +14,7 @@
     "runtime-edge": "tsx src/runtime-edge/server.ts",
     "lint": "eslint .",
     "test": "tsx --test \"src/**/*.test.ts\"",
+    "postinstall": "node scripts/fix-libsodium-wrappers-sumo.cjs",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
     "db:migrate": "prisma migrate dev",
@@ -21,7 +22,10 @@
     "db:seed": "npx tsx prisma/seed.ts",
     "data-core:bootstrap-import": "npx tsx scripts/data-core-bootstrap-import.ts",
     "knowledge:ingest": "npx tsx scripts/knowledge-ingest.ts",
-    "knowledge:ingest:dry-run": "npx tsx scripts/knowledge-ingest.ts --dry-run"
+    "knowledge:ingest:dry-run": "npx tsx scripts/knowledge-ingest.ts --dry-run",
+    "coin:gif": "npx tsx scripts/coin-toss-gif.ts",
+    "downloads:sync": "npx tsx scripts/sync-desktop-downloads.ts",
+    "downloads:mirror-local": "npx tsx scripts/mirror-local-desktop-downloads.ts"
   },
   "prisma": {
     "seed": "npx tsx prisma/seed.ts"
@@ -33,10 +37,12 @@
   "dependencies": {
     "@better-auth/passkey": "^1.4.15",
     "@langfuse/client": "^4.6.0",
+    "@meshsdk/core": "^1.8.11",
     "@octokit/rest": "^22.0.1",
     "@prisma/adapter-pg": "^7.3.0",
     "@prisma/client": "^7.3.0",
     "better-auth": "^1.0.0",
+    "cbor-x": "^1.6.0",
     "dotenv": "^17.2.3",
     "lucide-react": "^0.563.0",
     "next": "^16.1.4",
@@ -61,6 +67,7 @@
     "autoprefixer": "^10.4.19",
     "eslint": "^9.39.2",
     "eslint-config-next": "^16.1.4",
+    "playwright": "^1.58.2",
     "postcss": "^8.4.38",
     "prisma": "^7.3.0",
     "tailwindcss": "^4.1.18",

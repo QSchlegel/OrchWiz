@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import type { Prisma } from "@prisma/client"
 import { prisma } from "@/lib/prisma"
+import { publishRealtimeEvent } from "@/lib/realtime/events"
 import { AccessControlError } from "@/lib/security/access-control"
 import {
   runDeploymentAdapter,
@@ -148,6 +149,28 @@ export async function POST(request: NextRequest) {
       body,
     })
     const ownerUserId = actor.userId
+    const requestId = asString(body?.requestId)
+
+    const emitLaunchProgress = (progress: {
+      percent: number
+      stage: string
+      message: string
+      deploymentId?: string | null
+    }) => {
+      if (!requestId) return
+
+      publishRealtimeEvent({
+        type: "ship.launch.progress",
+        userId: ownerUserId,
+        payload: {
+          requestId,
+          percent: Math.max(0, Math.min(100, Math.round(progress.percent))),
+          stage: progress.stage,
+          message: progress.message,
+          deploymentId: progress.deploymentId ?? null,
+        },
+      })
+    }
 
     const name = asString(body?.name)
     const nodeId = asString(body?.nodeId)
@@ -157,6 +180,12 @@ export async function POST(request: NextRequest) {
         { status: 400 },
       )
     }
+
+    emitLaunchProgress({
+      percent: 5,
+      stage: "validated",
+      message: "Validating launch request",
+    })
 
     const crewRoles = uniqueCrewRoles(body?.crewRoles)
     if (crewRoles.length === 0) {
@@ -284,15 +313,36 @@ export async function POST(request: NextRequest) {
       return { deployment, bridgeCrew }
     })
 
+    emitLaunchProgress({
+      percent: 18,
+      stage: "records_created",
+      message: "Creating ship deployment record",
+      deploymentId: created.deployment.id,
+    })
+
     const quartermaster = await ensureShipQuartermaster({
       userId: ownerUserId,
       shipDeploymentId: created.deployment.id,
       shipName: created.deployment.name,
     })
 
+    emitLaunchProgress({
+      percent: 25,
+      stage: "quartermaster_ready",
+      message: "Assigning ship quartermaster",
+      deploymentId: created.deployment.id,
+    })
+
     await prisma.agentDeployment.update({
       where: { id: created.deployment.id },
       data: { status: "deploying" },
+    })
+
+    emitLaunchProgress({
+      percent: 32,
+      stage: "deploying",
+      message: "Provisioning infrastructure",
+      deploymentId: created.deployment.id,
     })
 
     const bridgeCrew = created.bridgeCrew.sort(
@@ -323,6 +373,13 @@ export async function POST(request: NextRequest) {
       metadata?: Record<string, unknown>
       httpStatus?: number
     }) => {
+      emitLaunchProgress({
+        percent: 100,
+        stage: "failed",
+        message: args.error,
+        deploymentId: created.deployment.id,
+      })
+
       if (launchDebitedAmountCents > 0 && !launchRefunded) {
         try {
           const refundResult = await refundLaunchDebit({
@@ -417,6 +474,13 @@ export async function POST(request: NextRequest) {
 
     let adapterResult: DeploymentAdapterResult
     if (created.deployment.deploymentProfile === "local_starship_build") {
+      emitLaunchProgress({
+        percent: 42,
+        stage: "launching_local",
+        message: "Bootstrapping local Starship build",
+        deploymentId: created.deployment.id,
+      })
+
       const launchResult = await runShipyardLocalLaunch({
         provisioningMode: created.deployment.provisioningMode,
         infrastructure: normalizedProfile.infrastructure as InfrastructureConfig,
@@ -442,6 +506,13 @@ export async function POST(request: NextRequest) {
         && cloudProvider
         && cloudProvider.provider === "hetzner"
       ) {
+        emitLaunchProgress({
+          percent: 42,
+          stage: "launching_cloud",
+          message: "Starting managed cloud provisioning",
+          deploymentId: created.deployment.id,
+        })
+
         const credentials = await prisma.shipyardCloudCredential.findUnique({
           where: {
             userId_provider: {
@@ -638,6 +709,13 @@ export async function POST(request: NextRequest) {
           },
         }
       } else {
+        emitLaunchProgress({
+          percent: 42,
+          stage: "launching",
+          message: "Provisioning deployment",
+          deploymentId: created.deployment.id,
+        })
+
         adapterResult = await runDeploymentAdapter({
           kind: "agent",
           recordId: created.deployment.id,
@@ -654,6 +732,13 @@ export async function POST(request: NextRequest) {
         })
       }
     }
+
+    emitLaunchProgress({
+      percent: 74,
+      stage: "adapter_complete",
+      message: "Deployment adapter complete. Bootstrapping applications",
+      deploymentId: created.deployment.id,
+    })
 
     const successMetadata = {
       ...mergeMetadataPreservingKubeview(
@@ -672,6 +757,13 @@ export async function POST(request: NextRequest) {
         healthStatus: adapterResult.healthStatus || null,
         metadata: successMetadata as Prisma.InputJsonValue,
       },
+    })
+
+    emitLaunchProgress({
+      percent: 86,
+      stage: "bootstrapping_apps",
+      message: "Bootstrapping initial applications",
+      deploymentId: deployment.id,
     })
 
     const bootstrap = await bootstrapInitialApplicationsForShipFailOpen({
@@ -726,11 +818,25 @@ export async function POST(request: NextRequest) {
       },
     })
 
+    emitLaunchProgress({
+      percent: 97,
+      stage: "finalizing",
+      message: "Finalizing ship systems",
+      deploymentId: deployment.id,
+    })
+
     publishShipUpdated({
       shipId: deployment.id,
       status: deployment.status,
       nodeId: deployment.nodeId,
       userId: ownerUserId,
+    })
+
+    emitLaunchProgress({
+      percent: 100,
+      stage: "complete",
+      message: "Ship launch complete",
+      deploymentId: deployment.id,
     })
 
     return NextResponse.json({

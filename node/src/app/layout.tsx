@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Suspense } from "react";
 import "./globals.css";
+import { AppSurfaceProvider } from "@/components/app-surface/AppSurfaceProvider";
 import { ThemeProvider } from "@/components/theme/ThemeProvider";
 import { ThemeFooter } from "@/components/theme/ThemeFooter";
 import { NotificationProvider } from "@/components/notifications";
@@ -73,14 +74,16 @@ export default function RootLayout({
         />
       </head>
       <body className="owz-launch">
-        <ThemeProvider>
-          <NotificationProvider>
-            {children}
-            <Suspense fallback={null}>
-              <ThemeFooter />
-            </Suspense>
-          </NotificationProvider>
-        </ThemeProvider>
+        <AppSurfaceProvider>
+          <ThemeProvider>
+            <NotificationProvider>
+              {children}
+              <Suspense fallback={null}>
+                <ThemeFooter />
+              </Suspense>
+            </NotificationProvider>
+          </ThemeProvider>
+        </AppSurfaceProvider>
       </body>
     </html>
   );

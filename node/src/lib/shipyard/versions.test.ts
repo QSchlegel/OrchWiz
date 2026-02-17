@@ -12,12 +12,13 @@ import {
 test("isKnownShipVersion validates catalog entries", () => {
   assert.equal(isKnownShipVersion("v1"), true)
   assert.equal(isKnownShipVersion("v2"), true)
+  assert.equal(isKnownShipVersion("v3"), true)
   assert.equal(isKnownShipVersion("v99"), false)
   assert.equal(isKnownShipVersion(2), false)
 })
 
 test("resolveShipVersion falls back to baseline for unknown values", () => {
-  assert.equal(resolveShipVersion("v2"), "v2")
+  assert.equal(resolveShipVersion("v3"), "v3")
   assert.equal(resolveShipVersion("unknown"), SHIP_BASELINE_VERSION)
   assert.equal(resolveShipVersion(null), SHIP_BASELINE_VERSION)
 })
@@ -28,7 +29,8 @@ test("latestShipVersion returns latest catalog entry", () => {
 
 test("shipVersionNeedsUpgrade compares current and target versions", () => {
   assert.equal(shipVersionNeedsUpgrade("v1"), true)
-  assert.equal(shipVersionNeedsUpgrade("v2"), false)
+  assert.equal(shipVersionNeedsUpgrade("v2"), true)
+  assert.equal(shipVersionNeedsUpgrade("v3"), false)
   assert.equal(shipVersionNeedsUpgrade("unknown"), true)
   assert.equal(shipVersionNeedsUpgrade("v2", "v2"), false)
   assert.equal(shipVersionNeedsUpgrade("v1", "v1"), false)

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react"
 import Link from "next/link"
+import { useSearchParams } from "next/navigation"
 import { FilterBar, InlineNotice, PageLayout, SurfaceCard, EmptyState } from "@/components/dashboard/PageLayout"
 import { StatusPill } from "@/components/dashboard/StatusPill"
 import { useEventStream } from "@/lib/realtime/useEventStream"
@@ -31,12 +32,13 @@ interface SessionOption {
 }
 
 export default function VerificationPage() {
+  const searchParams = useSearchParams()
   const [runs, setRuns] = useState<VerificationRun[]>([])
   const [sessions, setSessions] = useState<SessionOption[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [filters, setFilters] = useState({ type: "", status: "" })
-  const [includeForwarded, setIncludeForwarded] = useState(false)
-  const [sourceNodeId, setSourceNodeId] = useState("")
+  const [includeForwarded, setIncludeForwarded] = useState(() => searchParams.get("includeForwarded") === "true")
+  const [sourceNodeId, setSourceNodeId] = useState(() => searchParams.get("sourceNodeId") ?? "")
   const [message, setMessage] = useState<{ type: "error" | "success" | "info"; text: string } | null>(null)
   const [showCreateForm, setShowCreateForm] = useState(false)
   const [isCreating, setIsCreating] = useState(false)
