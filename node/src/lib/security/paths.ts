@@ -21,6 +21,14 @@ export function resolveSecurityAuditDirectory(): string {
   return resolve(resolveRepositoryRoot(), "OWZ-Vault", "00-Inbox", "Security-Audits")
 }
 
+export function resolveSecurityAuditReviewDirectory(): string {
+  return resolve(resolveSecurityAuditDirectory(), "Reviews")
+}
+
+export function resolveSecurityIncidentDirectory(): string {
+  return resolve(resolveRepositoryRoot(), "OWZ-Vault", "00-Inbox", "Security-Incidents")
+}
+
 export function resolveBridgeCrewScorecardDirectory(): string {
   return resolve(resolveSecurityAuditDirectory(), "Bridge-Crew")
 }

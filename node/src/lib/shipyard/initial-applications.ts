@@ -6,9 +6,15 @@ import type {
   Prisma,
   ProvisioningMode,
 } from "@prisma/client"
+import crypto from "node:crypto"
 import { prisma } from "@/lib/prisma"
 import { runDeploymentAdapter, type DeploymentAdapterResult } from "@/lib/deployment/adapter"
 import { publishShipApplicationUpdated } from "@/lib/shipyard/events"
+import {
+  getDatabaseUrlFromCluster,
+  type RunCommandFn,
+} from "@/lib/shipyard/cluster-database-url"
+import { applyN8NBootstrapDefaults } from "@/lib/shipyard/n8n-bootstrap-defaults"
 import { resolveShipyardSecretTemplateValues } from "@/lib/shipyard/secret-vault"
 import { importCuratedToolForUser } from "@/lib/tools/catalog"
 import { ensureShipToolGrantForBootstrap } from "@/lib/tools/requests"
@@ -90,6 +96,10 @@ interface InitialApplicationDependencies {
   importCuratedToolForUserFn?: typeof importCuratedToolForUser
   ensureShipToolGrantForBootstrapFn?: typeof ensureShipToolGrantForBootstrap
   sleepFn?: (ms: number) => Promise<void>
+  /** Optional progress callback for launch progress (message, optional percent in 86–92). */
+  onProgress?: (message: string, percent?: number) => void
+  /** Optional: run a shell command (e.g. kubectl). Used to read DATABASE_URL from cluster when template has no postgres_password/database_url. */
+  runCommandFn?: RunCommandFn
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -516,7 +526,38 @@ export async function bootstrapInitialApplicationsForShip(
     stored: template?.secrets || {},
   })
 
-  const missingSecrets = missingRequiredN8NSecrets(asRecord(resolvedSecrets))
+  const shipConfig = asRecord(args.ship.config)
+  const shipInfrastructure = asRecord(shipConfig.infrastructure)
+  const namespace = asString(shipInfrastructure.namespace)
+  const kubeContext = asString(shipInfrastructure.kubeContext)
+
+  let databaseUrlFromCluster: string | null = null
+  const needDatabaseUrlFromCluster =
+    (args.ship.deploymentProfile === "local_starship_build" && !asString(resolvedSecrets.postgres_password)) ||
+    (args.ship.deploymentProfile === "cloud_shipyard" && !asString(resolvedSecrets.database_url))
+  if (needDatabaseUrlFromCluster && dependencies.runCommandFn && namespace && kubeContext) {
+    databaseUrlFromCluster = await getDatabaseUrlFromCluster(
+      { kubeContext, namespace },
+      dependencies.runCommandFn,
+    )
+  }
+
+  const contextDatabaseUrl = asString(resolvedSecrets.database_url) ?? databaseUrlFromCluster
+  const mergedSecrets = applyN8NBootstrapDefaults(
+    resolvedSecrets,
+    {
+      deploymentProfile: args.ship.deploymentProfile,
+      namespace,
+      nodeUrl: args.ship.nodeUrl,
+      postgresPassword: asString(resolvedSecrets.postgres_password),
+      databaseUrl: contextDatabaseUrl,
+    },
+    {
+      generateRandomSecret: (byteLength) => crypto.randomBytes(byteLength).toString("hex"),
+    },
+  )
+
+  const missingSecrets = missingRequiredN8NSecrets(asRecord(mergedSecrets))
   if (missingSecrets.length > 0) {
     result.missingSecrets = missingSecrets
     result.errors.push({
@@ -528,9 +569,11 @@ export async function bootstrapInitialApplicationsForShip(
     return { n8n: result }
   }
 
+  dependencies.onProgress?.("Configuring n8n", 87)
+
   let n8nEnvironment: Record<string, string>
   try {
-    n8nEnvironment = buildN8NEnvironment(asRecord(resolvedSecrets))
+    n8nEnvironment = buildN8NEnvironment(asRecord(mergedSecrets))
   } catch (error) {
     result.errors.push({
       stage: "preflight",
@@ -576,6 +619,7 @@ export async function bootstrapInitialApplicationsForShip(
 
     if (deployed.adapterResult.status !== "failed") {
       deploymentSucceeded = true
+      dependencies.onProgress?.("n8n deployed", 88)
       break
     }
 
@@ -619,6 +663,8 @@ export async function bootstrapInitialApplicationsForShip(
     }
 
     result.toolCatalogEntryId = importOutcome.entry.id
+
+    dependencies.onProgress?.("Registering tools", 89)
 
     try {
       const grant = await ensureShipToolGrantForBootstrapFn({

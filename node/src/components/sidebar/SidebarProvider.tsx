@@ -10,7 +10,6 @@ export interface SidebarContextValue {
   collapsed: boolean
   displayCollapsed: boolean
   toggleCollapsed: () => void
-  setHoverExpanded: (v: boolean) => void
   mobileOpen: boolean
   setMobileOpen: (v: boolean) => void
   expandedGroups: Set<string>
@@ -28,8 +27,11 @@ function findActiveGroupKey(pathname: string | null): string | undefined {
 export function SidebarProvider({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
   const [collapsed, setCollapsed] = useState(false)
-  const [hoverExpanded, setHoverExpanded] = useState(false)
   const [mobileOpen, setMobileOpen] = useState(false)
+  const [isDesktop, setIsDesktop] = useState(() => {
+    if (typeof window === "undefined") return true
+    return window.matchMedia("(min-width: 768px)").matches
+  })
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => {
     const activeKey = findActiveGroupKey(pathname)
     return new Set(activeKey ? [activeKey] : [sidebarNav[0].key])
@@ -50,12 +52,19 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
     }
   }, [collapsed])
 
-  // Hover expansion only applies while user preference is collapsed.
+  // Track desktop breakpoint so "icons-only" mode stays desktop-only.
   useEffect(() => {
-    if (!collapsed && hoverExpanded) {
-      setHoverExpanded(false)
+    const mql = window.matchMedia("(min-width: 768px)")
+    const onChange = () => setIsDesktop(mql.matches)
+    onChange()
+    if (typeof mql.addEventListener === "function") {
+      mql.addEventListener("change", onChange)
+      return () => mql.removeEventListener("change", onChange)
     }
-  }, [collapsed, hoverExpanded])
+    // Safari < 14
+    mql.addListener(onChange)
+    return () => mql.removeListener(onChange)
+  }, [])
 
   // Close mobile sidebar on route change
   useEffect(() => {
@@ -84,14 +93,13 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
     })
   }, [])
 
-  const displayCollapsed = collapsed && !hoverExpanded
+  const displayCollapsed = collapsed && isDesktop
 
   const value = useMemo<SidebarContextValue>(
     () => ({
       collapsed,
       displayCollapsed,
       toggleCollapsed,
-      setHoverExpanded,
       mobileOpen,
       setMobileOpen,
       expandedGroups,

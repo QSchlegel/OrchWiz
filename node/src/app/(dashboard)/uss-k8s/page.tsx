@@ -71,11 +71,17 @@ import {
 } from "@/lib/uss-k8s/window-state"
 import { useSelectionHistory } from "@/lib/uss-k8s/useSelectionHistory"
 import { useShipSelection } from "@/lib/shipyard/useShipSelection"
+import { mintRuntimeJwtCookie } from "@/lib/runtime-jwt-client"
 import { LoadingSkeleton } from "@/components/uss-k8s/LoadingSkeleton"
 import { BridgeCrewCard } from "@/components/uss-k8s/BridgeCrewCard"
 import { ComponentDetailPanel } from "@/components/uss-k8s/ComponentDetailPanel"
 import { TopologyControls } from "@/components/uss-k8s/TopologyControls"
 import { DockableWindow } from "@/components/uss-k8s/DockableWindow"
+import { HierarchyPanel } from "@/components/uss-k8s/HierarchyPanel"
+import { ServiceEmbedWindow } from "@/components/uss-k8s/ServiceEmbedWindow"
+import { GroupLegend } from "@/components/uss-k8s/GroupLegend"
+import { ObservabilityList } from "@/components/uss-k8s/ObservabilityList"
+import { OperatorSummary } from "@/components/uss-k8s/OperatorSummary"
 import { FocusModeDock } from "@/components/uss-k8s/FocusModeDock"
 import { FocusModeDrawer } from "@/components/uss-k8s/FocusModeDrawer"
 import {
@@ -135,20 +141,11 @@ const componentIcons: Record<string, React.ElementType> = {
 
 const ALL_EDGE_TYPES = new Set<EdgeType>(["control", "data", "telemetry", "alert"])
 
-const COMMAND_TIER_CLASSES: Record<number, string> = {
-  1: "border-amber-500/45 bg-amber-500/12 text-amber-700 dark:border-amber-300/45 dark:text-amber-100",
-  2: "border-cyan-500/45 bg-cyan-500/12 text-cyan-700 dark:border-cyan-300/45 dark:text-cyan-100",
-  3: "border-sky-500/45 bg-sky-500/12 text-sky-700 dark:border-sky-300/45 dark:text-sky-100",
-  4: "border-emerald-500/45 bg-emerald-500/12 text-emerald-700 dark:border-emerald-300/45 dark:text-emerald-100",
-  5: "border-rose-500/45 bg-rose-500/12 text-rose-700 dark:border-rose-300/45 dark:text-rose-100",
-  6: "border-violet-500/45 bg-violet-500/12 text-violet-700 dark:border-violet-300/45 dark:text-violet-100",
-}
-
 const floatingPanelClass =
   "rounded-xl border border-slate-300/75 bg-white/88 shadow-[0_10px_28px_rgba(15,23,42,0.18)] backdrop-blur-lg dark:border-white/12 dark:bg-slate-950/78"
 
 type MobileSection = "topology" | "detail" | "crew" | "observability"
-type DesktopWindowId = "hierarchy" | "operator" | "crew" | "detail" | "legend"
+type DesktopWindowId = "hierarchy" | "operator" | "crew" | "detail" | "legend" | "service-embed"
 
 interface DesktopWindowState {
   x: number
@@ -187,6 +184,7 @@ const DESKTOP_WINDOW_META: Record<DesktopWindowId, DesktopWindowMeta> = {
   crew: { subtitle: "Command Context", title: "Bridge Crew" },
   detail: { subtitle: "Selected Component", title: "Component Detail" },
   legend: { subtitle: "Topology Workspace", title: "Topology Group Legend" },
+  "service-embed": { subtitle: "Service UI", title: "Service Embed" },
 }
 
 const FOCUS_DOCK_ITEMS: { id: DesktopWindowId; icon: React.ElementType; label: string }[] = [
@@ -195,10 +193,11 @@ const FOCUS_DOCK_ITEMS: { id: DesktopWindowId; icon: React.ElementType; label: s
   { id: "crew", icon: Bot, label: "Bridge Crew" },
   { id: "detail", icon: Cpu, label: "Component Detail" },
   { id: "legend", icon: Eye, label: "Topology Group Legend" },
+  { id: "service-embed", icon: Monitor, label: "Service Embed" },
 ]
 
 function isDesktopWindowId(value: string): value is DesktopWindowId {
-  return value === "hierarchy" || value === "operator" || value === "crew" || value === "detail" || value === "legend"
+  return value === "hierarchy" || value === "operator" || value === "crew" || value === "detail" || value === "legend" || value === "service-embed"
 }
 
 function createInitialDesktopWindows(stageWidth: number, stageHeight: number): Record<DesktopWindowId, DesktopWindowState> {
@@ -246,6 +245,15 @@ function createInitialDesktopWindows(stageWidth: number, stageHeight: number): R
       collapsed: false,
       bodyCollapsed: false,
     },
+    "service-embed": {
+      x: Math.max(16, (stageWidth - 800) / 2),
+      y: Math.max(16, (stageHeight - 600) / 2),
+      width: Math.min(800, stageWidth - 32),
+      minHeight: Math.min(600, stageHeight - 32),
+      z: 1,
+      collapsed: true,
+      bodyCollapsed: false,
+    },
   }
 }
 
@@ -270,7 +278,11 @@ export default function UssK8sPage() {
   const [kubeview, setKubeview] = useState<KubeviewAccess>(DEFAULT_KUBEVIEW_ACCESS)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
+  const [isBackgroundRefreshing, setIsBackgroundRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [kubeviewOpenError, setKubeviewOpenError] = useState<string | null>(null)
+  const [embedServiceUrl, setEmbedServiceUrl] = useState<string | null>(null)
+  const [embedServiceLabel, setEmbedServiceLabel] = useState<string | null>(null)
 
   const [highlightNodeId, setHighlightNodeId] = useState<string | null>(null)
   const [visibleEdgeTypes, setVisibleEdgeTypes] = useState<Set<EdgeType>>(() => new Set(ALL_EDGE_TYPES))
@@ -316,6 +328,8 @@ export default function UssK8sPage() {
     if (!background) {
       setIsLoading(true)
       setError(null)
+    } else {
+      setIsBackgroundRefreshing(true)
     }
 
     try {
@@ -348,6 +362,7 @@ export default function UssK8sPage() {
       if (!background) {
         setIsLoading(false)
       }
+      setIsBackgroundRefreshing(false)
     }
   }, [selectedShipDeploymentId, setSelectedShipDeploymentId])
 
@@ -425,10 +440,19 @@ export default function UssK8sPage() {
     return kubeview.reason || "KubeView URL is unavailable for the selected ship."
   }, [kubeview.reason, kubeview.url])
 
-  const openKubeview = useCallback(() => {
+  const openKubeview = useCallback(async () => {
+    setKubeviewOpenError(null)
     if (!kubeview.url) {
       return
     }
+
+    const minted = await mintRuntimeJwtCookie()
+    if (!minted.ok) {
+      const base = "Unable to mint runtime auth token. Check ORCHWIZ_RUNTIME_JWT_* configuration."
+      setKubeviewOpenError(minted.detail ? `${base} (${minted.detail})` : base)
+      return
+    }
+
     window.open(kubeview.url, "_blank", "noopener,noreferrer")
   }, [kubeview.url])
 
@@ -571,7 +595,7 @@ export default function UssK8sPage() {
   }, [])
 
   const hideAllWindows = useCallback(() => {
-    const ids: DesktopWindowId[] = ["hierarchy", "operator", "crew", "detail", "legend"]
+    const ids: DesktopWindowId[] = ["hierarchy", "operator", "crew", "detail", "legend", "service-embed"]
     for (const id of ids) dockDesktopWindow(id)
   }, [dockDesktopWindow])
 
@@ -818,21 +842,29 @@ export default function UssK8sPage() {
     )
   }, [components, searchTerm, activeGroupFilter])
 
-  const topologyNodes = useMemo(() => {
+  // Phase 1: layout — only recalculates when components or groups change (not on selection)
+  const layoutedNodes = useMemo(() => {
     const mappedNodes = groupOrder.flatMap((groupKey) =>
       mapSubsystemToNodes(
         filteredComponents.filter((component) => component.group === groupKey).map((component) => ({
           ...component,
           status: component.status || "nominal",
         })),
-        selectedId || undefined,
+        undefined,
         { visualVariant: "uss-k8s" },
       ),
     )
+    return layoutUssK8sTopology(mappedNodes)
+  }, [filteredComponents, groupOrder])
 
-    const layouted = layoutUssK8sTopology(mappedNodes)
-    return mergeCustomPositions(layouted, nodePositionOverrides)
-  }, [filteredComponents, selectedId, nodePositionOverrides, groupOrder])
+  // Phase 2: cheap — apply selection highlight + position overrides
+  const topologyNodes = useMemo(() => {
+    const withPositions = mergeCustomPositions(layoutedNodes, nodePositionOverrides)
+    return withPositions.map((node) => ({
+      ...node,
+      selected: node.id === selectedId,
+    }))
+  }, [layoutedNodes, selectedId, nodePositionOverrides])
 
   const edgeTypeByLink = useMemo(
     () => new Map(topologyEdgesSource.map((edge) => [`${edge.source}->${edge.target}`, edge.edgeType] as const)),
@@ -877,7 +909,13 @@ export default function UssK8sPage() {
     setSelectedId(node.id)
     setHighlightNodeId(node.id)
     restoreDesktopWindow("detail")
-  }, [restoreDesktopWindow])
+
+    // Auto-open service embed for nodes with a serviceUrl
+    const component = components.find((c) => c.id === node.id)
+    if (component?.serviceUrl) {
+      openServiceEmbed(component.serviceUrl, component.label)
+    }
+  }, [restoreDesktopWindow, components, openServiceEmbed])
 
   const handlePaneClick = useCallback(() => {
     setSelectedId(null)
@@ -1030,6 +1068,18 @@ export default function UssK8sPage() {
     setMobileSection("detail")
   }, [selectAndHighlight])
 
+  const openServiceEmbed = useCallback((url: string, label: string) => {
+    setEmbedServiceUrl(url)
+    setEmbedServiceLabel(label)
+    restoreDesktopWindow("service-embed")
+  }, [restoreDesktopWindow])
+
+  const closeServiceEmbed = useCallback(() => {
+    dockDesktopWindow("service-embed")
+    setEmbedServiceUrl(null)
+    setEmbedServiceLabel(null)
+  }, [dockDesktopWindow])
+
   const highlightLabel = useMemo(() => {
     if (!highlightNodeId) return null
     return components.find((c) => c.id === highlightNodeId)?.label || highlightNodeId
@@ -1055,7 +1105,7 @@ export default function UssK8sPage() {
 
   // Global keyboard shortcuts
   useEffect(() => {
-    const WINDOW_IDS: DesktopWindowId[] = ["hierarchy", "operator", "crew", "detail", "legend"]
+    const WINDOW_IDS: DesktopWindowId[] = ["hierarchy", "operator", "crew", "detail", "legend", "service-embed"]
 
     const handleKeyDown = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName
@@ -1079,7 +1129,7 @@ export default function UssK8sPage() {
       }
 
       // Cmd/Ctrl + 1-5: toggle windows
-      if ((e.metaKey || e.ctrlKey) && e.key >= "1" && e.key <= "5") {
+      if ((e.metaKey || e.ctrlKey) && e.key >= "1" && e.key <= "6") {
         e.preventDefault()
         const index = parseInt(e.key) - 1
         const windowId = WINDOW_IDS[index]
@@ -1153,160 +1203,9 @@ export default function UssK8sPage() {
     return () => window.removeEventListener("keydown", handleKeyDown)
   }, [focusMode, focusDrawerId, desktopWindows, dockDesktopWindow, restoreDesktopWindow, toggleFocusMode, selectedId, adjacency, selectionHistory, selectAndHighlight, components])
 
-  const hierarchyPanel = (
-    <div className="rounded-lg border border-slate-300/75 bg-white/72 px-3 py-3 dark:border-white/12 dark:bg-white/[0.03]">
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <span className="readout text-slate-700 dark:text-slate-300">Command Hierarchy</span>
-        <span className="readout text-slate-600 dark:text-slate-400">
-          {activeHierarchyTier ? `Focused C${activeHierarchyTier}` : "Select a tier"}
-        </span>
-      </div>
-      <div className="flex flex-nowrap gap-2 overflow-x-auto pb-1.5 sm:flex-wrap sm:overflow-visible sm:pb-0">
-        {commandHierarchy.map((tier) => {
-          const isActive = activeHierarchyTier === tier.tier
-          const anchorNodeId = tier.nodeIds[0]
-          const tierClass =
-            COMMAND_TIER_CLASSES[tier.tier] ||
-            "border-slate-500/45 bg-slate-500/12 text-slate-700 dark:border-slate-300/45 dark:text-slate-100"
-
-          return (
-            <button
-              key={tier.tier}
-              type="button"
-              onClick={() => selectAndHighlight(anchorNodeId)}
-              className={`flex min-h-[34px] shrink-0 items-center gap-2 rounded-md border px-2.5 py-1.5 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500/60 dark:focus-visible:ring-cyan-400/60 ${
-                isActive
-                  ? tierClass
-                  : "border-slate-300/75 bg-white/70 text-slate-700 hover:border-slate-400 hover:bg-white dark:border-white/12 dark:bg-transparent dark:text-slate-300 dark:hover:border-white/25 dark:hover:bg-white/[0.06]"
-              }`}
-              title={tier.description}
-            >
-              <span className={`readout rounded border px-1 py-0.5 ${tierClass}`}>
-                C{tier.tier}
-              </span>
-              <span className="text-[12px] font-medium">{tier.label}</span>
-            </button>
-          )
-        })}
-      </div>
-    </div>
-  )
-
-  const groupLegend = (
-    <div className="flex items-center gap-3 overflow-x-auto pb-1.5 sm:flex-wrap sm:overflow-visible sm:pb-0">
-      {groupOrder.map((groupKey) => {
-        const config = subsystemGroupConfig[groupKey]
-        const isActive = activeGroupFilter === groupKey
-
-        return (
-          <button
-            key={groupKey}
-            type="button"
-            onClick={() => setActiveGroupFilter((prev) => (prev === groupKey ? null : groupKey))}
-            className={`flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500/60 dark:focus-visible:ring-cyan-400/60 ${
-              isActive
-                ? `border ${config.borderColor} ${config.bgColor}`
-                : "border border-transparent hover:border-slate-300/50 hover:bg-white/50 dark:hover:border-white/10 dark:hover:bg-white/[0.04]"
-            }`}
-          >
-            <span className={`h-2 w-2 rounded-sm border ${config.bgColor} ${config.borderColor}`} />
-            <span className="readout text-slate-700 dark:text-slate-300">{config.label}</span>
-          </button>
-        )
-      })}
-    </div>
-  )
-
-  const renderObservabilityList = (onSelect: (id: string) => void) => (
-    <div className="space-y-2.5">
-      {observabilityComponents.map((component) => {
-        const isSelected = component.id === selectedId
-        const Icon = componentIcons[component.id] || Eye
-
-        return (
-          <button
-            key={component.id}
-            type="button"
-            onClick={() => onSelect(component.id)}
-            className={`group relative w-full overflow-hidden rounded-lg border text-left transition-all duration-200 ${
-              isSelected
-                ? "border-violet-500/45 bg-gradient-to-r from-violet-500/12 to-transparent surface-glow-violet dark:border-violet-300/55 dark:from-violet-500/[0.16]"
-                : "border-slate-300/75 bg-white/75 hover:border-violet-500/35 hover:bg-violet-50/70 dark:border-white/10 dark:bg-white/[0.03] dark:hover:border-violet-300/35 dark:hover:bg-white/[0.06]"
-            }`}
-          >
-            <div
-              className={`absolute bottom-1.5 left-0 top-1.5 w-[3px] rounded-r-sm bg-violet-400 transition-opacity duration-200 ${
-                isSelected ? "opacity-100" : "opacity-35 group-hover:opacity-55"
-              }`}
-            />
-
-            <div className="pl-4 pr-3 py-2.5">
-              <div className="flex items-center justify-between">
-                <div className="min-w-0 flex items-center gap-2.5">
-                  <div
-                    className={`rounded-md p-1.5 transition-colors duration-200 ${
-                      isSelected
-                        ? "bg-violet-500/15 dark:bg-violet-500/[0.16]"
-                        : "bg-slate-200/70 group-hover:bg-violet-100 dark:bg-white/[0.06] dark:group-hover:bg-violet-500/10"
-                    }`}
-                  >
-                    <Icon
-                      className={`h-3.5 w-3.5 ${
-                        isSelected
-                          ? "text-violet-700 dark:text-violet-100"
-                          : "text-slate-600 group-hover:text-violet-600 dark:text-slate-300 dark:group-hover:text-violet-200"
-                      }`}
-                    />
-                  </div>
-
-                  <div className="min-w-0">
-                    <p className="truncate font-[family-name:var(--font-mono)] text-[13px] font-semibold text-slate-900 dark:text-slate-50">
-                      {component.label}
-                    </p>
-                    <p className="mt-0.5 truncate text-[10.5px] uppercase tracking-wider text-slate-600 dark:text-slate-300">
-                      {component.sublabel}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="ml-2 flex shrink-0 items-center gap-2">
-                  {(connectionCounts[component.id] || 0) > 0 && (
-                    <span
-                      className={`readout rounded-md px-1.5 py-0.5 ${
-                        isSelected
-                          ? "bg-violet-500/20 text-violet-700 dark:text-violet-100"
-                          : "bg-slate-200/80 text-slate-700 dark:bg-white/[0.08] dark:text-slate-200"
-                      }`}
-                    >
-                      {connectionCounts[component.id]}
-                    </span>
-                  )}
-                  <span
-                    className={`h-2 w-2 rounded-full transition-shadow duration-300 ${
-                      isSelected ? "bg-emerald-400 shadow-[0_0_6px_rgba(34,197,94,0.5)]" : "bg-emerald-400/70"
-                    }`}
-                  />
-                </div>
-              </div>
-            </div>
-          </button>
-        )
-      })}
-
-      <div className="relative overflow-hidden rounded-lg border border-rose-400/35 bg-rose-500/[0.08] p-3.5">
-        <div className="absolute bottom-1.5 left-0 top-1.5 w-[3px] rounded-r-sm bg-rose-400/70" />
-        <div className="pl-2">
-          <div className="readout mb-2 flex items-center gap-2 text-rose-700 dark:text-rose-200">
-            <AlertTriangle className="h-3 w-3" />
-            Alert Feedback Loop
-          </div>
-          <p className="font-[family-name:var(--font-mono)] text-[11px] leading-relaxed text-slate-800 dark:text-slate-200">
-            Grafana → ENG-GEO → incident notes + action requests → XO-CB01
-          </p>
-        </div>
-      </div>
-    </div>
-  )
+  const handleToggleGroupFilter = useCallback((group: SubsystemGroup | null) => {
+    setActiveGroupFilter(group)
+  }, [])
 
   const desktopWindowStyles = useMemo<Record<DesktopWindowId, CSSProperties>>(() => {
     const resolveExpandedHeight = (id: DesktopWindowId) =>
@@ -1366,6 +1265,17 @@ export default function UssK8sPage() {
         ...(legendHeight ? { height: legendHeight } : {}),
         zIndex: desktopWindows.legend.z,
       },
+      "service-embed": {
+        left: desktopWindows["service-embed"].x,
+        top: desktopWindows["service-embed"].y,
+        width: desktopWindows["service-embed"].width,
+        height: desktopWindows["service-embed"].bodyCollapsed
+          ? WINDOW_HEADER_HEIGHT
+          : maximizedWindowId === "service-embed"
+            ? resolveExpandedHeight("service-embed")
+            : resolveExpandedHeight("service-embed"),
+        zIndex: desktopWindows["service-embed"].z,
+      },
     }
   }, [desktopStageSize.height, desktopWindows, maximizedWindowId])
 
@@ -1416,7 +1326,10 @@ export default function UssK8sPage() {
                   )}
                 </select>
               </label>
-              <span className="readout text-slate-700 dark:text-slate-300">
+              <span className="readout flex items-center gap-1.5 text-slate-700 dark:text-slate-300">
+                {isBackgroundRefreshing && (
+                  <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-cyan-500" title="Refreshing topology..." />
+                )}
                 {filteredComponents.length === components.length
                   ? `${components.length} Components`
                   : `${filteredComponents.length} / ${components.length}`}
@@ -1442,6 +1355,11 @@ export default function UssK8sPage() {
               {!kubeview.url && kubeviewUnavailableReason && (
                 <span className="max-w-[260px] truncate text-[11px] text-amber-700 dark:text-amber-300">
                   {kubeviewUnavailableReason}
+                </span>
+              )}
+              {kubeviewOpenError && (
+                <span className="max-w-[260px] truncate text-[11px] text-rose-700 dark:text-rose-200">
+                  {kubeviewOpenError}
                 </span>
               )}
 
@@ -1594,32 +1512,7 @@ export default function UssK8sPage() {
                       >
                         {focusDrawerId === "hierarchy" && hierarchyPanel}
                         {focusDrawerId === "operator" && (
-                          <>
-                            <div className="flex items-center justify-between gap-2">
-                              <span className="readout text-cyan-700 dark:text-cyan-300">Bridge Operator</span>
-                              <span className="readout text-slate-700 dark:text-slate-300">SD {stardate}</span>
-                            </div>
-                            <p className="mt-1.5 truncate text-[14px] font-medium text-slate-900 dark:text-slate-100">{operatorLabel}</p>
-                            <div className="bridge-divider my-3" />
-                            <div className="space-y-2">
-                              {subsystemCounts.map(({ groupKey, count }) => {
-                                const config = subsystemGroupConfig[groupKey]
-                                const Icon = groupIcons[groupKey]
-                                return (
-                                  <div
-                                    key={groupKey}
-                                    className="flex items-center gap-2.5 rounded-md border border-slate-300/70 bg-white/72 px-2.5 py-2 dark:border-white/12 dark:bg-white/[0.04]"
-                                  >
-                                    <Icon className={`h-3.5 w-3.5 ${config.color}`} />
-                                    <span className="truncate text-[12px] text-slate-800 dark:text-slate-200">{config.label}</span>
-                                    <span className="readout ml-auto rounded bg-slate-200/80 px-1.5 py-0.5 text-slate-700 dark:bg-white/[0.1] dark:text-slate-200">
-                                      {count}
-                                    </span>
-                                  </div>
-                                )
-                              })}
-                            </div>
-                          </>
+                          <OperatorSummary operatorLabel={operatorLabel} stardate={stardate} subsystemCounts={subsystemCounts} subsystemGroupConfig={subsystemGroupConfig} groupIcons={groupIcons} />
                         )}
                         {focusDrawerId === "crew" && (
                           <div className="space-y-2.5">
@@ -1644,10 +1537,13 @@ export default function UssK8sPage() {
                               componentIcons={componentIcons}
                               onHighlightNode={selectAndHighlight}
                             />
-                            {isObservabilityContextOpen && <div className="mt-3">{renderObservabilityList(selectAndHighlight)}</div>}
+                            {isObservabilityContextOpen && <div className="mt-3">{<ObservabilityList observabilityComponents={observabilityComponents} selectedId={selectedId} connectionCounts={connectionCounts} componentIcons={componentIcons} onSelect={selectAndHighlight} />}</div>}
                           </>
                         )}
-                        {focusDrawerId === "legend" && groupLegend}
+                        {focusDrawerId === "legend" && <GroupLegend groupOrder={groupOrder} subsystemGroupConfig={subsystemGroupConfig} activeGroupFilter={activeGroupFilter} onToggleGroupFilter={handleToggleGroupFilter} />}
+                        {focusDrawerId === "service-embed" && embedServiceUrl && embedServiceLabel && (
+                          <ServiceEmbedWindow url={embedServiceUrl} label={embedServiceLabel} onClose={closeServiceEmbed} />
+                        )}
                       </FocusModeDrawer>
                     </>
                   ) : (
@@ -1669,7 +1565,7 @@ export default function UssK8sPage() {
                       onFocus={handleWindowFocus}
                       isActive={activeWindowId === "hierarchy"}
                     >
-                      {hierarchyPanel}
+                      {<HierarchyPanel commandHierarchy={commandHierarchy} activeHierarchyTier={activeHierarchyTier} onSelectNode={selectAndHighlight} />}
                     </DockableWindow>
 
                     <DockableWindow
@@ -1689,33 +1585,7 @@ export default function UssK8sPage() {
                       onFocus={handleWindowFocus}
                       isActive={activeWindowId === "operator"}
                     >
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="readout text-cyan-700 dark:text-cyan-300">Bridge Operator</span>
-                        <span className="readout text-slate-700 dark:text-slate-300">SD {stardate}</span>
-                      </div>
-                      <p className="mt-1.5 truncate text-[14px] font-medium text-slate-900 dark:text-slate-100">{operatorLabel}</p>
-
-                      <div className="bridge-divider my-3" />
-
-                      <div className="space-y-2">
-                        {subsystemCounts.map(({ groupKey, count }) => {
-                          const config = subsystemGroupConfig[groupKey]
-                          const Icon = groupIcons[groupKey]
-
-                          return (
-                            <div
-                              key={groupKey}
-                              className="flex items-center gap-2.5 rounded-md border border-slate-300/70 bg-white/72 px-2.5 py-2 dark:border-white/12 dark:bg-white/[0.04]"
-                            >
-                              <Icon className={`h-3.5 w-3.5 ${config.color}`} />
-                              <span className="truncate text-[12px] text-slate-800 dark:text-slate-200">{config.label}</span>
-                              <span className="readout ml-auto rounded bg-slate-200/80 px-1.5 py-0.5 text-slate-700 dark:bg-white/[0.1] dark:text-slate-200">
-                                {count}
-                              </span>
-                            </div>
-                          )
-                        })}
-                      </div>
+                      <OperatorSummary operatorLabel={operatorLabel} stardate={stardate} subsystemCounts={subsystemCounts} subsystemGroupConfig={subsystemGroupConfig} groupIcons={groupIcons} />
                     </DockableWindow>
 
                     <DockableWindow
@@ -1834,7 +1704,7 @@ export default function UssK8sPage() {
                         </div>
                       </button>
 
-                      {isObservabilityContextOpen && <div className="mt-3">{renderObservabilityList(selectAndHighlight)}</div>}
+                      {isObservabilityContextOpen && <div className="mt-3">{<ObservabilityList observabilityComponents={observabilityComponents} selectedId={selectedId} connectionCounts={connectionCounts} componentIcons={componentIcons} onSelect={selectAndHighlight} />}</div>}
                     </DockableWindow>
 
                     <DockableWindow
@@ -1854,8 +1724,34 @@ export default function UssK8sPage() {
                       onFocus={handleWindowFocus}
                       isActive={activeWindowId === "legend"}
                     >
-                      {groupLegend}
+                      {<GroupLegend groupOrder={groupOrder} subsystemGroupConfig={subsystemGroupConfig} activeGroupFilter={activeGroupFilter} onToggleGroupFilter={handleToggleGroupFilter} />}
                     </DockableWindow>
+
+                    {embedServiceUrl && embedServiceLabel && (
+                      <DockableWindow
+                        id="service-embed"
+                        subtitle={DESKTOP_WINDOW_META["service-embed"].subtitle}
+                        title={embedServiceLabel}
+                        style={desktopWindowStyles["service-embed"]}
+                        bodyClassName="h-[calc(100%-3rem)] overflow-hidden p-0"
+                        collapsed={desktopWindows["service-embed"].collapsed}
+                        bodyCollapsed={desktopWindows["service-embed"].bodyCollapsed}
+                        maximized={maximizedWindowId === "service-embed"}
+                        isDragging={draggingWindowId === "service-embed"}
+                        onDragStart={handleWindowDragStart}
+                        onDock={dockDesktopWindow}
+                        onToggleBody={toggleDesktopWindowBody}
+                        onToggleMaximize={toggleDesktopWindowMaximize}
+                        onFocus={handleWindowFocus}
+                        isActive={activeWindowId === "service-embed"}
+                      >
+                        <ServiceEmbedWindow
+                          url={embedServiceUrl}
+                          label={embedServiceLabel}
+                          onClose={closeServiceEmbed}
+                        />
+                      </DockableWindow>
+                    )}
                   </>
                   )}
                 </div>
@@ -1953,7 +1849,7 @@ export default function UssK8sPage() {
                   level={4}
                   className="border border-slate-300/60 bg-white/82 p-4 sm:p-5 dark:border-white/12 dark:bg-white/[0.02]"
                 >
-                  {hierarchyPanel}
+                  {<HierarchyPanel commandHierarchy={commandHierarchy} activeHierarchyTier={activeHierarchyTier} onSelectNode={selectAndHighlight} />}
                 </OrchestrationSurface>
 
                 {hasFilteredResults ? (
@@ -1972,7 +1868,7 @@ export default function UssK8sPage() {
                         className="h-[clamp(320px,54vh,620px)] min-h-[320px]"
                       />
                     </div>
-                    <div>{groupLegend}</div>
+                    <div>{<GroupLegend groupOrder={groupOrder} subsystemGroupConfig={subsystemGroupConfig} activeGroupFilter={activeGroupFilter} onToggleGroupFilter={handleToggleGroupFilter} />}</div>
                   </>
                 ) : (
                   <OrchestrationSurface
@@ -2105,7 +2001,7 @@ export default function UssK8sPage() {
                   </span>
                 </div>
 
-                <div className="mt-3">{renderObservabilityList(selectAndHighlightMobile)}</div>
+                <div className="mt-3">{<ObservabilityList observabilityComponents={observabilityComponents} selectedId={selectedId} connectionCounts={connectionCounts} componentIcons={componentIcons} onSelect={selectAndHighlightMobile} />}</div>
               </OrchestrationSurface>
             )}
           </section>

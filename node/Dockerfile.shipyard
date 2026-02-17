@@ -1,6 +1,7 @@
 FROM node:20-bookworm-slim AS runtime
 WORKDIR /app
 COPY package*.json ./
+COPY scripts/fix-libsodium-wrappers-sumo.cjs ./scripts/
 RUN npm ci
 COPY . .
 # Prisma requires DATABASE_URL to be present to resolve env() in schema at generate-time.

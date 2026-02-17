@@ -1,0 +1,60 @@
+{
+  "name": "orchwiz-desktop",
+  "version": "0.1.1",
+  "private": true,
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "bundle:backend": "node scripts/bundle-backend.mjs",
+    "dev": "npm run build && npm run bundle:backend && electron .",
+    "dist": "npm run build && npm run bundle:backend && electron-builder --publish never"
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.10",
+    "electron": "^32.0.0",
+    "electron-builder": "^24.13.3",
+    "typescript": "^5.7.3"
+  },
+  "build": {
+    "appId": "com.orchwiz.desktop",
+    "productName": "OrchWiz",
+    "directories": {
+      "output": "dist-app"
+    },
+    "files": [
+      "dist/**",
+      "resources/**",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": ".backend-bundle",
+        "to": ".backend-bundle"
+      }
+    ],
+    "asar": true,
+    "asarUnpack": [
+      "**/node_modules/.prisma/**",
+      "**/node_modules/@prisma/engines/**",
+      "**/node_modules/prisma/**"
+    ],
+    "artifactName": "OrchWiz-Desktop-${version}-${os}.${ext}",
+    "mac": {
+      "target": [
+        "dmg"
+      ]
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis"
+        }
+      ]
+    },
+    "linux": {
+      "target": [
+        "tar.gz"
+      ]
+    }
+  }
+}

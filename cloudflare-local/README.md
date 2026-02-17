@@ -6,7 +6,7 @@ This directory contains a Docker Compose setup for deploying Orchwiz with Cloudf
 
 The deployment includes:
 - **PostgreSQL**: Database for the application
-- **Next.js**: The Orchwiz application server
+- **Next.js**: OrchWiz control plane (built from `node/Dockerfile`)
 - **Cloudflared**: Cloudflare Tunnel for secure public access
 
 ## Prerequisites
@@ -122,12 +122,12 @@ Access the application at this URL.
 - **Data Persistence**: Stored in Docker volume `postgres_data`
 - **Health Check**: Automatic with retries
 
-### Next.js
+### Next.js (control plane)
 
 - **Internal Port**: 3000
 - **External Port**: 3000 (accessible from host for local testing)
-- **Build**: Multi-stage Docker build
-- **Health Check**: Checks `/api/health` endpoint
+- **Build**: `node/Dockerfile` (multi-stage production build)
+- **Health Check**: GET `/api/health` (DB readiness)
 
 ### Cloudflared
 

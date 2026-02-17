@@ -1,5 +1,6 @@
 "use client"
 
+import { memo } from "react"
 import { Layout, RotateCcw, Search, X } from "lucide-react"
 import type { EdgeType } from "@/lib/uss-k8s/topology"
 
@@ -24,7 +25,7 @@ const edgeTypeConfig: { type: EdgeType; label: string; dotColor: string; activeC
   { type: "alert", label: "ALR", dotColor: "bg-rose-500 dark:bg-rose-400", activeClasses: "border-rose-500/45 text-rose-700 bg-rose-500/12 dark:border-rose-300/45 dark:text-rose-100 dark:bg-rose-500/[0.14]" },
 ]
 
-export function TopologyControls({
+export const TopologyControls = memo(function TopologyControls({
   visibleEdgeTypes,
   onEdgeTypeToggle,
   searchTerm,
@@ -137,4 +138,4 @@ export function TopologyControls({
       )}
     </div>
   )
-}
+})

@@ -39,9 +39,26 @@ Connection string:
 postgresql://orchwiz:orchwiz_dev@localhost:5435/orchis?schema=public
 ```
 
+## Control plane in Docker (optional)
+
+To run the OrchWiz control plane (Next.js app) in Docker alongside Postgres and sidecars:
+
+```bash
+# From dev-local:
+docker compose -f docker-compose.yml -f docker-compose.control-plane.yml up -d
+```
+
+Before first run, run migrations once (from host with `DATABASE_URL` pointing at port 5435, or after starting only postgres):
+
+```bash
+cd ../node && npx prisma generate && npx prisma db push
+```
+
+The control plane image is built from `node/Dockerfile` and uses the same image name as the cloudflare-local stack (`orchwiz-control-plane:latest`).
+
 ## Commands
 
-### Start database
+### Start database (and sidecars)
 ```bash
 docker compose up -d
 ```
@@ -66,6 +83,10 @@ docker compose exec postgres psql -U orchwiz -d orchis
 docker compose down -v
 docker compose up -d
 ```
+
+## Troubleshooting
+
+- Postgres is `unhealthy` / logs show `No space left on device`: free Docker disk space (`docker image prune -f`, `docker builder prune -f`, optionally `docker volume prune -f`) or increase Docker Desktop’s disk allocation, then restart Postgres (`docker compose restart postgres`).
 
 ## Optional: llm-graph-builder ingest stack
 

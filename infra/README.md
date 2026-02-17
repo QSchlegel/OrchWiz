@@ -47,9 +47,9 @@ This folder contains Terraform + Ansible scaffolding for two deployment profiles
   - Image runs a local-friendly Next dev server for bootstrap stability
   - Image tag defaults to `orchwiz:local-dev`
   - Image is loaded into the target kind cluster before Terraform/Ansible
-  - Controls: `LOCAL_SHIPYARD_AUTO_BUILD_APP_IMAGE`, `LOCAL_SHIPYARD_FORCE_REBUILD_APP_IMAGE`, `LOCAL_SHIPYARD_APP_IMAGE`, `LOCAL_SHIPYARD_DOCKERFILE`, `LOCAL_SHIPYARD_DOCKER_CONTEXT`, `LOCAL_SHIPYARD_KIND_CLUSTER_NAME`
+  - Controls: `LOCAL_SHIPYARD_AUTO_BUILD_APP_IMAGE`, `LOCAL_SHIPYARD_AUTO_CREATE_KIND_CLUSTER`, `LOCAL_SHIPYARD_FORCE_REBUILD_APP_IMAGE`, `LOCAL_SHIPYARD_APP_IMAGE`, `LOCAL_SHIPYARD_DOCKERFILE`, `LOCAL_SHIPYARD_DOCKER_CONTEXT`, `LOCAL_SHIPYARD_KIND_CLUSTER_NAME`
 - Local provisioning command execution still requires `ENABLE_LOCAL_COMMAND_EXECUTION=true`.
-- Kube context presence is validated before provisioning; cluster auto-create/start is not performed.
+- Kube context presence is validated before provisioning; when `LOCAL_SHIPYARD_AUTO_CREATE_KIND_CLUSTER=true` (default) and the target kind cluster is missing, Ship Yard creates it before loading the app image.
 - PostgreSQL Helm release uses the Bitnami OCI repo (`oci://registry-1.docker.io/bitnamicharts`) in `terraform/modules/starship-minikube/main.tf`.
 - `postgres_chart_version` is pinned in `terraform/modules/starship-minikube/variables.tf`; keep it current and run `terraform init -upgrade -backend=false` when chart fetch behavior changes upstream.
 
@@ -80,6 +80,87 @@ Debug loop helper:
   - Path-prefix hosting uses nginx regex rewrite (`/kubeview(/|$)(.*)` -> `/$2`).
   - Ingress auth annotations are required when `kubeview_ingress_auth_required = true`.
   - Configure `kubeview_ingress_auth_annotations` in `terraform.tfvars` (see example values in `infra/terraform/environments/shipyard-cloud/terraform.tfvars.example`).
+
+## Monitoring stack (Grafana, Prometheus, Loki, ClickHouse, Langfuse)
+
+When enabled via Terraform variables, the following observability components are provisioned in a **monitoring** namespace:
+
+- **Grafana** (port 3000), **Prometheus** (port 9090), **Loki** (port 3100), **ClickHouse** (backend), **Langfuse** (port 3000).
+
+The OrchWiz app uses **in-cluster** service URLs when running inside the cluster (e.g. `grafana.monitoring.svc.cluster.local:3000`, `prometheus-server.monitoring.svc.cluster.local:9090`, `loki.monitoring.svc.cluster.local:3100`, `langfuse.monitoring.svc.cluster.local:3000`). No change is required for in-cluster app deployments.
+
+### Persistence and storage
+
+- Loki and ClickHouse support optional persistent volumes; enable via `loki_persistence_enabled` / `clickhouse_persistence_enabled` and set `loki_storage_size` / `clickhouse_storage_size` (e.g. `10Gi`).
+- If the cluster has no default StorageClass, PVCs will stay Pending. Set `monitoring_storage_class` to an existing StorageClass name when needed.
+
+### Local dev with app on host
+
+When the OrchWiz app runs **outside** the cluster (e.g. local Next.js on your machine pointing at a minikube/kind cluster), it cannot reach in-cluster URLs. Either:
+
+- **Port-forward** the monitoring services and set env overrides: `GRAFANA_UPSTREAM_URL`, `PROMETHEUS_UPSTREAM_URL`, `LOKI_UPSTREAM_URL` (e.g. `http://127.0.0.1:3000` after `kubectl port-forward -n monitoring svc/grafana 3000:3000`), or
+- Use the app’s API proxy routes (`/api/bridge/runtime-ui/grafana`, `/api/bridge/runtime-ui/prometheus`, `/api/bridge/runtime-ui/loki`) with the same port-forwards; the proxy will use the upstream URLs when set.
+
+### Langfuse keys (bootstrap)
+
+- **LANGFUSE_BASE_URL** is always set by Terraform to the **in-cluster** service URL (e.g. `http://langfuse.monitoring.svc.cluster.local:3000`). The app and Langfuse client use this for server-to-Langfuse traffic; optional ingress is only for direct browser access.
+- **LANGFUSE_PUBLIC_KEY** and **LANGFUSE_SECRET_KEY** are created in the Langfuse UI after first deploy. One-time bootstrap: deploy Langfuse (e.g. `enable_langfuse = true`), open the Langfuse UI (via ingress or port-forward), create a project, then copy the project keys into Terraform (sensitive variables `langfuse_public_key` / `langfuse_secret_key`) or into the app env so tracing and the proxy work.
+
+Variables and commented examples live in `terraform.tfvars.example` for both **starship-local** and **shipyard-cloud**.
+
+## Helm Add-ons
+
+Both deployment profiles support installing additional Helm charts via Terraform without changing the core modules:
+
+- `extra_helm_releases`: install arbitrary Helm releases (OCI or non-OCI).
+- `extra_ingresses`: optionally expose add-ons via Kubernetes Ingress.
+
+### Extra Helm Releases
+
+Add to either:
+
+- `infra/terraform/environments/starship-local/terraform.tfvars`
+- `infra/terraform/environments/shipyard-cloud/terraform.tfvars`
+
+Example: install ServiceRadar from its published OCI chart (recommended) and disable its built-in ingress.
+ServiceRadar’s web UI is Next.js-based; expose it on a dedicated subdomain (not a path prefix) to avoid `/_next/*` collisions.
+
+```hcl
+extra_helm_releases = {
+  serviceradar = {
+    repository      = "oci://ghcr.io/carverauto/charts"
+    chart           = "serviceradar"
+    version         = "1.0.75"
+    timeout_seconds = 1200
+    set = {
+      "global.imageTag" = "v1.0.75"
+      "ingress.enabled" = "false"
+      "image.registryPullSecret" = ""
+    }
+  }
+}
+
+extra_ingresses = {
+  serviceradar = {
+    # Host defaults:
+    # - starship: serviceradar.<namespace>.localhost
+    # - shipyard: serviceradar.<ingress_host>
+    path         = "/"
+    service_name = "serviceradar-web"
+    service_port = 3000
+    annotations  = {}
+  }
+}
+```
+
+### ServiceRadar Admin Password
+
+When the ServiceRadar chart’s secret generator is enabled (default), it creates `serviceradar-secrets`.
+Retrieve the admin password:
+
+```bash
+kubectl -n <namespace> get secret serviceradar-secrets -o jsonpath='{.data.admin-password}' | base64 --decode
+```
 
 ## Notes
 

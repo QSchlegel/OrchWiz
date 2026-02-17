@@ -1,5 +1,8 @@
 locals {
-  create_database_secret = length(trimspace(var.database_url)) > 0
+  postgres_release_name     = "${var.app_name}-postgres"
+  in_cluster_database_url   = "postgresql://${var.postgres_user}:${var.postgres_password}@${local.postgres_release_name}-postgresql.${var.namespace}.svc.cluster.local:5432/${var.postgres_db}?schema=public"
+  effective_database_url    = var.enable_in_cluster_postgres ? local.in_cluster_database_url : var.database_url
+  create_database_secret    = length(trimspace(local.effective_database_url)) > 0
   kubeview_chart_archive = "${path.module}/../../../vendor/kubeview/deploy/helm/kubeview-${var.kubeview_chart_version}.tgz"
   openclaw_station_keys  = ["xo", "ops", "eng", "sec", "med", "cou"]
   runtime_edge_name      = "${var.app_name}-runtime-edge"
@@ -24,25 +27,28 @@ locals {
     var.kubeview_ingress_annotations,
     var.kubeview_ingress_auth_required ? var.kubeview_ingress_auth_annotations : {},
   )
+  enable_monitoring_namespace = var.enable_grafana || var.enable_prometheus || var.enable_loki || var.enable_clickhouse || var.enable_langfuse
+  grafana_ingress_host        = trimspace(var.grafana_ingress_host) != "" ? trimspace(var.grafana_ingress_host) : (trimspace(var.ingress_host) != "" ? "grafana.${trimspace(var.ingress_host)}" : "")
+  prometheus_ingress_host     = trimspace(var.prometheus_ingress_host) != "" ? trimspace(var.prometheus_ingress_host) : (trimspace(var.ingress_host) != "" ? "prometheus.${trimspace(var.ingress_host)}" : "")
   runtime_edge_ingress_annotations = merge(
     {
-      "nginx.ingress.kubernetes.io/proxy-read-timeout"  = "3600"
-      "nginx.ingress.kubernetes.io/proxy-send-timeout"  = "3600"
-      "nginx.ingress.kubernetes.io/proxy-buffering"     = "off"
+      "nginx.ingress.kubernetes.io/proxy-read-timeout" = "3600"
+      "nginx.ingress.kubernetes.io/proxy-send-timeout" = "3600"
+      "nginx.ingress.kubernetes.io/proxy-buffering"    = "off"
     },
     var.ingress_annotations,
   )
 
   app_env = merge(
     {
-      BETTER_AUTH_SECRET       = var.better_auth_secret
-      BETTER_AUTH_URL          = var.better_auth_url
-      NEXT_PUBLIC_APP_URL      = var.next_public_app_url
-      ORCHWIZ_APP_NAME         = var.app_name
-      ORCHWIZ_RUNTIME_JWT_SECRET = local.runtime_jwt_secret
+      BETTER_AUTH_SECRET              = var.better_auth_secret
+      BETTER_AUTH_URL                 = var.better_auth_url
+      NEXT_PUBLIC_APP_URL             = var.next_public_app_url
+      ORCHWIZ_APP_NAME                = var.app_name
+      ORCHWIZ_RUNTIME_JWT_SECRET      = local.runtime_jwt_secret
       ORCHWIZ_RUNTIME_JWT_TTL_SECONDS = "600"
-      ORCHWIZ_RUNTIME_JWT_ISSUER       = "orchwiz"
-      ORCHWIZ_RUNTIME_JWT_AUDIENCE     = "orchwiz-runtime-edge"
+      ORCHWIZ_RUNTIME_JWT_ISSUER      = "orchwiz"
+      ORCHWIZ_RUNTIME_JWT_AUDIENCE    = "orchwiz-runtime-edge"
       ORCHWIZ_RUNTIME_JWT_COOKIE_DOMAIN = (
         var.create_ingress && trimspace(var.ingress_host) != ""
         ? ".${trimspace(var.ingress_host)}"
@@ -65,6 +71,15 @@ locals {
       CODEX_PROVIDER_PROXY_URL     = local.provider_proxy_base_url
       CODEX_PROVIDER_PROXY_API_KEY = var.provider_proxy_api_key
     } : {},
+    trimspace(var.security_audit_cron_token) != "" ? {
+      SECURITY_AUDIT_CRON_TOKEN = var.security_audit_cron_token
+    } : {},
+    var.enable_langfuse ? {
+      # In-cluster URL so OrchWiz proxy and Langfuse client talk to Langfuse over cluster network.
+      LANGFUSE_BASE_URL = "http://langfuse.${var.monitoring_namespace}.svc.cluster.local:3000"
+      LANGFUSE_PUBLIC_KEY = var.langfuse_public_key
+      LANGFUSE_SECRET_KEY = var.langfuse_secret_key
+    } : {},
     var.app_env,
   )
 }
@@ -79,6 +94,50 @@ resource "kubernetes_namespace_v1" "shipyard" {
   }
 }
 
+resource "kubernetes_namespace_v1" "monitoring" {
+  count = local.enable_monitoring_namespace ? 1 : 0
+
+  metadata {
+    name = var.monitoring_namespace
+    labels = {
+      "app.kubernetes.io/part-of" = "orchwiz"
+      "orchwiz/component"         = "monitoring"
+    }
+  }
+}
+
+resource "helm_release" "postgres" {
+  count = var.enable_in_cluster_postgres ? 1 : 0
+
+  name       = local.postgres_release_name
+  repository = "oci://registry-1.docker.io/bitnamicharts"
+  chart      = "postgresql"
+  version    = var.postgres_chart_version
+  namespace  = kubernetes_namespace_v1.shipyard.metadata[0].name
+
+  set {
+    name  = "auth.username"
+    value = var.postgres_user
+  }
+
+  set_sensitive {
+    name  = "auth.password"
+    value = var.postgres_password
+  }
+
+  set {
+    name  = "auth.database"
+    value = var.postgres_db
+  }
+
+  lifecycle {
+    precondition {
+      condition     = !var.enable_in_cluster_postgres || length(trimspace(var.postgres_password)) > 0
+      error_message = "postgres_password must be set when enable_in_cluster_postgres is true."
+    }
+  }
+}
+
 resource "kubernetes_secret_v1" "database_url" {
   count = local.create_database_secret ? 1 : 0
 
@@ -89,7 +148,7 @@ resource "kubernetes_secret_v1" "database_url" {
 
   type = "Opaque"
   data = {
-    DATABASE_URL = var.database_url
+    DATABASE_URL = local.effective_database_url
   }
 }
 
@@ -591,11 +650,40 @@ resource "kubernetes_ingress_v1" "runtime_edge" {
         }
       }
     }
+  }
 
-    lifecycle {
-      precondition {
-        condition     = trimspace(var.ingress_host) != ""
-        error_message = "runtime-edge ingress requires ingress_host to be set."
+  lifecycle {
+    precondition {
+      condition     = trimspace(var.ingress_host) != ""
+      error_message = "runtime-edge ingress requires ingress_host to be set."
+    }
+  }
+}
+
+resource "kubernetes_persistent_volume_claim_v1" "vault_inbox" {
+  count = var.vault_pvc_enabled ? 1 : 0
+
+  # Most clusters use a StorageClass with `WaitForFirstConsumer`, which can deadlock if
+  # Terraform blocks on PVC binding before creating the Deployment. Let the PVC bind
+  # asynchronously once the app Pod is scheduled.
+  wait_until_bound = false
+
+  metadata {
+    name      = "${var.app_name}-vault-inbox"
+    namespace = kubernetes_namespace_v1.shipyard.metadata[0].name
+    labels = {
+      "app.kubernetes.io/name"    = var.app_name
+      "app.kubernetes.io/part-of" = "orchwiz"
+      "orchwiz/profile"           = "cloud_shipyard"
+    }
+  }
+
+  spec {
+    access_modes = ["ReadWriteOnce"]
+
+    resources {
+      requests = {
+        storage = var.vault_pvc_size
       }
     }
   }
@@ -679,8 +767,33 @@ resource "kubernetes_deployment_v1" "app" {
             initial_delay_seconds = 45
             period_seconds        = 20
           }
+
+          dynamic "volume_mount" {
+            for_each = var.vault_pvc_enabled ? [1] : []
+            content {
+              name       = "vault-inbox"
+              mount_path = "/app/OWZ-Vault/00-Inbox"
+            }
+          }
+        }
+
+        dynamic "volume" {
+          for_each = var.vault_pvc_enabled ? [1] : []
+          content {
+            name = "vault-inbox"
+            persistent_volume_claim {
+              claim_name = kubernetes_persistent_volume_claim_v1.vault_inbox[0].metadata[0].name
+            }
+          }
         }
       }
+    }
+  }
+
+  lifecycle {
+    precondition {
+      condition     = !var.vault_pvc_enabled || var.replicas == 1
+      error_message = "vault_pvc_enabled requires replicas=1 (ReadWriteOnce PVC mounted at /app/OWZ-Vault/00-Inbox)."
     }
   }
 
@@ -709,6 +822,79 @@ resource "kubernetes_service_v1" "app" {
 
     type = var.service_type
   }
+}
+
+resource "kubernetes_cron_job_v1" "security_audit" {
+  count = var.enable_security_audit_cron ? 1 : 0
+
+  metadata {
+    name      = "${var.app_name}-security-audit"
+    namespace = kubernetes_namespace_v1.shipyard.metadata[0].name
+    labels = {
+      "app.kubernetes.io/name"    = var.app_name
+      "app.kubernetes.io/part-of" = "orchwiz"
+      "orchwiz/profile"           = "cloud_shipyard"
+    }
+  }
+
+  spec {
+    schedule           = var.security_audit_cron_schedule
+    concurrency_policy = "Forbid"
+
+    successful_jobs_history_limit = 1
+    failed_jobs_history_limit     = 3
+
+    job_template {
+      metadata {}
+
+      spec {
+        template {
+          metadata {}
+
+          spec {
+            restart_policy = "Never"
+
+            container {
+              name              = "security-audit"
+              image             = "curlimages/curl:8.5.0"
+              image_pull_policy = "IfNotPresent"
+
+              env {
+                name = "SECURITY_AUDIT_CRON_TOKEN"
+                value_from {
+                  secret_key_ref {
+                    name = kubernetes_secret_v1.app_env.metadata[0].name
+                    key  = "SECURITY_AUDIT_CRON_TOKEN"
+                  }
+                }
+              }
+
+              command = ["/bin/sh", "-c"]
+              args = [<<-EOT
+                set -eu
+                curl -fsS -X POST "http://${var.app_name}:${var.app_port}/api/security/audits/nightly" \\
+                  -H "Authorization: Bearer $SECURITY_AUDIT_CRON_TOKEN" \\
+                  -H "Content-Type: application/json" \\
+                  --data-binary @- <<'JSON'
+                {"includeQuartermasterReview":true,"dryRun":false,"force":false}
+                JSON
+              EOT
+              ]
+            }
+          }
+        }
+      }
+    }
+  }
+
+  lifecycle {
+    precondition {
+      condition     = trimspace(var.security_audit_cron_token) != ""
+      error_message = "enable_security_audit_cron requires security_audit_cron_token to be set."
+    }
+  }
+
+  depends_on = [kubernetes_service_v1.app]
 }
 
 resource "kubernetes_ingress_v1" "app" {
@@ -817,4 +1003,263 @@ resource "kubernetes_ingress_v1" "kubeview" {
   }
 
   depends_on = [helm_release.kubeview]
+}
+
+# -----------------------------------------------------------------------------
+# Grafana (monitoring namespace; app expects grafana.monitoring.svc.cluster.local:3000)
+# -----------------------------------------------------------------------------
+resource "helm_release" "grafana" {
+  count = var.enable_grafana ? 1 : 0
+
+  name       = "grafana"
+  repository = "https://grafana.github.io/helm-charts"
+  chart      = "grafana"
+  version    = var.grafana_chart_version
+  namespace  = kubernetes_namespace_v1.monitoring[0].metadata[0].name
+
+  set {
+    name  = "fullnameOverride"
+    value = "grafana"
+  }
+  set {
+    name  = "service.port"
+    value = "3000"
+  }
+  set {
+    name  = "persistence.enabled"
+    value = "true"
+  }
+}
+
+resource "kubernetes_ingress_v1" "grafana" {
+  count = var.enable_grafana && var.grafana_ingress_enabled && trimspace(local.grafana_ingress_host) != "" ? 1 : 0
+
+  metadata {
+    name        = "${var.app_name}-grafana-ingress"
+    namespace   = kubernetes_namespace_v1.monitoring[0].metadata[0].name
+    annotations = {}
+  }
+
+  spec {
+    ingress_class_name = var.ingress_class_name
+    rule {
+      host = local.grafana_ingress_host
+      http {
+        path {
+          path      = "/"
+          path_type = "Prefix"
+          backend {
+            service {
+              name = "grafana"
+              port { number = 3000 }
+            }
+          }
+        }
+      }
+    }
+  }
+  depends_on = [helm_release.grafana]
+}
+
+# -----------------------------------------------------------------------------
+# Prometheus (monitoring namespace; app expects prometheus-server.monitoring.svc.cluster.local:9090)
+# -----------------------------------------------------------------------------
+resource "helm_release" "prometheus" {
+  count = var.enable_prometheus ? 1 : 0
+
+  name       = "prometheus"
+  repository = "https://prometheus-community.github.io/helm-charts"
+  chart      = "prometheus"
+  version    = var.prometheus_chart_version
+  namespace  = kubernetes_namespace_v1.monitoring[0].metadata[0].name
+
+  set {
+    name  = "server.fullnameOverride"
+    value = "prometheus-server"
+  }
+  set {
+    name  = "server.persistentVolume.enabled"
+    value = "true"
+  }
+  set {
+    name  = "alertmanager.enabled"
+    value = "false"
+  }
+  set {
+    name  = "kube-state-metrics.enabled"
+    value = "false"
+  }
+  set {
+    name  = "prometheus-node-exporter.enabled"
+    value = "false"
+  }
+  set {
+    name  = "prometheus-pushgateway.enabled"
+    value = "false"
+  }
+}
+
+resource "kubernetes_ingress_v1" "prometheus" {
+  count = var.enable_prometheus && var.prometheus_ingress_enabled && trimspace(local.prometheus_ingress_host) != "" ? 1 : 0
+
+  metadata {
+    name        = "${var.app_name}-prometheus-ingress"
+    namespace   = kubernetes_namespace_v1.monitoring[0].metadata[0].name
+    annotations = {}
+  }
+
+  spec {
+    ingress_class_name = var.ingress_class_name
+    rule {
+      host = local.prometheus_ingress_host
+      http {
+        path {
+          path      = "/"
+          path_type = "Prefix"
+          backend {
+            service {
+              name = "prometheus-server"
+              port { number = 9090 }
+            }
+          }
+        }
+      }
+    }
+  }
+  depends_on = [helm_release.prometheus]
+}
+
+# -----------------------------------------------------------------------------
+# Loki (monitoring namespace; Grafana datasource at loki:3100)
+# -----------------------------------------------------------------------------
+resource "helm_release" "loki" {
+  count = var.enable_loki ? 1 : 0
+
+  name       = "loki"
+  repository = "https://grafana.github.io/helm-charts"
+  chart      = "loki"
+  version    = var.loki_chart_version
+  namespace  = kubernetes_namespace_v1.monitoring[0].metadata[0].name
+
+  set {
+    name  = "fullnameOverride"
+    value = "loki"
+  }
+  set {
+    name  = "deploymentMode"
+    value = "SingleBinary"
+  }
+  set {
+    name  = "singleBinary.replicas"
+    value = "1"
+  }
+  set {
+    name  = "loki.commonConfig.replication_factor"
+    value = "1"
+  }
+  set {
+    name  = "singleBinary.persistence.enabled"
+    value = var.loki_persistence_enabled ? "true" : "false"
+  }
+  set {
+    name  = "singleBinary.persistence.size"
+    value = var.loki_storage_size
+  }
+  dynamic "set" {
+    for_each = trimspace(var.monitoring_storage_class) != "" ? [1] : []
+    content {
+      name  = "singleBinary.persistence.storageClass"
+      value = var.monitoring_storage_class
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------
+# ClickHouse (monitoring namespace; backend for Langfuse / analytics)
+# -----------------------------------------------------------------------------
+resource "helm_release" "clickhouse" {
+  count = var.enable_clickhouse ? 1 : 0
+
+  name       = "clickhouse"
+  repository = "oci://registry-1.docker.io/bitnamicharts"
+  chart      = "clickhouse"
+  version    = var.clickhouse_chart_version
+  namespace  = kubernetes_namespace_v1.monitoring[0].metadata[0].name
+
+  set {
+    name  = "fullnameOverride"
+    value = "clickhouse"
+  }
+  set {
+    name  = "persistence.enabled"
+    value = var.clickhouse_persistence_enabled ? "true" : "false"
+  }
+  set {
+    name  = "persistence.size"
+    value = var.clickhouse_storage_size
+  }
+  dynamic "set" {
+    for_each = trimspace(var.monitoring_storage_class) != "" ? [1] : []
+    content {
+      name  = "persistence.storageClass"
+      value = var.monitoring_storage_class
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------
+# Langfuse (monitoring namespace; in-cluster URL injected into app_env)
+# -----------------------------------------------------------------------------
+resource "helm_release" "langfuse" {
+  count = var.enable_langfuse ? 1 : 0
+
+  name       = "langfuse"
+  repository = "https://langfuse.github.io/langfuse-k8s"
+  chart      = "langfuse"
+  version    = var.langfuse_chart_version
+  namespace  = kubernetes_namespace_v1.monitoring[0].metadata[0].name
+
+  set {
+    name  = "fullnameOverride"
+    value = "langfuse"
+  }
+  set {
+    name  = "langfuse.ingress.enabled"
+    value = var.langfuse_ingress_enabled ? "true" : "false"
+  }
+  dynamic "set" {
+    for_each = var.langfuse_ingress_enabled && trimspace(var.langfuse_ingress_host) != "" ? [1] : []
+    content {
+      name  = "langfuse.ingress.hosts[0].host"
+      value = trimspace(var.langfuse_ingress_host)
+    }
+  }
+  set_sensitive {
+    name  = "langfuse.salt.value"
+    value = trimspace(var.langfuse_salt) != "" ? var.langfuse_salt : "replace-with-openssl-rand-base64-32"
+  }
+  set_sensitive {
+    name  = "langfuse.nextauth.secret.value"
+    value = trimspace(var.langfuse_nextauth_secret) != "" ? var.langfuse_nextauth_secret : "replace-with-openssl-rand-hex-32"
+  }
+  set_sensitive {
+    name  = "langfuse.encryptionKey.value"
+    value = trimspace(var.langfuse_encryption_key) != "" ? var.langfuse_encryption_key : "replace-with-openssl-rand-hex-32"
+  }
+  set_sensitive {
+    name  = "postgresql.auth.password"
+    value = trimspace(var.langfuse_postgres_password) != "" ? var.langfuse_postgres_password : "langfuse-pg-dev"
+  }
+  set_sensitive {
+    name  = "redis.auth.password"
+    value = trimspace(var.langfuse_redis_password) != "" ? var.langfuse_redis_password : "langfuse-redis-dev"
+  }
+  set_sensitive {
+    name  = "clickhouse.auth.password"
+    value = trimspace(var.langfuse_clickhouse_password) != "" ? var.langfuse_clickhouse_password : "langfuse-ch-dev"
+  }
+  set_sensitive {
+    name  = "s3.auth.rootPassword"
+    value = trimspace(var.langfuse_minio_root_password) != "" ? var.langfuse_minio_root_password : "langfuse-minio-dev"
+  }
 }

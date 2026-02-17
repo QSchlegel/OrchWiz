@@ -15,6 +15,7 @@ export function quartermasterContextTemplateFiles(): EditableContextFile[] {
       fileName: "MISSION.md",
       content: [
         "- Help keep ships ready: setup guidance, maintenance planning, readiness checks, diagnostics triage.",
+        "- Help with general Orchwiz maintenance: docs and getting-started, compliance/evidence, infra and Terraform, control plane (node) and services, dependency/version hygiene, dev-local and desktop setup.",
         "- Reduce uncertainty: separate what is known (ship context + Vault evidence) from what needs verification.",
         "- Prefer safe, reversible next steps.",
       ].join("\n"),
@@ -25,17 +26,19 @@ export function quartermasterContextTemplateFiles(): EditableContextFile[] {
         "- Inputs you may receive:",
         "  - Ship context (deployment id, profile, health, last check, crew count).",
         "  - Knowledge evidence (Vault RAG sources with IDs like [S1]).",
+        "  - Repo context (when asked about Orchwiz at large): docs/, infra/, node/, services/, desktop/, OWZ-Vault, dev-local.",
         "- If evidence is missing, label assumptions explicitly as [S0] and propose what to verify next.",
         "- Useful code references:",
         "  - `node/src/lib/quartermaster/api.ts`",
         "  - `node/src/lib/runtime/bridge-prompt.ts`",
         "  - `node/src/lib/runtime/session-prompt.ts`",
+        "- Maintenance-oriented references: docs/GETTING_STARTED.md, docs/compliance/, infra/terraform/, node/ server and config, dev-local docker-compose.",
       ].join("\n"),
     },
     {
       fileName: "SCOPE.md",
       content: [
-        "- In scope: read-only checks, runbooks, checklists, safe command suggestions (for the operator to run), maintenance scheduling, risk assessment.",
+        "- In scope: read-only checks, runbooks, checklists, safe command suggestions (for the operator to run), maintenance scheduling, risk assessment; docs and getting-started guidance, compliance evidence checklist and control-map guidance, infra/Terraform and dev-local guidance, dependency and version hygiene suggestions, desktop and control-plane setup — all read-only or suggestion-only (operator runs commands).",
         "- Out of scope: destructive changes, irreversible actions, claiming work is done, bypassing security/policy boundaries.",
       ].join("\n"),
     },

@@ -5,6 +5,20 @@ import { mintRuntimeJwt, ORCHWIZ_RUNTIME_JWT_COOKIE_NAME } from "@/lib/runtime-j
 
 export const dynamic = "force-dynamic"
 
+type SessionShape = {
+  user?: {
+    id?: string
+  }
+} | null
+
+interface RuntimeJwtRouteDeps {
+  getSession: () => Promise<SessionShape>
+}
+
+const defaultDeps: RuntimeJwtRouteDeps = {
+  getSession: async () => auth.api.getSession({ headers: await headers() }) as Promise<SessionShape>,
+}
+
 function asString(value: unknown): string | null {
   if (typeof value !== "string") return null
   const trimmed = value.trim()
@@ -81,15 +95,24 @@ function normalizeCookieDomain(value: string | undefined): string | undefined {
   return raw
 }
 
-export async function POST(request: NextRequest) {
-  const session = await auth.api.getSession({ headers: await headers() })
-  if (!session) {
+export async function handlePostRuntimeJwt(
+  request: NextRequest,
+  deps: RuntimeJwtRouteDeps = defaultDeps,
+): Promise<NextResponse> {
+  const session = await deps.getSession()
+  if (!session?.user?.id) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
   const secret = asString(process.env.ORCHWIZ_RUNTIME_JWT_SECRET)
   if (!secret) {
-    return NextResponse.json({ error: "Runtime JWT is not configured." }, { status: 500 })
+    return NextResponse.json(
+      {
+        error: "Runtime JWT is not configured.",
+        code: "RUNTIME_JWT_MISSING",
+      },
+      { status: 500 },
+    )
   }
 
   const ttlSeconds = parseNumber(process.env.ORCHWIZ_RUNTIME_JWT_TTL_SECONDS) ?? 10 * 60
@@ -114,7 +137,15 @@ export async function POST(request: NextRequest) {
       ? (sameSiteEnv as "none" | "strict" | "lax")
       : "lax"
 
-  const response = NextResponse.json({ ok: true })
+  const response = NextResponse.json({
+    ok: true,
+    ttlSeconds,
+    cookie: {
+      domain: cookieDomain ?? null,
+      sameSite,
+      secure,
+    },
+  })
   response.cookies.set({
     name: ORCHWIZ_RUNTIME_JWT_COOKIE_NAME,
     value: token,
@@ -129,3 +160,6 @@ export async function POST(request: NextRequest) {
   return response
 }
 
+export async function POST(request: NextRequest) {
+  return handlePostRuntimeJwt(request)
+}

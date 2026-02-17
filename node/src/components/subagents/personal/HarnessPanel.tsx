@@ -9,6 +9,10 @@ interface HarnessPanelProps {
   isSaving: boolean
   onRuntimeProfileChange: (profile: HarnessRuntimeProfile) => void
   onAutoloadChange: (key: "context" | "tools" | "skills", value: boolean) => void
+  onTrustGraphEnabledChange: (value: boolean) => void
+  onTrustGraphCollectionChange: (value: string) => void
+  onTrustGraphFlowIdChange: (value: string) => void
+  onTrustGraphMaxCharsChange: (value: number) => void
   onApplyWhenSubagentPresentChange: (value: boolean) => void
   onSave: () => void
 }
@@ -20,9 +24,15 @@ export function HarnessPanel({
   isSaving,
   onRuntimeProfileChange,
   onAutoloadChange,
+  onTrustGraphEnabledChange,
+  onTrustGraphCollectionChange,
+  onTrustGraphFlowIdChange,
+  onTrustGraphMaxCharsChange,
   onApplyWhenSubagentPresentChange,
   onSave,
 }: HarnessPanelProps) {
+  const trustgraph = harness.enhancements.trustgraph
+
   return (
     <div className="space-y-4">
       <div className="rounded-lg border border-slate-200/80 bg-white/80 p-3 dark:border-white/10 dark:bg-white/[0.03]">
@@ -86,6 +96,82 @@ export function HarnessPanel({
                 />
               </label>
             ))}
+          </div>
+        </div>
+
+        <div className="mt-3 rounded-lg border border-slate-200/80 bg-white/80 p-3 dark:border-white/10 dark:bg-white/[0.03]">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-300">
+                Enhancement Plugins
+              </p>
+              <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                Optional runtime context injectors that run when this subagent is attached to the session.
+              </p>
+            </div>
+          </div>
+
+          <div className="mt-3 grid grid-cols-1 gap-2">
+            <label className="inline-flex items-center justify-between rounded-lg border border-slate-200/80 bg-slate-50/70 px-3 py-2 text-sm text-slate-700 dark:border-white/10 dark:bg-white/[0.02] dark:text-slate-200">
+              TrustGraph context injection (GraphRAG)
+              <input
+                type="checkbox"
+                checked={trustgraph.enabled}
+                disabled={readOnly}
+                onChange={(event) => onTrustGraphEnabledChange(event.target.checked)}
+              />
+            </label>
+
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              Requires <span className="font-mono">ENABLE_AGENT_HARNESS_POD=true</span> and server env{" "}
+              <span className="font-mono">TRUSTGRAPH_SOCKET_URL</span> (optional{" "}
+              <span className="font-mono">TRUSTGRAPH_TOKEN</span>).
+            </p>
+
+            {trustgraph.enabled ? (
+              <div className="mt-1 grid grid-cols-1 gap-3 md:grid-cols-3">
+                <label className="text-xs text-slate-600 dark:text-slate-300">
+                  Collection
+                  <input
+                    value={trustgraph.collection}
+                    disabled={readOnly}
+                    onChange={(event) => onTrustGraphCollectionChange(event.target.value)}
+                    placeholder="default"
+                    className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
+                  />
+                </label>
+
+                <label className="text-xs text-slate-600 dark:text-slate-300">
+                  Flow ID
+                  <input
+                    value={trustgraph.flowId}
+                    disabled={readOnly}
+                    onChange={(event) => onTrustGraphFlowIdChange(event.target.value)}
+                    placeholder="default"
+                    className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
+                  />
+                </label>
+
+                <label className="text-xs text-slate-600 dark:text-slate-300">
+                  Max injected chars
+                  <input
+                    type="number"
+                    min={1}
+                    max={20000}
+                    value={trustgraph.maxChars}
+                    disabled={readOnly}
+                    onChange={(event) => {
+                      const next = Number.parseInt(event.target.value, 10)
+                      if (!Number.isFinite(next)) {
+                        return
+                      }
+                      onTrustGraphMaxCharsChange(Math.max(1, Math.min(20000, next)))
+                    }}
+                    className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
+                  />
+                </label>
+              </div>
+            ) : null}
           </div>
         </div>
 

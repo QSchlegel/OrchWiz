@@ -5,6 +5,10 @@ import { publishNotificationUpdated } from "@/lib/realtime/notifications"
 import { AccessControlError } from "@/lib/security/access-control"
 import { publishShipUpdated } from "@/lib/shipyard/events"
 import {
+  isShipyardManagedDeployment,
+  queueShipyardInfraTeardown,
+} from "@/lib/shipyard/infra-teardown"
+import {
   requireShipyardRequestActor,
   type ShipyardRequestActor,
 } from "@/lib/shipyard/request-actor"
@@ -14,6 +18,9 @@ export const dynamic = "force-dynamic"
 interface ShipRecord {
   id: string
   nodeId: string
+  deploymentProfile: DeploymentProfile
+  config: unknown
+  metadata: unknown
 }
 
 interface DeleteShipsFilter {
@@ -27,6 +34,7 @@ export interface ShipyardShipsRouteDeps {
   deleteShipsByIds: (userId: string, shipIds: string[]) => Promise<number>
   publishShipUpdateEvent: typeof publishShipUpdated
   publishNotificationUpdate: typeof publishNotificationUpdated
+  queueInfraTeardown: typeof queueShipyardInfraTeardown
 }
 
 const defaultDeps: ShipyardShipsRouteDeps = {
@@ -52,6 +60,9 @@ const defaultDeps: ShipyardShipsRouteDeps = {
       select: {
         id: true,
         nodeId: true,
+        deploymentProfile: true,
+        config: true,
+        metadata: true,
       },
       orderBy: {
         createdAt: "desc",
@@ -76,6 +87,7 @@ const defaultDeps: ShipyardShipsRouteDeps = {
   },
   publishShipUpdateEvent: publishShipUpdated,
   publishNotificationUpdate: publishNotificationUpdated,
+  queueInfraTeardown: queueShipyardInfraTeardown,
 }
 
 const DEPLOYMENT_PROFILE_VALUES = new Set<DeploymentProfile>([
@@ -137,6 +149,7 @@ export async function handleDeleteShipyardShips(
   try {
     const url = new URL(request.url)
     const actor = await deps.requireActor(request)
+    const preserveInfra = url.searchParams.get("preserveInfra") === "true"
     const confirmationError = requireDeleteAllConfirmation(url)
     if (confirmationError) {
       return NextResponse.json({ error: confirmationError }, { status: 400 })
@@ -149,10 +162,38 @@ export async function handleDeleteShipyardShips(
 
     const ships = await deps.listShips(actor.userId, parsedFilter.value)
     const matchedCount = ships.length
-    const deletedCount = await deps.deleteShipsByIds(
-      actor.userId,
-      ships.map((ship) => ship.id),
-    )
+    const shipIds = ships.map((ship) => ship.id)
+
+    // Fetch tunnels before deleting ships so teardown can stop them (deploymentId is SetNull on ship delete).
+    const tunnelsByDeploymentId = await prisma.shipyardSshTunnel
+      .findMany({
+        where: {
+          userId: actor.userId,
+          deploymentId: { in: shipIds },
+        },
+        select: {
+          id: true,
+          pid: true,
+          pidFile: true,
+          deploymentId: true,
+        },
+      })
+      .then((rows) => {
+        const map = new Map<string, Array<{ id: string; pid: number | null; pidFile: string | null }>>()
+        for (const row of rows) {
+          const depId = row.deploymentId
+          if (!depId) continue
+          let list = map.get(depId)
+          if (!list) {
+            list = []
+            map.set(depId, list)
+          }
+          list.push({ id: row.id, pid: row.pid, pidFile: row.pidFile })
+        }
+        return map
+      })
+
+    const deletedCount = await deps.deleteShipsByIds(actor.userId, shipIds)
 
     for (const ship of ships) {
       deps.publishShipUpdateEvent({
@@ -169,10 +210,35 @@ export async function handleDeleteShipyardShips(
       action: "clear",
     })
 
+    const infraTeardownQueuedShipIds: string[] = []
+    if (!preserveInfra) {
+      const teardownPromises: Promise<void>[] = []
+      for (const ship of ships) {
+        if (!isShipyardManagedDeployment(ship.metadata)) {
+          continue
+        }
+
+        infraTeardownQueuedShipIds.push(ship.id)
+        teardownPromises.push(
+          deps.queueInfraTeardown({
+            shipId: ship.id,
+            userId: actor.userId,
+            deploymentProfile: ship.deploymentProfile,
+            config: ship.config,
+            metadata: ship.metadata,
+            shipyardSshTunnels: tunnelsByDeploymentId.get(ship.id),
+          }),
+        )
+      }
+      await Promise.allSettled(teardownPromises)
+    }
+
     return NextResponse.json({
       matchedCount,
       deletedCount,
       deletedShipIds: ships.map((ship) => ship.id),
+      infraTeardownQueuedCount: infraTeardownQueuedShipIds.length,
+      infraTeardownQueuedShipIds,
     })
   } catch (error) {
     if (error instanceof AccessControlError) {

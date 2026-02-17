@@ -571,6 +571,47 @@
     animation-delay: -10s;
   }
 
+  /* Landing mark (foreground) */
+  @keyframes owz-landing-icon-float {
+    0%, 100% {
+      transform: translate3d(0, 0, 0);
+    }
+    50% {
+      transform: translate3d(0, -10px, 0);
+    }
+  }
+
+  .owz-landing-icon-float {
+    animation: owz-landing-icon-float 6.8s ease-in-out infinite;
+    will-change: transform;
+  }
+
+  .owz-landing-icon-tilt {
+    transform: rotateX(6.9deg) rotateZ(-8deg);
+    transform-origin: 50% 50%;
+    transform-style: preserve-3d;
+  }
+
+  @keyframes owz-landing-icon-spin-vertical {
+    0%, 74% {
+      transform: rotateY(-12.6deg);
+    }
+    78% {
+      transform: rotateY(167.4deg);
+    }
+    82% {
+      transform: rotateY(347.4deg);
+    }
+    100% {
+      transform: rotateY(347.4deg);
+    }
+  }
+
+  .owz-landing-icon-spin-vertical {
+    animation: owz-landing-icon-spin-vertical 18s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+    will-change: transform;
+  }
+
   /* Vignette for immersive depth */
   .bridge-vignette {
     background: radial-gradient(

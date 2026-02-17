@@ -15,6 +15,8 @@ import {
 import Link from "next/link"
 import { OnboardingWizard } from "@/components/onboarding/OnboardingWizard"
 import { XoTeaserChatWindow } from "@/components/landing/XoTeaserChatWindow"
+import { DownloadSection } from "@/components/landing/DownloadSection"
+import { LandingFloatingMark } from "@/components/landing/LandingFloatingMark"
 
 const links = {
   startLocal: "/login?ref=landing_start_local_15m",
@@ -154,14 +156,12 @@ export default function Home() {
 
       <div className="relative z-10">
         {/* ── Hero ── */}
-        <section id="hero" className="flex flex-col items-center justify-center min-h-[90vh] px-6 md:px-12 text-center">
+        <section
+          id="hero"
+          className="relative flex flex-col items-center justify-center min-h-[90vh] px-6 md:px-12 text-center"
+        >
+          <LandingFloatingMark />
           <div className="animate-fade-up max-w-3xl">
-            {/* Badge */}
-            <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full border border-slate-300/80 dark:border-white/10 bg-white/75 dark:bg-white/[0.03] text-xs tracking-widest uppercase text-slate-600 dark:text-gray-400 mb-8 shadow-sm shadow-slate-900/5 dark:shadow-none" style={{ fontFamily: 'var(--font-mono)' }}>
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-              Starfleet-grade Agent VPC for AI infra engineers
-            </div>
-
             {/* Title */}
             <h1 className="text-5xl sm:text-6xl md:text-7xl font-extrabold tracking-tight leading-[0.95] mb-6">
               <span className="bg-gradient-to-br from-violet-600 via-fuchsia-500 to-orange-500 dark:from-violet-400 dark:via-pink-400 dark:to-amber-300 bg-clip-text text-transparent">
@@ -243,6 +243,8 @@ export default function Home() {
         </section>
 
         <XoTeaserChatWindow />
+
+        <DownloadSection />
 
         {/* ── Pain Points ── */}
         <section id="bridge-risks" className="px-6 md:px-12 pb-24">
@@ -434,7 +436,20 @@ export default function Home() {
         <footer className="px-6 md:px-12 pb-8">
           <div className="max-w-6xl mx-auto flex items-center justify-between text-xs text-slate-500 dark:text-gray-500" style={{ fontFamily: 'var(--font-mono)' }}>
             <span>OrchWiz</span>
-            <span>Orchestration Wizard</span>
+            <div className="flex items-center gap-3">
+              <span className="hidden sm:inline">Orchestration Wizard</span>
+              <Link href="/open-source" className="hover:text-slate-700 dark:hover:text-slate-300">
+                Open Source
+              </Link>
+              <a
+                href={links.github}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="hover:text-slate-700 dark:hover:text-slate-300"
+              >
+                GitHub
+              </a>
+            </div>
           </div>
         </footer>
       </div>

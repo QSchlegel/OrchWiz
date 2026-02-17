@@ -11,6 +11,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsx watch src/server.ts",
+    "postinstall": "node scripts/patch-libsodium-esm.js",
     "start": "node dist/server.js",
     "test": "tsx --test test/*.test.ts"
   },

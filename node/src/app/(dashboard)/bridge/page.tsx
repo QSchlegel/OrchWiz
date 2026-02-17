@@ -12,6 +12,7 @@ import {
 } from "@/lib/bridge/connections/dispatch-runtime"
 import { BridgeDeckScene3D } from "@/components/bridge/BridgeDeckScene3D"
 import { useShipSelection } from "@/lib/shipyard/useShipSelection"
+import { mintRuntimeJwtCookie } from "@/lib/runtime-jwt-client"
 import {
   ArrowRight,
   Bot,
@@ -688,6 +689,13 @@ export default function BridgePage() {
   }, [selectedShipDeploymentId, setSelectedShipDeploymentId])
 
   const ensureRuntimeEdgeAvailable = useCallback(async (targetHref: string | null): Promise<boolean> => {
+    const minted = await mintRuntimeJwtCookie()
+    if (!minted.ok) {
+      const base = "Unable to mint runtime auth token. Check ORCHWIZ_RUNTIME_JWT_* configuration."
+      setError(minted.detail ? `${base} (${minted.detail})` : base)
+      return false
+    }
+
     if (!selectedShipDeploymentId) {
       return true
     }
@@ -1295,6 +1303,20 @@ export default function BridgePage() {
             >
               <MessageSquare className="h-4 w-4" />
               Voice Utility
+            </Link>
+
+            <Link
+              href={`/bridge-connections${selectedShipDeploymentId ? `?shipDeploymentId=${selectedShipDeploymentId}` : ""}`}
+              className="inline-flex items-center gap-2 rounded-lg border border-slate-400/35 bg-white/80 px-3 py-2 text-sm text-slate-700 transition hover:bg-white dark:bg-slate-900/70 dark:text-slate-200"
+            >
+              Connections
+            </Link>
+
+            <Link
+              href="/vault"
+              className="inline-flex items-center gap-2 rounded-lg border border-slate-400/35 bg-white/80 px-3 py-2 text-sm text-slate-700 transition hover:bg-white dark:bg-slate-900/70 dark:text-slate-200"
+            >
+              Vault
             </Link>
 
             {(["grafana", "prometheus", "kubeview", "langfuse"] as const).map((service) => {

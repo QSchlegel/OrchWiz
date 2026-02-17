@@ -1,6 +1,8 @@
 export type RealtimeEventType =
   | "session.prompted"
   | "command.executed"
+  | "ship.launch.progress"
+  | "ship.launch.log"
   | "ship.updated"
   | "ship.application.updated"
   | "deployment.updated"

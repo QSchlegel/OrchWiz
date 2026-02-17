@@ -3,6 +3,7 @@ import assert from "node:assert/strict"
 import {
   appendExocompCapabilityInstructions,
   appendShipToolInstructions,
+  buildSessionPromptTracePayload,
   buildQuartermasterCitationFooter,
   enforceQuartermasterCitationFooter,
 } from "./session-prompt"
@@ -57,6 +58,36 @@ test("enforceQuartermasterCitationFooter keeps existing source sections", () => 
 test("enforceQuartermasterCitationFooter emits fallback S0 with no sources", () => {
   const enforced = enforceQuartermasterCitationFooter("No evidence available.", [])
   assert.match(enforced, /\[S0\]/)
+})
+
+test("buildSessionPromptTracePayload includes prompt/output and ship context", () => {
+  const payload = buildSessionPromptTracePayload({
+    prompt: "Hello",
+    outputText: "World",
+    interactionId: "interaction-1",
+    responseInteractionId: "interaction-2",
+    provider: "openai",
+    fallbackUsed: false,
+    runtimeProfile: "default",
+    executionKind: "fast",
+    bridge: {
+      shipDeploymentId: "ship-1",
+      stationKey: "xo",
+      bridgeCrewId: "crew-1",
+    },
+  })
+
+  assert.equal((payload.input as any).prompt, "Hello")
+  assert.equal((payload.output as any).text, "World")
+  assert.equal(payload.interactionId, "interaction-1")
+  assert.equal(payload.responseInteractionId, "interaction-2")
+  assert.equal(payload.provider, "openai")
+  assert.equal(payload.fallbackUsed, false)
+  assert.equal((payload.runtime as any).profile, "default")
+  assert.equal((payload.runtime as any).executionKind, "fast")
+  assert.equal((payload.bridge as any).shipDeploymentId, "ship-1")
+  assert.equal((payload.bridge as any).stationKey, "xo")
+  assert.equal((payload.bridge as any).bridgeCrewId, "crew-1")
 })
 
 test("appendExocompCapabilityInstructions injects capability block for exocomp metadata.subagentId", async () => {

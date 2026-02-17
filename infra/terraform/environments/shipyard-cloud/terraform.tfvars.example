@@ -8,6 +8,13 @@ replicas     = 2
 database_url_secret_name = "orchwiz-db-url"
 database_url             = ""
 
+# Optional: provision PostgreSQL in-cluster and set DATABASE_URL from it (leave database_url empty).
+# enable_in_cluster_postgres = true
+# postgres_user              = "orchwiz"
+# postgres_password          = "replace-with-secure-password"
+# postgres_db                = "orchis"
+# postgres_chart_version     = "15.3.5"
+
 better_auth_secret  = "replace-with-32-char-secret"
 better_auth_url     = "https://orchwiz.example.com"
 next_public_app_url = "https://orchwiz.example.com"
@@ -24,7 +31,16 @@ ingress_annotations = {
 
 app_env = {
   ENABLE_LOCAL_COMMAND_EXECUTION = "false"
+  # LANGFUSE_BASE_URL   = "https://langfuse.example.com"
+  # LANGFUSE_PUBLIC_KEY = "replace-with-langfuse-public-key"
+  # LANGFUSE_SECRET_KEY = "replace-with-langfuse-secret-key"
 }
+
+enable_security_audit_cron   = false
+security_audit_cron_schedule = "0 * * * *"
+security_audit_cron_token    = "replace-with-unique-security-audit-cron-token"
+vault_pvc_enabled            = false
+vault_pvc_size               = "1Gi"
 
 enable_openclaw         = true
 openclaw_image          = "ghcr.io/openclaw/openclaw:latest"
@@ -63,3 +79,68 @@ kubeview_ingress_auth_annotations = {
   "nginx.ingress.kubernetes.io/auth-url"    = "https://auth.example.com/oauth2/auth"
   "nginx.ingress.kubernetes.io/auth-signin" = "https://auth.example.com/oauth2/start?rd=$scheme://$host$request_uri"
 }
+
+# Monitoring stack (Grafana, Prometheus, Loki, ClickHouse, Langfuse). When enabled, OrchWiz app
+# uses in-cluster URLs (e.g. grafana.monitoring.svc.cluster.local:3000). Set enable_* = true to provision.
+# enable_grafana            = true
+# grafana_chart_version     = "7.3.0"
+# grafana_ingress_enabled   = false
+# grafana_ingress_host      = ""
+# enable_prometheus         = true
+# prometheus_chart_version  = "31.0.0"
+# prometheus_ingress_enabled = false
+# prometheus_ingress_host   = ""
+# enable_loki               = false
+# loki_chart_version        = "6.6.0"
+# loki_persistence_enabled  = true
+# loki_storage_size         = "10Gi"
+# enable_clickhouse         = false
+# clickhouse_chart_version  = "4.5.0"
+# clickhouse_persistence_enabled = true
+# clickhouse_storage_size   = "10Gi"
+# enable_langfuse            = false
+# langfuse_chart_version    = "1.5.19"
+# langfuse_ingress_enabled  = false
+# langfuse_ingress_host     = ""
+# langfuse_public_key       = ""   # Create project in Langfuse UI after first deploy, then paste
+# langfuse_secret_key       = ""
+# langfuse_salt             = ""   # openssl rand -base64 32
+# langfuse_nextauth_secret  = ""   # openssl rand -hex 32
+# langfuse_encryption_key   = ""   # openssl rand -hex 32
+# langfuse_postgres_password = ""
+# langfuse_redis_password   = ""
+# langfuse_clickhouse_password = ""
+# langfuse_minio_root_password = ""
+# monitoring_storage_class  = ""  # empty = cluster default StorageClass
+
+# Optional: install arbitrary Helm charts into this ship.
+# NOTE: Prefer subdomains (not path prefixes) for Next.js-based UIs to avoid /_next collisions.
+#
+# extra_helm_releases = {
+#   serviceradar = {
+#     repository      = "oci://ghcr.io/carverauto/charts"
+#     chart           = "serviceradar"
+#     version         = "1.0.75"
+#     timeout_seconds = 1200
+#     set = {
+#       # Pin images to the matching app version tag.
+#       "global.imageTag" = "v1.0.75"
+#
+#       # Disable chart-provided ingress (it adds external-dns annotations).
+#       "ingress.enabled" = "false"
+#
+#       # Avoid requiring an imagePullSecret by default (set this to your secret name if needed).
+#       "image.registryPullSecret" = ""
+#     }
+#   }
+# }
+#
+# # Optional: expose add-ons via ingress (host auto-defaults to NAME.<ingress_host>).
+# extra_ingresses = {
+#   serviceradar = {
+#     path         = "/"
+#     service_name = "serviceradar-web"
+#     service_port = 3000
+#     annotations  = {}
+#   }
+# }

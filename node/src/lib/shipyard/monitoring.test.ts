@@ -7,16 +7,13 @@ import {
   withNormalizedShipMonitoringInConfig,
 } from "./monitoring"
 
-test("defaultShipMonitoringConfig returns local monitoring defaults", () => {
+test("defaultShipMonitoringConfig returns same-API monitoring defaults", () => {
   const defaults = defaultShipMonitoringConfig()
 
-  assert.equal(
-    defaults.grafanaUrl,
-    "http://localhost:3001/d/orchwiz-overview/orchwiz-monitoring-overview?orgId=1&refresh=5s",
-  )
-  assert.equal(defaults.prometheusUrl, "http://localhost:9090/query?g0.expr=sum%20by(job)%20(up)&g0.tab=0")
+  assert.equal(defaults.grafanaUrl, "/api/bridge/runtime-ui/grafana")
+  assert.equal(defaults.prometheusUrl, "/api/bridge/runtime-ui/prometheus")
   assert.equal(defaults.kubeviewUrl, "/api/bridge/runtime-ui/kubeview")
-  assert.equal(defaults.langfuseUrl, "")
+  assert.equal(defaults.langfuseUrl, "/api/bridge/runtime-ui/langfuse")
 })
 
 test("normalizeShipMonitoringConfig accepts valid http/https monitoring URLs", () => {

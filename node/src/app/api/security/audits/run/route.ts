@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { AccessControlError, requireAccessActor } from "@/lib/security/access-control"
 import { persistSecurityAuditVerificationRun } from "@/lib/security/audit/persistence"
 import { runSecurityAudit } from "@/lib/security/audit/run"
+import { computeUnusualReadings } from "@/lib/security/audit/unusual-readings"
 import { publishNotificationUpdated } from "@/lib/realtime/notifications"
 
 export const dynamic = "force-dynamic"
@@ -28,6 +29,8 @@ export async function POST(request: NextRequest) {
     const verificationRunId = await persistSecurityAuditVerificationRun({
       userId: actor.userId,
       report: result.report,
+      trigger: "manual",
+      unusualReadings: computeUnusualReadings(result.report),
     })
 
     publishNotificationUpdated({

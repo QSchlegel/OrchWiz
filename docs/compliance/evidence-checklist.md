@@ -1,7 +1,7 @@
 # Monthly Evidence Checklist
 
 - Owner: Platform Security (OrchWiz Maintainers)
-- Last Updated: 2026-02-11
+- Last Updated: 2026-02-13
 - Status: Draft baseline
 
 Use this checklist during monthly control review for the ISO 27001 + SOC 2
@@ -14,7 +14,7 @@ cert-ready baseline.
 - [ ] High/critical dependency findings reviewed and dispositioned.
 - [ ] Access and ownership controls reviewed for drift.
 - [ ] Backup/restore evidence collected for in-scope systems.
-- [ ] Incident log reviewed (or no-incident attestation recorded).
+- [ ] Incident log reviewed (see `OWZ-Vault/00-Inbox/Security-Incidents/*.md|*.json`, or record a no-incident attestation).
 - [ ] Risk acceptances reviewed for expiry and re-approval.
 
 ## Required Artifacts
@@ -23,6 +23,7 @@ cert-ready baseline.
 | --- | --- | --- | --- | --- |
 | Security audit report bundle | `CTRL-NIGHTLY-AUDITS`, `CTRL-POSTURE-REPORTING` | `OWZ-Vault/00-Inbox/Security-Audits/*.md`; `OWZ-Vault/00-Inbox/Security-Audits/*.json` | Monthly | Security Operations |
 | Bridge crew scorecards | `CTRL-NIGHTLY-AUDITS` | `OWZ-Vault/00-Inbox/Security-Audits/Bridge-Crew/*.json` | Monthly | Security Operations |
+| Incident response snapshots | `CTRL-INCIDENT-RESPONSE` | `OWZ-Vault/00-Inbox/Security-Incidents/*.md`; `OWZ-Vault/00-Inbox/Security-Incidents/*.json` | Monthly (if incidents occurred) | Security Operations |
 | Ownership/audit check implementation references | `CTRL-OWNER-BOUND` | `node/src/lib/security/access-control.ts`; `node/src/lib/security/audit/checks/ownership.ts` | Monthly | Platform Team |
 | Forwarding replay/signature control references | `CTRL-NONCE-TIMESTAMP` | `node/src/lib/forwarding/security.ts`; `node/src/app/api/forwarding/events/route.ts` | Monthly | Runtime Team |
 | Enclave auth posture references | `CTRL-ENCRYPTED-SECRET-STORAGE` | `services/wallet-enclave/src/v1/routes.ts`; `node/src/lib/security/audit/checks/enclave-posture.ts` | Monthly | Security Engineering |
@@ -37,4 +38,3 @@ cert-ready baseline.
 - Reviewer:
 - Review date (UTC):
 - Notes and follow-up actions:
-

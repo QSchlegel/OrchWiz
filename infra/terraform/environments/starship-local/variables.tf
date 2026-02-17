@@ -99,6 +99,37 @@ variable "app_env" {
   default     = {}
 }
 
+variable "enable_security_audit_cron" {
+  type        = bool
+  description = "Whether to run automated security audits via a Kubernetes CronJob"
+  default     = false
+}
+
+variable "security_audit_cron_schedule" {
+  type        = string
+  description = "Cron schedule for automated security audits"
+  default     = "0 * * * *"
+}
+
+variable "security_audit_cron_token" {
+  type        = string
+  description = "Bearer token required for /api/security/audits/nightly requests"
+  sensitive   = true
+  default     = ""
+}
+
+variable "vault_pvc_enabled" {
+  type        = bool
+  description = "Whether to mount a PVC at /app/OWZ-Vault/00-Inbox for audit trail persistence"
+  default     = false
+}
+
+variable "vault_pvc_size" {
+  type        = string
+  description = "PVC storage size for Vault inbox persistence"
+  default     = "1Gi"
+}
+
 variable "openclaw_image" {
   type        = string
   description = "Container image for OpenClaw gateway/control UI instances"
@@ -167,6 +198,141 @@ variable "kubeview_ingress_annotations" {
   default     = {}
 }
 
+# Monitoring stack (Grafana, Prometheus, Loki, ClickHouse, Langfuse)
+variable "monitoring_namespace" {
+  type    = string
+  default = "monitoring"
+}
+variable "enable_grafana" {
+  type    = bool
+  default = false
+}
+variable "grafana_chart_version" {
+  type    = string
+  default = "7.3.0"
+}
+variable "grafana_ingress_enabled" {
+  type    = bool
+  default = false
+}
+variable "grafana_ingress_host" {
+  type    = string
+  default = ""
+}
+variable "enable_prometheus" {
+  type    = bool
+  default = false
+}
+variable "prometheus_chart_version" {
+  type    = string
+  default = "31.0.0"
+}
+variable "prometheus_ingress_enabled" {
+  type    = bool
+  default = false
+}
+variable "prometheus_ingress_host" {
+  type    = string
+  default = ""
+}
+variable "enable_loki" {
+  type    = bool
+  default = false
+}
+variable "loki_chart_version" {
+  type    = string
+  default = "6.6.0"
+}
+variable "loki_persistence_enabled" {
+  type    = bool
+  default = true
+}
+variable "loki_storage_size" {
+  type    = string
+  default = "10Gi"
+}
+variable "enable_clickhouse" {
+  type    = bool
+  default = false
+}
+variable "clickhouse_chart_version" {
+  type    = string
+  default = "4.5.0"
+}
+variable "clickhouse_persistence_enabled" {
+  type    = bool
+  default = true
+}
+variable "clickhouse_storage_size" {
+  type    = string
+  default = "10Gi"
+}
+variable "enable_langfuse" {
+  type    = bool
+  default = false
+}
+variable "langfuse_chart_version" {
+  type    = string
+  default = "1.5.19"
+}
+variable "langfuse_ingress_enabled" {
+  type    = bool
+  default = false
+}
+variable "langfuse_ingress_host" {
+  type    = string
+  default = ""
+}
+variable "langfuse_public_key" {
+  type      = string
+  sensitive = true
+  default   = ""
+}
+variable "langfuse_secret_key" {
+  type      = string
+  sensitive = true
+  default   = ""
+}
+variable "langfuse_salt" {
+  type      = string
+  sensitive = true
+  default   = ""
+}
+variable "langfuse_nextauth_secret" {
+  type      = string
+  sensitive = true
+  default   = ""
+}
+variable "langfuse_encryption_key" {
+  type      = string
+  sensitive = true
+  default   = ""
+}
+variable "langfuse_postgres_password" {
+  type      = string
+  sensitive = true
+  default   = ""
+}
+variable "langfuse_redis_password" {
+  type      = string
+  sensitive = true
+  default   = ""
+}
+variable "langfuse_clickhouse_password" {
+  type      = string
+  sensitive = true
+  default   = ""
+}
+variable "langfuse_minio_root_password" {
+  type      = string
+  sensitive = true
+  default   = ""
+}
+variable "monitoring_storage_class" {
+  type    = string
+  default = ""
+}
+
 variable "provider_proxy_image" {
   type        = string
   description = "Container image for provider-proxy"
@@ -196,4 +362,38 @@ variable "provider_proxy_default_model" {
   type        = string
   description = "Default model used via provider-proxy"
   default     = "gpt-5"
+}
+
+variable "extra_helm_releases" {
+  description = "Additional Helm releases to install (OCI or non-OCI). Key is the Helm release name."
+  type = map(object({
+    chart             = string
+    repository        = optional(string) # e.g. "oci://ghcr.io/carverauto/charts"
+    version           = optional(string)
+    namespace         = optional(string) # default: ship namespace
+    create_namespace  = optional(bool)   # default: false
+    values_yaml       = optional(string) # raw YAML string; optional
+    set               = optional(map(string))
+    set_sensitive     = optional(map(string))
+    timeout_seconds   = optional(number) # default: 600
+    atomic            = optional(bool)   # default: false
+    cleanup_on_fail   = optional(bool)   # default: true
+    dependency_update = optional(bool)   # default: false
+  }))
+  default = {}
+}
+
+variable "extra_ingresses" {
+  description = "Optional extra ingresses for exposing add-ons (key is an identifier, often matching the addon name)."
+  type = map(object({
+    host               = optional(string) # if empty: computed default (NAME.<namespace>.localhost)
+    namespace          = optional(string) # default: ship namespace
+    path               = optional(string) # default: "/"
+    path_type          = optional(string) # default: "Prefix"
+    service_name       = string
+    service_port       = number
+    ingress_class_name = optional(string) # default: nginx
+    annotations        = optional(map(string))
+  }))
+  default = {}
 }

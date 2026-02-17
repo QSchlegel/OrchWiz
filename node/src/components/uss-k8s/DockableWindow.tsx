@@ -1,6 +1,6 @@
 "use client"
 
-import type { CSSProperties, PointerEvent, ReactNode } from "react"
+import { memo, type CSSProperties, type PointerEvent, type ReactNode } from "react"
 
 interface DockableWindowProps {
   id: string
@@ -24,7 +24,7 @@ interface DockableWindowProps {
 const floatingPanelClass =
   "rounded-xl border border-slate-300/75 bg-white/88 shadow-[0_10px_28px_rgba(15,23,42,0.18)] backdrop-blur-lg dark:border-white/12 dark:bg-slate-950/78"
 
-export function DockableWindow({
+export const DockableWindow = memo(function DockableWindow({
   id,
   subtitle,
   title,
@@ -116,4 +116,4 @@ export function DockableWindow({
       {!bodyCollapsed && <div className={bodyClassName || "p-4"}>{children}</div>}
     </div>
   )
-}
+})

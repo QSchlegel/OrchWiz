@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma"
+import { resolveTrustGraphGraphRagBlock } from "@/lib/runtime/enhancements/trustgraph"
 import { loadSubagentContextFiles } from "@/lib/subagents/context-files"
 import { normalizeSubagentSettings, type HarnessRuntimeProfile } from "@/lib/subagents/settings"
 import { resolveWorkspaceRootForSubagents } from "@/lib/subagents/workspace-inspector"
@@ -128,6 +129,7 @@ export function agentHarnessPodEnabled(): boolean {
 export interface ResolveHarnessPodContextArgs {
   userId: string
   subagentId: string
+  query?: string | null
 }
 
 export interface ResolveHarnessPodContextResult {
@@ -149,6 +151,13 @@ interface HarnessDeps {
   resolveWorkspaceRoot: () => string
   loadSubagent: (args: { userId: string; subagentId: string }) => Promise<HarnessSubagentRecord | null>
   loadContextFiles: typeof loadSubagentContextFiles
+  resolveTrustGraphGraphRag: (args: {
+    userId: string
+    query: string
+    flowId: string
+    collection: string
+    maxChars: number
+  }) => Promise<string>
   listEnabledToolBindings: (subagentId: string) => Promise<Array<{
     toolCatalogEntry: {
       slug: string
@@ -255,6 +264,20 @@ const defaultDeps: HarnessDeps = {
       },
       take: 20,
     }),
+  resolveTrustGraphGraphRag: async ({ userId, query, flowId, collection, maxChars }) => {
+    const socketUrl = (process.env.TRUSTGRAPH_SOCKET_URL || "ws://127.0.0.1:8088/api/v1/socket").trim()
+    const token = process.env.TRUSTGRAPH_TOKEN?.trim() || null
+
+    return resolveTrustGraphGraphRagBlock({
+      userId,
+      query,
+      flowId,
+      collection,
+      socketUrl,
+      token,
+      maxChars,
+    })
+  },
 }
 
 export async function resolveHarnessPodContext(
@@ -292,6 +315,25 @@ export async function resolveHarnessPodContext(
       runtimeProfile: null,
       promptFragments,
       warnings,
+    }
+  }
+
+  const trustgraphSettings = harness.enhancements?.trustgraph
+  if (trustgraphSettings?.enabled && typeof args.query === "string" && args.query.trim()) {
+    try {
+      const block = await deps.resolveTrustGraphGraphRag({
+        userId: args.userId,
+        query: args.query,
+        flowId: trustgraphSettings.flowId,
+        collection: trustgraphSettings.collection,
+        maxChars: trustgraphSettings.maxChars,
+      })
+
+      if (block) {
+        promptFragments.unshift(block)
+      }
+    } catch (error) {
+      warnings.push(`TrustGraph enhancement failed: ${(error as Error)?.message || "unknown error"}`)
     }
   }
 

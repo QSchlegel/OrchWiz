@@ -309,6 +309,47 @@ test("fails when expected kube context is missing", async () => {
   assert.ok(result.details?.suggestedCommands?.includes("kind create cluster --name orchwiz"))
 })
 
+test("auto-creates Kind cluster when context is missing and saneBootstrap is true", async () => {
+  let getContextsCallCount = 0
+  const { runtime, calls } = createRuntime({
+    runCommand: async (command, args) => {
+      if (command === "kubectl" && args.join(" ") === "config get-contexts -o name") {
+        getContextsCallCount += 1
+        return {
+          ok: true,
+          stdout: getContextsCallCount === 1 ? "docker-desktop\n" : "docker-desktop\nkind-orchwiz\n",
+          stderr: "",
+          exitCode: 0,
+        }
+      }
+      if (command === "kind" && args.join(" ") === "create cluster --name orchwiz") {
+        return { ok: true, stdout: "Created cluster", stderr: "", exitCode: 0 }
+      }
+      if (command === "ansible-playbook") {
+        return { ok: true, stdout: "PLAY RECAP", stderr: "", exitCode: 0 }
+      }
+      return { ok: true, stdout: "", stderr: "", exitCode: 0 }
+    },
+  })
+
+  const result = await runLocalBootstrap(
+    {
+      infrastructure: baseInfrastructure,
+      provisioningMode: "terraform_ansible",
+      saneBootstrap: true,
+    },
+    runtime,
+  )
+
+  assert.ok(result.ok, `expected bootstrap to succeed, got ${JSON.stringify(result)}`)
+  const kindCreateCalls = calls.filter(
+    (c) => c.command === "kind" && c.args[0] === "create" && c.args[1] === "cluster",
+  )
+  assert.equal(kindCreateCalls.length, 1, "kind create cluster should be called once")
+  assert.equal(kindCreateCalls[0].args[2], "--name")
+  assert.equal(kindCreateCalls[0].args[3], "orchwiz")
+})
+
 test("provisioning failure includes OCI helm remediation for invalid chart reference", async () => {
   const { runtime } = createRuntime({
     runCommand: async (command, args) => {
@@ -440,6 +481,76 @@ test("sane bootstrap builds/loads local app image and passes TF_VAR_app_image", 
   const ansibleCall = calls.find((call) => call.command === "ansible-playbook")
   assert.ok(ansibleCall)
   assert.equal(ansibleCall?.env?.TF_VAR_app_image, "orchwiz:local-dev")
+})
+
+test("sane bootstrap auto-creates kind cluster when kind load reports missing nodes", async () => {
+  let loadAttempts = 0
+  const { runtime, calls } = createRuntime({
+    env: {
+      ENABLE_LOCAL_COMMAND_EXECUTION: "true",
+    },
+    runCommand: async (command, args) => {
+      if (command === "kubectl" && args.join(" ") === "config get-contexts -o name") {
+        return {
+          ok: true,
+          stdout: "kind-orchwiz\n",
+          stderr: "",
+          exitCode: 0,
+        }
+      }
+
+      if (command === "kind" && args.join(" ") === "load docker-image orchwiz:local-dev --name orchwiz") {
+        loadAttempts += 1
+        if (loadAttempts === 1) {
+          return {
+            ok: false,
+            stdout: "",
+            stderr: 'ERROR: no nodes found for cluster "orchwiz"',
+            exitCode: 1,
+          }
+        }
+        return {
+          ok: true,
+          stdout: "",
+          stderr: "",
+          exitCode: 0,
+        }
+      }
+
+      if (command === "kind" && args.join(" ") === "create cluster --name orchwiz") {
+        return {
+          ok: true,
+          stdout: "Creating cluster \"orchwiz\" ...",
+          stderr: "",
+          exitCode: 0,
+        }
+      }
+
+      return {
+        ok: true,
+        stdout: "",
+        stderr: "",
+        exitCode: 0,
+      }
+    },
+  })
+
+  const result = await runLocalBootstrap(
+    {
+      infrastructure: baseInfrastructure,
+      provisioningMode: "terraform_ansible",
+      saneBootstrap: true,
+    },
+    runtime,
+  )
+
+  assert.equal(result.ok, true)
+  assert.equal(loadAttempts, 2)
+
+  const kindCreateCall = calls.find(
+    (call) => call.command === "kind" && call.args.join(" ") === "create cluster --name orchwiz",
+  )
+  assert.ok(kindCreateCall)
 })
 
 test("returns missing docker error when kind image bootstrap is enabled", async () => {

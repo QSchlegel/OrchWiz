@@ -9,6 +9,8 @@ import {
   DecryptRequestSchema,
   EncryptRequestSchema,
   SignDataRequestSchema,
+  SendAdaRequestSchema,
+  MintTokenRequestSchema,
 } from "./schema.js"
 import { MeshCardanoAdapter } from "../adapters/mesh_cardano.js"
 
@@ -289,6 +291,101 @@ export function registerV1(app: Express): void {
         error: { code: "CRYPTO_FAILED", message: String(error) },
       })
       return sendError(res, requestId, "CRYPTO_FAILED", "Decrypt failed")
+    }
+  })
+
+  app.post("/v1/send-ada", async (req, res) => {
+    const requestId = requestIdFrom(req)
+    const parsed = SendAdaRequestSchema.safeParse(req.body)
+    if (!parsed.success) {
+      return sendError(res, requestId, "BAD_REQUEST", "Invalid request body", parsed.error.flatten())
+    }
+
+    const policy = loadPolicy(dataDir())
+    const decision = checkSignIntent(policy, parsed.data.keyRef)
+    if (!decision.ok) {
+      appendAuditJsonl(dataDir(), {
+        ts: new Date().toISOString(),
+        requestId,
+        endpoint: "/v1/send-ada",
+        decision: "deny",
+        reason: decision.code,
+      })
+      return sendError(res, requestId, decision.code || "POLICY_DENY", decision.message || "Policy denied", undefined, 403)
+    }
+
+    try {
+      const result = await adapter.sendAda({
+        keyRef: parsed.data.keyRef,
+        recipientAddress: parsed.data.recipientAddress,
+        lovelace: parsed.data.lovelace,
+      })
+      appendAuditJsonl(dataDir(), {
+        ts: new Date().toISOString(),
+        requestId,
+        endpoint: "/v1/send-ada",
+        decision: "allow",
+        meta: { keyRef: parsed.data.keyRef, txHash: result.txHash, lovelace: parsed.data.lovelace },
+      })
+      res.setHeader("x-request-id", requestId)
+      res.json(result)
+    } catch (error) {
+      appendAuditJsonl(dataDir(), {
+        ts: new Date().toISOString(),
+        requestId,
+        endpoint: "/v1/send-ada",
+        decision: "deny",
+        error: { code: "SEND_FAILED", message: String(error) },
+      })
+      return sendError(res, requestId, "SEND_FAILED", (error as Error).message || "Failed to send ADA")
+    }
+  })
+
+  app.post("/v1/mint-token", async (req, res) => {
+    const requestId = requestIdFrom(req)
+    const parsed = MintTokenRequestSchema.safeParse(req.body)
+    if (!parsed.success) {
+      return sendError(res, requestId, "BAD_REQUEST", "Invalid request body", parsed.error.flatten())
+    }
+
+    const policy = loadPolicy(dataDir())
+    const decision = checkSignIntent(policy, parsed.data.keyRef)
+    if (!decision.ok) {
+      appendAuditJsonl(dataDir(), {
+        ts: new Date().toISOString(),
+        requestId,
+        endpoint: "/v1/mint-token",
+        decision: "deny",
+        reason: decision.code,
+      })
+      return sendError(res, requestId, decision.code || "POLICY_DENY", decision.message || "Policy denied", undefined, 403)
+    }
+
+    try {
+      const result = await adapter.mintToken({
+        keyRef: parsed.data.keyRef,
+        assetName: parsed.data.assetName,
+        quantity: parsed.data.quantity,
+        recipientAddress: parsed.data.recipientAddress,
+      })
+      appendAuditJsonl(dataDir(), {
+        ts: new Date().toISOString(),
+        requestId,
+        endpoint: "/v1/mint-token",
+        decision: "allow",
+        meta: { keyRef: parsed.data.keyRef, txHash: result.txHash, policyId: result.policyId, assetName: parsed.data.assetName },
+      })
+      res.setHeader("x-request-id", requestId)
+      res.json(result)
+    } catch (error) {
+      appendAuditJsonl(dataDir(), {
+        ts: new Date().toISOString(),
+        requestId,
+        endpoint: "/v1/mint-token",
+        decision: "deny",
+        error: { code: "MINT_FAILED", message: String(error) },
+      })
+      return sendError(res, requestId, "MINT_FAILED", (error as Error).message || "Failed to mint token")
     }
   })
 }

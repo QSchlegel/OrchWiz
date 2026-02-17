@@ -255,6 +255,33 @@ function buildQuartermasterSessionMetadata(args: {
   } as Prisma.InputJsonValue
 }
 
+function buildFleetQuartermasterSessionMetadata(args: {
+  existingMetadata: Prisma.JsonValue | null
+  subagentId: string
+}): Prisma.InputJsonValue {
+  const root = asRecord(args.existingMetadata)
+  const runtime = asRecord(root.runtime)
+  const existingQuartermaster = asRecord(root.quartermaster)
+
+  return {
+    ...root,
+    runtime: {
+      ...runtime,
+      profile: QUARTERMASTER_RUNTIME_PROFILE,
+    },
+    quartermaster: {
+      ...existingQuartermaster,
+      channel: QUARTERMASTER_CHANNEL,
+      roleKey: QUARTERMASTER_ROLE_KEY,
+      callsign: QUARTERMASTER_CALLSIGN,
+      authority: QUARTERMASTER_AUTHORITY,
+      runtimeProfile: QUARTERMASTER_RUNTIME_PROFILE,
+      diagnosticsScope: QUARTERMASTER_DIAGNOSTICS_SCOPE,
+      subagentId: args.subagentId,
+    },
+  } as Prisma.InputJsonValue
+}
+
 async function assignQuartermasterPolicy(subagentId: string): Promise<void> {
   await ensureSystemPermissionPolicies()
 
@@ -514,5 +541,83 @@ export async function ensureShipQuartermaster(args: EnsureShipQuartermasterArgs)
       updatedAt: session.updatedAt.toISOString(),
       createdAt: session.createdAt.toISOString(),
     },
+  }
+}
+
+export async function ensureFleetQuartermasterSession(args: {
+  userId: string
+}): Promise<{ subagentId: string; sessionId: string }> {
+  let subagent = await findQuartermasterSubagent({
+    userId: args.userId,
+    metadataSubagentId: null,
+  })
+
+  if (!subagent) {
+    subagent = await prisma.subagent.create({
+      data: {
+        name: quartermasterFleetSubagentName(),
+        description: `${QUARTERMASTER_CALLSIGN} Quartermaster for fleet operations.`,
+        content: quartermasterPromptTemplate(),
+        path: QUARTERMASTER_CONTEXT_PATH,
+        isShared: false,
+        teamId: args.userId,
+        ownerUserId: args.userId,
+        settings: {
+          quartermaster: {
+            roleKey: QUARTERMASTER_ROLE_KEY,
+            callsign: QUARTERMASTER_CALLSIGN,
+            authority: QUARTERMASTER_AUTHORITY,
+            runtimeProfile: QUARTERMASTER_RUNTIME_PROFILE,
+            diagnosticsScope: QUARTERMASTER_DIAGNOSTICS_SCOPE,
+            scope: QUARTERMASTER_FLEET_SCOPE,
+            contextTemplateVersion: QUARTERMASTER_CONTEXT_TEMPLATE_VERSION,
+          },
+        },
+      },
+    })
+  }
+
+  await assignQuartermasterPolicy(subagent.id)
+
+  let session = await findQuartermasterSession({
+    userId: args.userId,
+    metadataSessionId: null,
+  })
+
+  const desiredTitle = quartermasterFleetSessionTitle()
+  const desiredDescription = "Quartermaster channel for fleet operations."
+  const sessionMetadata = buildFleetQuartermasterSessionMetadata({
+    existingMetadata: session?.metadata || null,
+    subagentId: subagent.id,
+  })
+
+  if (!session) {
+    session = await prisma.session.create({
+      data: {
+        userId: args.userId,
+        title: desiredTitle,
+        description: desiredDescription,
+        mode: "plan",
+        source: "web",
+        status: "planning",
+        metadata: sessionMetadata,
+      },
+    })
+  } else {
+    session = await prisma.session.update({
+      where: {
+        id: session.id,
+      },
+      data: {
+        title: desiredTitle,
+        description: desiredDescription,
+        metadata: sessionMetadata,
+      },
+    })
+  }
+
+  return {
+    subagentId: subagent.id,
+    sessionId: session.id,
   }
 }

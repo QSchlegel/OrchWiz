@@ -9,6 +9,7 @@ import {
   SUBSYSTEM_GROUP_CONFIG,
   GROUP_ORDER,
 } from "@/lib/uss-k8s/topology"
+import { readShipMonitoringConfig, SHIP_MONITORING_DEFAULTS } from "@/lib/shipyard/monitoring"
 
 export const dynamic = "force-dynamic"
 
@@ -216,17 +217,29 @@ export async function GET(request: NextRequest) {
       agentLookup.set(agent.role, agent)
     }
 
+    const monitoring = selectedShip ? readShipMonitoringConfig(selectedShip.config) : null
+    const serviceUrlOverrides: Record<string, string | null> = {
+      lf: monitoring?.langfuseUrl ?? SHIP_MONITORING_DEFAULTS.langfuseUrl,
+      graf: monitoring?.grafanaUrl ?? SHIP_MONITORING_DEFAULTS.grafanaUrl,
+      prom: monitoring?.prometheusUrl ?? SHIP_MONITORING_DEFAULTS.prometheusUrl,
+    }
+    if (kubeview.url) {
+      serviceUrlOverrides.kubeview = kubeview.url
+    }
+
     const components = USS_K8S_COMPONENTS.map((c) => {
       const agent = agentLookup.get(c.id)
+      const overrideUrl = serviceUrlOverrides[c.id]
+      const enriched = { ...c }
       if (agent) {
-        return {
-          ...c,
-          subagentId: agent.id,
-          subagentName: agent.callsign || agent.name,
-          subagentDescription: agent.description,
-        }
+        enriched.subagentId = agent.id
+        enriched.subagentName = agent.callsign || agent.name
+        enriched.subagentDescription = agent.description
       }
-      return c
+      if (overrideUrl) {
+        enriched.serviceUrl = overrideUrl
+      }
+      return enriched
     })
 
     return NextResponse.json({

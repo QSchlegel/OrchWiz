@@ -9,6 +9,7 @@ import type {
   LocalBootstrapFailureDetails,
   LocalBootstrapResult,
 } from "./local-bootstrap.types"
+import { isVerboseOrResourceUsageEnabled } from "./local-bootstrap-resources"
 
 const execFileAsync = promisify(execFileCallback)
 
@@ -18,7 +19,8 @@ const BASE_REQUIRED_COMMANDS = ["terraform", "kubectl", "ansible-playbook"] as c
 
 const MAX_OUTPUT_CHARS = 8000
 const CONTEXT_CHECK_TIMEOUT_MS = 60_000
-const DEFAULT_LOCAL_INFRA_TIMEOUT_MS = 600_000
+const KIND_CREATE_CLUSTER_TIMEOUT_MS = 300_000
+const DEFAULT_LOCAL_INFRA_TIMEOUT_MS = 1_200_000
 const DEFAULT_LOCAL_SHIPYARD_APP_IMAGE = "orchwiz:local-dev"
 const DEFAULT_LOCAL_SHIPYARD_DOCKERFILE = "node/Dockerfile.shipyard"
 const DEFAULT_LOCAL_SHIPYARD_DOCKER_CONTEXT = "node"
@@ -90,6 +92,10 @@ export interface LocalBootstrapRuntime {
     args: string[],
     options?: LocalBootstrapCommandOptions,
   ) => Promise<LocalBootstrapCommandResult>
+  /** Optional progress callback for granular launch progress (percent, stage, message). */
+  onProgress?: (percent: number, stage: string, message: string) => void
+  /** Optional debug log emitter when LOCAL_BOOTSTRAP_VERBOSE_DEBUG or LOCAL_BOOTSTRAP_RESOURCE_USAGE is set. */
+  emitLaunchLog?: (entry: { level: "debug" | "info" | "warn" | "error"; source: string; lines: string[] }) => void
 }
 
 interface ResolvedInfrastructurePaths {
@@ -1063,8 +1069,28 @@ function localShipyardAutoBuildEnabled(input: LocalBootstrapInput, runtime: Loca
   return parseBooleanEnv(runtime.env.LOCAL_SHIPYARD_AUTO_BUILD_APP_IMAGE, true)
 }
 
+function localShipyardAutoCreateKindClusterEnabled(
+  input: LocalBootstrapInput,
+  runtime: LocalBootstrapRuntime,
+): boolean {
+  if (input.infrastructure.kind !== "kind") {
+    return false
+  }
+
+  if (!input.saneBootstrap) {
+    return false
+  }
+
+  return parseBooleanEnv(runtime.env.LOCAL_SHIPYARD_AUTO_CREATE_KIND_CLUSTER, true)
+}
+
 function localShipyardForceRebuildEnabled(runtime: LocalBootstrapRuntime): boolean {
   return parseBooleanEnv(runtime.env.LOCAL_SHIPYARD_FORCE_REBUILD_APP_IMAGE, false)
+}
+
+function isKindMissingClusterError(result: LocalBootstrapCommandResult): boolean {
+  const raw = [result.stdout, result.stderr, result.error || ""].join("\n").toLowerCase()
+  return raw.includes("no nodes found for cluster")
 }
 
 function kindClusterNameFromContext(kubeContext: string): string {
@@ -1122,6 +1148,8 @@ async function prepareLocalKindAppImage(args: {
     )
   }
 
+  args.runtime.onProgress?.(45, "checking_kind", "Checking for existing Kind cluster")
+
   const forceRebuild = localShipyardForceRebuildEnabled(args.runtime)
   const imageIdBeforeResult = await args.runtime.runCommand(
     "docker",
@@ -1132,6 +1160,16 @@ async function prepareLocalKindAppImage(args: {
 
   // Always run `docker build` when sane bootstrap is enabled. Docker layer caching keeps this fast when
   // nothing changed, and it ensures ship launches don't reuse stale images after code changes.
+  args.runtime.onProgress?.(50, "building_image", "Building app image")
+  if (isVerboseOrResourceUsageEnabled(args.runtime.env)) {
+    args.runtime.emitLaunchLog?.({
+      level: "debug",
+      source: "local-bootstrap",
+      lines: ["[local-bootstrap] Docker build started"],
+    })
+  }
+
+  const buildStartAt = Date.now()
   const buildArgs = ["build", "-f", dockerfilePath, "-t", imageTag]
   if (forceRebuild) {
     buildArgs.push("--no-cache")
@@ -1142,6 +1180,15 @@ async function prepareLocalKindAppImage(args: {
     cwd: args.paths.repoRoot,
     timeoutMs: args.timeoutMs,
   })
+
+  if (isVerboseOrResourceUsageEnabled(args.runtime.env)) {
+    const buildElapsedSec = Math.round((Date.now() - buildStartAt) / 1000)
+    args.runtime.emitLaunchLog?.({
+      level: "debug",
+      source: "local-bootstrap",
+      lines: [`[local-bootstrap] Docker build completed in ${buildElapsedSec}s`],
+    })
+  }
 
   if (!buildResult.ok) {
     return toFailure(
@@ -1176,30 +1223,87 @@ async function prepareLocalKindAppImage(args: {
   const clusterName = args.runtime.env.LOCAL_SHIPYARD_KIND_CLUSTER_NAME?.trim()
     || kindClusterNameFromContext(args.input.infrastructure.kubeContext)
 
-  const loadResult = await args.runtime.runCommand(
+  const autoCreateCluster = localShipyardAutoCreateKindClusterEnabled(args.input, args.runtime)
+
+  let kindClusterAutoCreated = false
+  let appImageLoadOutputTailBeforeCreate: string | null = null
+  let kindClusterCreateOutputTail: string | null = null
+
+  args.runtime.onProgress?.(58, "loading_image", "Loading image into cluster")
+
+  let loadResult = await args.runtime.runCommand(
     "kind",
     ["load", "docker-image", imageTag, "--name", clusterName],
-    {
-      timeoutMs: args.timeoutMs,
-    },
+    { timeoutMs: args.timeoutMs },
   )
 
+  if (!loadResult.ok && autoCreateCluster && isKindMissingClusterError(loadResult)) {
+    appImageLoadOutputTailBeforeCreate = outputTail(loadResult)
+
+    args.runtime.onProgress?.(47, "creating_kind_cluster", "Creating Kind cluster (this may take a moment)")
+
+    const createResult = await args.runtime.runCommand(
+      "kind",
+      ["create", "cluster", "--name", clusterName],
+      { timeoutMs: args.timeoutMs },
+    )
+    if (!createResult.ok) {
+      return toFailure(
+        "LOCAL_PROVISIONING_FAILED",
+        "Failed to create kind cluster for local provisioning.",
+        {
+          details: {
+            suggestedCommands: [
+              `kind create cluster --name ${clusterName}`,
+              `kubectl config use-context kind-${clusterName}`,
+              `kind load docker-image ${imageTag} --name ${clusterName}`,
+            ],
+          },
+          metadata: {
+            kindClusterCreateOutputTail: outputTail(createResult),
+            appImageLoadOutputTail: appImageLoadOutputTailBeforeCreate,
+          },
+        },
+      )
+    }
+
+    kindClusterAutoCreated = true
+    kindClusterCreateOutputTail = outputTail(createResult)
+
+    args.runtime.onProgress?.(58, "loading_image", "Loading image into cluster")
+
+    loadResult = await args.runtime.runCommand(
+      "kind",
+      ["load", "docker-image", imageTag, "--name", clusterName],
+      { timeoutMs: args.timeoutMs },
+    )
+  }
+
   if (!loadResult.ok) {
+    const suggestedCommands = [
+      `kind load docker-image ${imageTag} --name ${clusterName}`,
+    ]
+    if (isKindMissingClusterError(loadResult)) {
+      suggestedCommands.unshift(`kubectl config use-context kind-${clusterName}`)
+      suggestedCommands.unshift(`kind create cluster --name ${clusterName}`)
+    }
     return toFailure(
       "LOCAL_PROVISIONING_FAILED",
       "Failed to load local app image into kind cluster.",
       {
         details: {
-          suggestedCommands: [
-            `kind load docker-image ${imageTag} --name ${clusterName}`,
-          ],
+          suggestedCommands,
         },
         metadata: {
           appImageLoadOutputTail: outputTail(loadResult),
+          appImageLoadOutputTailBeforeCreate,
+          kindClusterCreateOutputTail,
         },
       },
     )
   }
+
+  args.runtime.onProgress?.(65, "image_loaded", "App image loaded")
 
   return {
     ok: true,
@@ -1213,6 +1317,7 @@ async function prepareLocalKindAppImage(args: {
       dockerContextPath,
       clusterName,
       forceRebuild,
+      kindClusterAutoCreated,
     },
   }
 }
@@ -1384,26 +1489,67 @@ export async function runLocalBootstrap(
     .split("\n")
     .map((entry) => entry.trim())
     .filter(Boolean)
-  const contextSet = new Set(contexts)
+  let contextSet = new Set(contexts)
 
   if (!contextSet.has(input.infrastructure.kubeContext)) {
-    return toFailure(
-      "LOCAL_BOOTSTRAP_CONTEXT_MISSING",
-      `Kubernetes context '${input.infrastructure.kubeContext}' was not found in kubeconfig.`,
-      {
-        details: {
-          missingContext: input.infrastructure.kubeContext,
-          suggestedCommands: suggestedContextCommands(
-            input.infrastructure.kind,
-            input.infrastructure.kubeContext,
-          ),
+    const canAutoCreateKind =
+      input.infrastructure.kind === "kind" &&
+      localShipyardAutoCreateKindClusterEnabled(input, runtime) &&
+      runtime.commandExists("kind")
+    const clusterName =
+      runtime.env.LOCAL_SHIPYARD_KIND_CLUSTER_NAME?.trim() ||
+      kindClusterNameFromContext(input.infrastructure.kubeContext)
+
+    if (canAutoCreateKind && input.infrastructure.kubeContext === `kind-${clusterName}`) {
+      if (isVerboseOrResourceUsageEnabled(runtime.env)) {
+        runtime.emitLaunchLog?.({
+          level: "info",
+          source: "local-bootstrap",
+          lines: [`[local-bootstrap] Creating Kind cluster '${clusterName}' (context ${input.infrastructure.kubeContext})`],
+        })
+      }
+      runtime.onProgress?.(66, "creating_kind_cluster", "Creating Kind cluster (this may take a moment)")
+      const createResult = await runtime.runCommand(
+        "kind",
+        ["create", "cluster", "--name", clusterName],
+        { timeoutMs: KIND_CREATE_CLUSTER_TIMEOUT_MS },
+      )
+      if (createResult.ok) {
+        const recheckResult = await runtime.runCommand(
+          "kubectl",
+          ["config", "get-contexts", "-o", "name"],
+          { timeoutMs: CONTEXT_CHECK_TIMEOUT_MS },
+        )
+        if (recheckResult.ok) {
+          const newContexts = recheckResult.stdout
+            .split("\n")
+            .map((entry) => entry.trim())
+            .filter(Boolean)
+          contextSet = new Set(newContexts)
+          installMetadata.kindClusterAutoCreated = true
+        }
+      }
+    }
+
+    if (!contextSet.has(input.infrastructure.kubeContext)) {
+      return toFailure(
+        "LOCAL_BOOTSTRAP_CONTEXT_MISSING",
+        `Kubernetes context '${input.infrastructure.kubeContext}' was not found in kubeconfig.`,
+        {
+          details: {
+            missingContext: input.infrastructure.kubeContext,
+            suggestedCommands: suggestedContextCommands(
+              input.infrastructure.kind,
+              input.infrastructure.kubeContext,
+            ),
+          },
+          metadata: {
+            ...installMetadata,
+            discoveredContexts: Array.from(contextSet),
+          },
         },
-        metadata: {
-          ...installMetadata,
-          discoveredContexts: contexts,
-        },
-      },
-    )
+      )
+    }
   }
 
   if (runtime.env.ENABLE_LOCAL_COMMAND_EXECUTION !== "true") {
@@ -1453,6 +1599,15 @@ export async function runLocalBootstrap(
       : {}),
   }
 
+  runtime.onProgress?.(68, "provisioning_ansible", "Deploying with Ansible")
+  if (isVerboseOrResourceUsageEnabled(runtime.env)) {
+    runtime.emitLaunchLog?.({
+      level: "debug",
+      source: "local-bootstrap",
+      lines: ["[local-bootstrap] Running Ansible playbook (Terraform init → plan → apply)"],
+    })
+  }
+
   const provisionCommand = [
     "ansible-playbook",
     "-i",
@@ -1493,6 +1648,8 @@ export async function runLocalBootstrap(
       },
     )
   }
+
+  runtime.onProgress?.(72, "provisioning_complete", "Infrastructure provisioned")
 
   const localAppImageMetadata = installMetadata.localAppImage as Record<string, unknown> | undefined
   const localAppImageChanged = localAppImageMetadata ? (localAppImageMetadata.imageChanged === true) : false

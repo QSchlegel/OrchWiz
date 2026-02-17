@@ -1,9 +1,17 @@
+// Next expects AsyncLocalStorage to be present on the global object at module init time.
+// When running Next programmatically (tsx server.ts), we need to install the baseline first.
+import "next/dist/server/node-environment-baseline"
+
 import "./server-dotenv"
+import fs from "node:fs/promises"
 import http from "node:http"
+import path from "node:path"
+import { fileURLToPath } from "node:url"
 import next from "next"
 import { WebSocket, WebSocketServer, type RawData } from "ws"
 import { createAuth } from "./src/lib/auth"
 import { prisma } from "./src/lib/prisma"
+import { runDueNightlySecurityAudits } from "./src/lib/security/audit/nightly"
 import {
   isBridgeStationKey,
   resolveOpenClawRuntimeUrlForStation,
@@ -15,6 +23,23 @@ interface ShipSelectionRecord {
   status: "pending" | "deploying" | "active" | "inactive" | "failed" | "updating"
   deploymentProfile: "local_starship_build" | "cloud_shipyard"
   config: unknown
+}
+
+type DesktopAssetKey = "mac" | "windows" | "linux"
+
+type ReleaseAsset = {
+  name?: string
+  size?: number
+  browser_download_url?: string
+}
+
+type GitHubRelease = {
+  id?: number
+  tag_name?: string
+  name?: string
+  html_url?: string
+  published_at?: string
+  assets?: ReleaseAsset[]
 }
 
 function asString(value: unknown): string | null {
@@ -78,6 +103,301 @@ function parseCliArgs(argv: string[]) {
   }
 
   return args
+}
+
+function startLocalSecurityAuditCron() {
+  const enabled = parseBooleanEnv(process.env.ORCHWIZ_LOCAL_CRON_ENABLED) === true
+  if (!enabled) {
+    return
+  }
+
+  const configuredIntervalMinutes = parseNumber(process.env.ORCHWIZ_LOCAL_CRON_INTERVAL_MINUTES)
+  const intervalMinutes =
+    configuredIntervalMinutes && configuredIntervalMinutes > 0 ? configuredIntervalMinutes : 60
+  const intervalMs = Math.max(1, intervalMinutes) * 60 * 1000
+
+  const configuredIncludeReview = parseBooleanEnv(process.env.ORCHWIZ_LOCAL_CRON_INCLUDE_QUARTERMASTER_REVIEW)
+  const includeQuartermasterReview = configuredIncludeReview ?? true
+
+  let running = false
+  const tick = async () => {
+    if (running) {
+      return
+    }
+    running = true
+
+    try {
+      const summary = await runDueNightlySecurityAudits({ includeQuartermasterReview })
+      console.log("[local-cron] Security audits tick complete", {
+        executedAt: summary.executedAt,
+        dayKey: summary.dayKey,
+        checkedUsers: summary.checkedUsers,
+        succeeded: summary.succeeded,
+        skipped: summary.skipped,
+        failed: summary.failed,
+      })
+    } catch (error) {
+      console.error("[local-cron] Security audits tick failed:", error)
+    } finally {
+      running = false
+    }
+  }
+
+  console.log("[local-cron] Security audits scheduler enabled", {
+    intervalMinutes,
+    includeQuartermasterReview,
+  })
+
+  void tick()
+  const timer = setInterval(() => {
+    void tick()
+  }, intervalMs)
+  timer.unref?.()
+}
+
+const SERVER_ROOT_DIR = path.dirname(fileURLToPath(import.meta.url))
+const PUBLIC_DOWNLOADS_DIR = path.join(SERVER_ROOT_DIR, "public", "downloads")
+const DEFAULT_GITHUB_OWNER = "QSchlegel"
+const DEFAULT_GITHUB_REPO = "OrchWiz"
+
+const DESKTOP_DOWNLOADS: Record<DesktopAssetKey, { alias: string; assetName: RegExp }> = {
+  mac: {
+    alias: "orchwiz-mac.dmg",
+    assetName: /^OrchWiz-Desktop-.*-mac\.dmg$/u,
+  },
+  windows: {
+    alias: "orchwiz-win.exe",
+    assetName: /^OrchWiz-Desktop-.*-win\.exe$/u,
+  },
+  linux: {
+    alias: "orchwiz-linux.tar.gz",
+    assetName: /^OrchWiz-Desktop-.*-linux\.tar\.gz$/u,
+  },
+}
+
+const DESKTOP_DOWNLOAD_KEY_BY_ALIAS: Record<string, DesktopAssetKey> = Object.fromEntries(
+  (Object.keys(DESKTOP_DOWNLOADS) as DesktopAssetKey[]).map((key) => [DESKTOP_DOWNLOADS[key].alias, key]),
+) as Record<string, DesktopAssetKey>
+
+async function fileExists(filePath: string): Promise<boolean> {
+  try {
+    const stat = await fs.stat(filePath)
+    return stat.isFile()
+  } catch {
+    return false
+  }
+}
+
+async function fetchLatestRelease(args: {
+  owner: string
+  repo: string
+  token: string | null
+}): Promise<GitHubRelease> {
+  const url = `https://api.github.com/repos/${args.owner}/${args.repo}/releases/latest`
+  const headers: Record<string, string> = {
+    Accept: "application/vnd.github+json",
+    "User-Agent": "orchwiz-server-downloads-fallback",
+  }
+  if (args.token) {
+    headers.Authorization = `Bearer ${args.token}`
+  }
+
+  const response = await fetch(url, { headers })
+  if (!response.ok) {
+    const body = await response.text().catch(() => "")
+    throw new Error(`GitHub releases/latest failed (${response.status}): ${body.slice(0, 500)}`)
+  }
+
+  return (await response.json()) as GitHubRelease
+}
+
+let cachedLatestRelease:
+  | { fetchedAtMs: number; owner: string; repo: string; token: string | null; release: GitHubRelease }
+  | null = null
+const LATEST_RELEASE_TTL_MS = 5 * 60 * 1000
+
+async function fetchLatestReleaseCached(args: {
+  owner: string
+  repo: string
+  token: string | null
+}): Promise<GitHubRelease> {
+  const now = Date.now()
+  if (
+    cachedLatestRelease
+    && cachedLatestRelease.owner === args.owner
+    && cachedLatestRelease.repo === args.repo
+    && cachedLatestRelease.token === args.token
+    && now - cachedLatestRelease.fetchedAtMs < LATEST_RELEASE_TTL_MS
+  ) {
+    return cachedLatestRelease.release
+  }
+
+  const release = await fetchLatestRelease(args)
+  cachedLatestRelease = {
+    fetchedAtMs: now,
+    owner: args.owner,
+    repo: args.repo,
+    token: args.token,
+    release,
+  }
+  return release
+}
+
+function pickReleaseAsset(release: GitHubRelease, key: DesktopAssetKey): Required<ReleaseAsset> | null {
+  const assets = Array.isArray(release.assets) ? release.assets : []
+  const match = assets.find((asset) => {
+    const name = asString(asset.name)
+    return name ? DESKTOP_DOWNLOADS[key].assetName.test(name) : false
+  })
+
+  const name = asString(match?.name)
+  const url = asString(match?.browser_download_url)
+  const size = typeof match?.size === "number" ? match.size : null
+
+  if (!name || !url || size === null) {
+    return null
+  }
+
+  return {
+    name,
+    browser_download_url: url,
+    size,
+  }
+}
+
+async function maybeHandleMissingDesktopDownload(req: http.IncomingMessage, res: http.ServerResponse): Promise<boolean> {
+  const method = (req.method || "").toUpperCase()
+  if (method !== "GET" && method !== "HEAD") {
+    return false
+  }
+
+  let requestUrl: URL
+  try {
+    requestUrl = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`)
+  } catch {
+    return false
+  }
+
+  if (!requestUrl.pathname.startsWith("/downloads/")) {
+    return false
+  }
+
+  const filename = requestUrl.pathname.split("/").filter(Boolean)[1] || null
+  if (!filename) {
+    return false
+  }
+
+  // Only handle stable alias files + manifest. Anything else (including versioned artifacts)
+  // should continue through Next's normal static file server.
+  const isManifest = filename === "manifest.json"
+  const key = isManifest ? null : DESKTOP_DOWNLOAD_KEY_BY_ALIAS[filename] || null
+  if (!isManifest && !key) {
+    return false
+  }
+
+  const localPath = path.join(PUBLIC_DOWNLOADS_DIR, filename)
+  if (await fileExists(localPath)) {
+    return false
+  }
+
+  const owner = asString(process.env.ORCHWIZ_GITHUB_OWNER) || DEFAULT_GITHUB_OWNER
+  const repo = asString(process.env.ORCHWIZ_GITHUB_REPO) || DEFAULT_GITHUB_REPO
+  const token = asString(process.env.GITHUB_TOKEN)
+  const releasesUrl = `https://github.com/${owner}/${repo}/releases`
+
+  let release: GitHubRelease | null = null
+  try {
+    release = await fetchLatestReleaseCached({ owner, repo, token })
+  } catch (error) {
+    console.warn("Downloads fallback: failed to fetch latest GitHub release:", error)
+  }
+
+  if (isManifest) {
+    const tag = asString(release?.tag_name) || "unknown"
+    const publishedAt = asString(release?.published_at) || null
+
+    const files: Record<string, any> = {}
+    for (const assetKey of ["mac", "windows", "linux"] as const) {
+      const asset = release ? pickReleaseAsset(release, assetKey) : null
+      files[assetKey] = {
+        alias: DESKTOP_DOWNLOADS[assetKey].alias,
+        sourceName: asset?.name ?? null,
+        sourceUrl: asset?.browser_download_url ?? null,
+        bytes: asset?.size ?? null,
+        sha256: null,
+      }
+    }
+
+    const manifest = {
+      version: tag,
+      publishedAt,
+      release: {
+        id: release?.id ?? null,
+        tag,
+        name: asString(release?.name) || null,
+        htmlUrl: asString(release?.html_url) || releasesUrl,
+        source: `https://github.com/${owner}/${repo}`,
+      },
+      files,
+      generatedAt: new Date().toISOString(),
+      note:
+        "This manifest was generated on-demand because /public/downloads/manifest.json was missing. To populate real artifacts + checksums locally, run `cd desktop && npm run dist && cd ../node && npm run downloads:mirror-local`, or publish a GitHub Release and run `cd node && npm run downloads:sync`.",
+    }
+
+    const body = `${JSON.stringify(manifest, null, 2)}\n`
+    res.statusCode = 200
+    res.setHeader("Content-Type", "application/json; charset=utf-8")
+    res.setHeader("Cache-Control", "no-store")
+    res.end(method === "HEAD" ? undefined : body)
+    return true
+  }
+
+  const asset = release ? pickReleaseAsset(release, key as DesktopAssetKey) : null
+  if (asset?.browser_download_url) {
+    res.statusCode = 302
+    res.setHeader("Location", asset.browser_download_url)
+    res.setHeader("Cache-Control", "no-store")
+    res.end()
+    return true
+  }
+
+  // Dev-friendly failure mode: surface actionable instructions instead of a blank 404.
+  if (process.env.NODE_ENV !== "production") {
+    const help = [
+      `Missing desktop installer: /downloads/${filename}`,
+      "",
+      "This repo expects desktop installers to be present in:",
+      `  ${PUBLIC_DOWNLOADS_DIR}`,
+      "",
+      "Fix options:",
+      "1) Build installers locally and mirror them into /public/downloads:",
+      "   cd desktop && npm run dist",
+      "   cd ../node && npm run downloads:mirror-local",
+      "",
+      "2) Publish a GitHub Release with assets named like:",
+      "   OrchWiz-Desktop-<version>-mac.dmg",
+      "   OrchWiz-Desktop-<version>-win.exe",
+      "   OrchWiz-Desktop-<version>-linux.tar.gz",
+      "   Then mirror them locally:",
+      "   cd node && npm run downloads:sync",
+      "",
+      `Releases page: ${releasesUrl}`,
+      "",
+    ].join("\n")
+
+    res.statusCode = 404
+    res.setHeader("Content-Type", "text/plain; charset=utf-8")
+    res.setHeader("Cache-Control", "no-store")
+    res.end(method === "HEAD" ? undefined : help)
+    return true
+  }
+
+  // Production fallback: send the user to the releases index (works even when "latest" doesn't exist).
+  res.statusCode = 302
+  res.setHeader("Location", releasesUrl)
+  res.setHeader("Cache-Control", "no-store")
+  res.end()
+  return true
 }
 
 function nodeHeadersToWebHeaders(req: http.IncomingMessage): Headers {
@@ -481,7 +801,21 @@ async function main() {
   nextUpgradeHandler = (app as any).getUpgradeHandler?.()
 
   const server = http.createServer((req, res) => {
-    handle(req, res)
+    void (async () => {
+      try {
+        if (await maybeHandleMissingDesktopDownload(req, res)) {
+          return
+        }
+        handle(req, res)
+      } catch (error) {
+        console.error("Downloads fallback handler failed:", error)
+        if (!res.headersSent) {
+          handle(req, res)
+          return
+        }
+        res.end()
+      }
+    })()
   })
 
   server.on("upgrade", (req, socket, head) => {
@@ -513,6 +847,7 @@ async function main() {
 
   server.listen(port, hostname, () => {
     console.log(`OrchWiz server listening on http://${hostname}:${port} (dev=${dev})`)
+    startLocalSecurityAuditCron()
   })
 }
 

@@ -92,6 +92,7 @@ export const SIDEBAR_NOTIFICATION_CHANNELS_BY_HREF: Record<string, NotificationC
   "/performance": [],
   "/verification": ["verification"],
   "/security": ["security"],
+  "/wallet-enclave": [],
   "/github/prs": ["github-prs"],
   "/docs/claude": ["docs"],
   "/projects": ["projects"],

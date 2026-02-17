@@ -9,6 +9,10 @@ import {
   normalizeInfrastructureInConfig,
   parseDeploymentType,
 } from "@/lib/deployment/profile"
+import {
+  isShipyardManagedDeployment,
+  queueShipyardInfraTeardown,
+} from "@/lib/shipyard/infra-teardown"
 
 export const dynamic = 'force-dynamic'
 // Deprecated alias route: prefer /api/ships/[id] for ship operations.
@@ -182,6 +186,9 @@ export async function DELETE(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
 
+    const url = new URL(request.url)
+    const preserveInfra = url.searchParams.get("preserveInfra") === "true"
+
     const { id } = await params
 
     const existingDeployment = await prisma.agentDeployment.findFirst({
@@ -193,12 +200,35 @@ export async function DELETE(
         id: true,
         nodeId: true,
         deploymentType: true,
+        deploymentProfile: true,
+        config: true,
+        metadata: true,
       },
     })
 
     if (!existingDeployment) {
       return NextResponse.json({ error: "Deployment not found" }, { status: 404 })
     }
+
+    const shouldTeardownInfra = (
+      !preserveInfra
+      && existingDeployment.deploymentType === "ship"
+      && isShipyardManagedDeployment(existingDeployment.metadata)
+    )
+
+    const shipyardSshTunnels = shouldTeardownInfra
+      ? await prisma.shipyardSshTunnel.findMany({
+          where: {
+            userId: session.user.id,
+            deploymentId: existingDeployment.id,
+          },
+          select: {
+            id: true,
+            pid: true,
+            pidFile: true,
+          },
+        })
+      : []
 
     await prisma.agentDeployment.delete({
       where: {
@@ -225,7 +255,21 @@ export async function DELETE(
       })
     }
 
-    return NextResponse.json({ success: true })
+    if (shouldTeardownInfra) {
+      await queueShipyardInfraTeardown({
+        shipId: existingDeployment.id,
+        userId: session.user.id,
+        deploymentProfile: existingDeployment.deploymentProfile,
+        config: existingDeployment.config,
+        metadata: existingDeployment.metadata,
+        shipyardSshTunnels,
+      })
+    }
+
+    return NextResponse.json({
+      success: true,
+      infraTeardownQueued: shouldTeardownInfra,
+    })
   } catch (error) {
     console.error("Error deleting deployment:", error)
     return NextResponse.json(

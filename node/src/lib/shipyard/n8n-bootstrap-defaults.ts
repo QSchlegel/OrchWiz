@@ -1,6 +1,19 @@
 import type { DeploymentProfile } from "@/lib/deployment/profile"
 import type { ShipyardSecretTemplateValues } from "@/lib/shipyard/secret-vault"
 
+export interface N8NBootstrapDefaultContext {
+  deploymentProfile: DeploymentProfile
+  namespace?: string | null
+  nodeUrl?: string | null
+  postgresPassword?: string | null
+  databaseUrl?: string | null
+}
+
+export interface ApplyN8NBootstrapDefaultsOptions {
+  /** When provided, used to generate n8n_basic_auth_password and n8n_encryption_key when missing. Server-only. */
+  generateRandomSecret?: (byteLength: number) => string
+}
+
 export const N8N_REQUIRED_SECRET_FIELDS = [
   "n8n_database_url",
   "n8n_basic_auth_user",
@@ -65,6 +78,12 @@ export function buildDefaultN8NDatabaseUrl(args: {
     return asNonEmptyString(args.databaseUrl)
   }
 
+  // Local: when databaseUrl is provided (e.g. from cluster secret), use it for n8n
+  const fromCluster = asNonEmptyString(args.databaseUrl)
+  if (fromCluster) {
+    return fromCluster
+  }
+
   return buildLocalDefaultN8NDatabaseUrl({
     deploymentProfile: args.deploymentProfile,
     namespace: args.namespace,
@@ -93,4 +112,62 @@ export function buildDefaultN8NPublicBaseUrl(args: {
   } catch {
     return defaultN8NPublicBaseUrlFallback(args.deploymentProfile)
   }
+}
+
+const DEFAULT_N8N_BASIC_AUTH_USER = "captain"
+
+/**
+ * Merges resolved template values with n8n bootstrap defaults for any empty n8n field.
+ * Used server-side at bootstrap so launch can proceed when values are derivable.
+ * Does not mutate `values`; returns a new object.
+ */
+export function applyN8NBootstrapDefaults(
+  values: ShipyardSecretTemplateValues,
+  context: N8NBootstrapDefaultContext,
+  options: ApplyN8NBootstrapDefaultsOptions = {},
+): ShipyardSecretTemplateValues {
+  const merged: ShipyardSecretTemplateValues = { ...values }
+
+  const setIfMissing = (field: N8NRequiredSecretField, candidate: string | null) => {
+    if (candidate && asNonEmptyString(candidate)) {
+      merged[field] = candidate
+    }
+  }
+
+  if (!asNonEmptyString(merged.n8n_basic_auth_user)) {
+    setIfMissing("n8n_basic_auth_user", DEFAULT_N8N_BASIC_AUTH_USER)
+  }
+
+  if (options.generateRandomSecret) {
+    if (!asNonEmptyString(merged.n8n_basic_auth_password)) {
+      setIfMissing("n8n_basic_auth_password", options.generateRandomSecret(32))
+    }
+    if (!asNonEmptyString(merged.n8n_encryption_key)) {
+      setIfMissing("n8n_encryption_key", options.generateRandomSecret(32))
+    }
+  }
+
+  if (!asNonEmptyString(merged.n8n_database_url)) {
+    setIfMissing(
+      "n8n_database_url",
+      buildDefaultN8NDatabaseUrl({
+        deploymentProfile: context.deploymentProfile,
+        namespace: context.namespace,
+        postgresPassword: context.postgresPassword,
+        databaseUrl: context.databaseUrl,
+      }),
+    )
+  }
+
+  if (!asNonEmptyString(merged.n8n_public_base_url)) {
+    setIfMissing(
+      "n8n_public_base_url",
+      buildDefaultN8NPublicBaseUrl({
+        deploymentProfile: context.deploymentProfile,
+        nodeUrl: context.nodeUrl,
+      }),
+    )
+  }
+
+  return merged
 }

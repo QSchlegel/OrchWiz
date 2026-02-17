@@ -465,7 +465,7 @@ export default function ShipsPage() {
   }
 
   async function handleDelete(id: string) {
-    if (!confirm("Are you sure you want to delete this ship?")) return
+    if (!confirm("Are you sure you want to delete this ship? (Ship Yard infra will be removed in the background when applicable.)")) return
     try {
       const r = await fetch(`/api/ships/${id}`, { method: "DELETE" })
       if (r.ok) { if (selectedId === id) setSelectedId(null); fetchDeployments() }
@@ -896,11 +896,11 @@ export default function ShipsPage() {
                   </div>
                 )}
                 <div className="sm:col-span-2">
-                  <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">NODE URL (OPTIONAL)</label>
+                  <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">NODE URL</label>
                   <input type="url" value={form.nodeUrl} onChange={e => setForm({ ...form, nodeUrl: e.target.value })} className={inputCls} placeholder="https://node.example.com" />
                 </div>
                 <div>
-                  <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">GRAFANA URL (OPTIONAL)</label>
+                  <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">GRAFANA URL</label>
                   <input
                     type="url"
                     value={form.monitoring.grafanaUrl}
@@ -910,11 +910,11 @@ export default function ShipsPage() {
                         monitoring: { ...form.monitoring, grafanaUrl: e.target.value },
                       })}
                     className={inputCls}
-                    placeholder="https://grafana.example.com/d/..."
+                    placeholder="/api/bridge/runtime-ui/grafana"
                   />
                 </div>
                 <div>
-                  <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">PROMETHEUS URL (OPTIONAL)</label>
+                  <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">PROMETHEUS URL</label>
                   <input
                     type="url"
                     value={form.monitoring.prometheusUrl}
@@ -924,11 +924,11 @@ export default function ShipsPage() {
                         monitoring: { ...form.monitoring, prometheusUrl: e.target.value },
                       })}
                     className={inputCls}
-                    placeholder="https://prometheus.example.com/graph"
+                    placeholder="/api/bridge/runtime-ui/prometheus"
                   />
                 </div>
                 <div>
-                  <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">KUBEVIEW URL (OPTIONAL)</label>
+                  <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">KUBEVIEW URL</label>
                   <input
                     type="url"
                     value={form.monitoring.kubeviewUrl}
@@ -942,7 +942,7 @@ export default function ShipsPage() {
                   />
                 </div>
                 <div>
-                  <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">LANGFUSE URL (OPTIONAL)</label>
+                  <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">LANGFUSE URL</label>
                   <input
                     type="url"
                     value={form.monitoring.langfuseUrl}
@@ -952,7 +952,7 @@ export default function ShipsPage() {
                         monitoring: { ...form.monitoring, langfuseUrl: e.target.value },
                     })}
                     className={inputCls}
-                    placeholder="https://langfuse.example.com"
+                    placeholder="/api/bridge/runtime-ui/langfuse"
                   />
                 </div>
                 <div className="sm:col-span-2">

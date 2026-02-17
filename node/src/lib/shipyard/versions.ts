@@ -7,6 +7,10 @@ export const SHIP_VERSION_CATALOG = [
     version: "v2",
     label: "Current Release",
   },
+  {
+    version: "v3",
+    label: "Runtime UI auth + Langfuse",
+  },
 ] as const
 
 export type ShipVersion = (typeof SHIP_VERSION_CATALOG)[number]["version"]

@@ -34,6 +34,7 @@ test("ship-yard ships DELETE requires explicit confirmation", async () => {
       },
       publishShipUpdateEvent: () => {},
       publishNotificationUpdate: () => null,
+      queueInfraTeardown: () => {},
     },
   )
 
@@ -46,6 +47,7 @@ test("ship-yard ships DELETE removes all actor ships and emits updates", async (
   const deletedCalls: Array<{ userId: string; shipIds: string[] }> = []
   const shipEvents: Array<{ shipId: string; status: string; nodeId?: string | null; userId?: string | null }> = []
   const notificationCalls: Array<{ userId?: string; channel: string; action?: string; entityId?: string }> = []
+  const infraTeardownCalls: Array<{ shipId: string }> = []
 
   const response = await handleDeleteShipyardShips(
     deleteRequest("http://localhost/api/ship-yard/ships?confirm=delete-all&namePrefix=LocalDebugShip&deploymentProfile=local_starship_build"),
@@ -54,8 +56,20 @@ test("ship-yard ships DELETE removes all actor ships and emits updates", async (
       listShips: async (userId, filter) => {
         listCalls.push({ userId, filter })
         return [
-          { id: "ship-1", nodeId: "node-a" },
-          { id: "ship-2", nodeId: "node-b" },
+          {
+            id: "ship-1",
+            nodeId: "node-a",
+            deploymentProfile: "local_starship_build",
+            config: {},
+            metadata: { shipYard: true },
+          },
+          {
+            id: "ship-2",
+            nodeId: "node-b",
+            deploymentProfile: "local_starship_build",
+            config: {},
+            metadata: { shipYard: true },
+          },
         ]
       },
       deleteShipsByIds: async (userId, shipIds) => {
@@ -69,6 +83,9 @@ test("ship-yard ships DELETE removes all actor ships and emits updates", async (
         notificationCalls.push(args as { userId?: string; channel: string; action?: string; entityId?: string })
         return null
       },
+      queueInfraTeardown: (target) => {
+        infraTeardownCalls.push({ shipId: target.shipId })
+      },
     },
   )
 
@@ -77,11 +94,15 @@ test("ship-yard ships DELETE removes all actor ships and emits updates", async (
     matchedCount: number
     deletedCount: number
     deletedShipIds: string[]
+    infraTeardownQueuedCount?: number
+    infraTeardownQueuedShipIds?: string[]
   }
 
   assert.equal(payload.matchedCount, 2)
   assert.equal(payload.deletedCount, 2)
   assert.deepEqual(payload.deletedShipIds, ["ship-1", "ship-2"])
+  assert.equal(payload.infraTeardownQueuedCount, 2)
+  assert.deepEqual(payload.infraTeardownQueuedShipIds, ["ship-1", "ship-2"])
   assert.deepEqual(listCalls, [
     {
       userId: "user-1",
@@ -101,6 +122,7 @@ test("ship-yard ships DELETE removes all actor ships and emits updates", async (
   assert.deepEqual(notificationCalls, [
     { userId: "user-1", channel: "ships", action: "clear" },
   ])
+  assert.deepEqual(infraTeardownCalls, [{ shipId: "ship-1" }, { shipId: "ship-2" }])
 })
 
 test("ship-yard ships DELETE validates deployment profile filter", async () => {
@@ -112,6 +134,7 @@ test("ship-yard ships DELETE validates deployment profile filter", async () => {
       deleteShipsByIds: async () => 0,
       publishShipUpdateEvent: () => {},
       publishNotificationUpdate: () => null,
+      queueInfraTeardown: () => {},
     },
   )
 
@@ -134,10 +157,43 @@ test("ship-yard ships DELETE surfaces access control errors", async () => {
       deleteShipsByIds: async () => 0,
       publishShipUpdateEvent: () => {},
       publishNotificationUpdate: () => null,
+      queueInfraTeardown: () => {},
     },
   )
 
   assert.equal(response.status, 401)
   const payload = (await response.json()) as Record<string, unknown>
   assert.equal(payload.code, "UNAUTHORIZED")
+})
+
+test("ship-yard ships DELETE supports preserveInfra=true to skip infra teardown", async () => {
+  const infraTeardownCalls: Array<{ shipId: string }> = []
+
+  const response = await handleDeleteShipyardShips(
+    deleteRequest("http://localhost/api/ship-yard/ships?confirm=delete-all&preserveInfra=true"),
+    {
+      requireActor: async () => actor,
+      listShips: async () => [
+        {
+          id: "ship-1",
+          nodeId: "node-a",
+          deploymentProfile: "local_starship_build",
+          config: {},
+          metadata: { shipYard: true },
+        },
+      ],
+      deleteShipsByIds: async () => 1,
+      publishShipUpdateEvent: () => {},
+      publishNotificationUpdate: () => null,
+      queueInfraTeardown: (target) => {
+        infraTeardownCalls.push({ shipId: target.shipId })
+      },
+    },
+  )
+
+  assert.equal(response.status, 200)
+  const payload = (await response.json()) as Record<string, unknown>
+  assert.equal(payload.infraTeardownQueuedCount, 0)
+  assert.deepEqual(payload.infraTeardownQueuedShipIds, [])
+  assert.deepEqual(infraTeardownCalls, [])
 })

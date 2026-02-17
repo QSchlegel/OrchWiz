@@ -136,7 +136,7 @@ function adapterResult(status: "active" | "failed", error?: string): DeploymentA
   }
 }
 
-test("bootstrapInitialApplicationsForShip returns degraded when required n8n secrets are missing", async () => {
+test("bootstrapInitialApplicationsForShip returns degraded when required n8n secrets are missing after defaults", async () => {
   const harness = makePrismaHarness({
     storedSecrets: {},
   })
@@ -164,13 +164,7 @@ test("bootstrapInitialApplicationsForShip returns degraded when required n8n sec
   )
 
   assert.equal(result.n8n.status, "degraded")
-  assert.deepEqual(result.n8n.missingSecrets, [
-    "n8n_database_url",
-    "n8n_basic_auth_user",
-    "n8n_basic_auth_password",
-    "n8n_encryption_key",
-    "n8n_public_base_url",
-  ])
+  assert.deepEqual(result.n8n.missingSecrets, ["n8n_database_url"])
   assert.equal(result.n8n.applicationId, null)
   assert.equal(adapterCalls, 0)
 })
@@ -299,6 +293,132 @@ test("bootstrapInitialApplicationsForShip deploys n8n and grants tool when every
   assert.equal(result.n8n.toolGrantId, "grant-n8n")
   assert.equal(result.n8n.attempts, 1)
   assert.equal(published.length, 1)
+})
+
+test("bootstrapInitialApplicationsForShip proceeds with defaults when template has only postgres_password", async () => {
+  const harness = makePrismaHarness({
+    storedSecrets: { postgres_password: "local-pg" },
+  })
+
+  const result = await bootstrapInitialApplicationsForShip(
+    {
+      ownerUserId: "user-1",
+      ship: shipTarget(),
+    },
+    {
+      prismaClient: harness.prismaStub as any,
+      runDeploymentAdapterFn: async () => adapterResult("active"),
+      publishShipApplicationUpdatedFn: () => {},
+      resolveShipyardSecretTemplateValuesFn: async () => ({
+        postgres_password: "local-pg",
+      }),
+      importCuratedToolForUserFn: async () => ({
+        run: {
+          id: "run-1",
+          ownerUserId: "user-1",
+          catalogEntryId: "tool-n8n",
+          mode: "curated",
+          source: "curated",
+          toolSlug: "n8n",
+          repo: "example/n8n-tool",
+          sourcePath: ".",
+          sourceRef: "main",
+          sourceUrl: "https://github.com/example/n8n-tool",
+          status: "succeeded",
+          exitCode: 0,
+          stdout: "",
+          stderr: "",
+          errorMessage: null,
+          startedAt: new Date().toISOString(),
+          completedAt: new Date().toISOString(),
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+        entry: {
+          id: "tool-n8n",
+          slug: "n8n",
+          name: "n8n Connector",
+          description: null,
+          source: "curated",
+          sourceKey: "curated|example/n8n-tool|.|main|n8n",
+          repo: "example/n8n-tool",
+          sourcePath: ".",
+          sourceRef: "main",
+          sourceUrl: "https://github.com/example/n8n-tool",
+          isInstalled: true,
+          isSystem: false,
+          installedPath: "/tmp/tools/n8n",
+          activationStatus: "approved",
+          activationRationale: null,
+          activatedAt: null,
+          activatedByUserId: null,
+          activatedByBridgeCrewId: null,
+          activationSecurityReportId: null,
+          metadata: null,
+          ownerUserId: "user-1",
+          lastSyncedAt: new Date().toISOString(),
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+      }),
+      ensureShipToolGrantForBootstrapFn: async () =>
+        ({
+          id: "grant-n8n",
+        } as any),
+    },
+  )
+
+  assert.equal(result.n8n.status, "ready")
+  assert.equal(result.n8n.missingSecrets.length, 0)
+  assert.equal(result.n8n.applicationId, "app-n8n-1")
+  assert.ok(
+    !result.n8n.errors.some((e) => e.code === "N8N_SECRETS_MISSING"),
+    "should not report N8N_SECRETS_MISSING when defaults fill all n8n fields",
+  )
+})
+
+test("bootstrapInitialApplicationsForShip fills n8n_database_url from cluster when runCommandFn returns DATABASE_URL and template has no postgres_password", async () => {
+  const clusterUrl =
+    "postgresql://orchwiz:secret@orchwiz-postgres-postgresql.orchwiz-starship.svc.cluster.local:5432/orchis?schema=public"
+  const b64 = Buffer.from(clusterUrl, "utf8").toString("base64")
+
+  const runCommandFn = async (cmd: string, args: string[]) => {
+    assert.equal(cmd, "kubectl")
+    assert.ok(args.includes("orchwiz-env"))
+    assert.ok(args.includes("orchwiz-starship"))
+    return { code: 0, stdout: b64 }
+  }
+
+  const harness = makePrismaHarness({
+    storedSecrets: {},
+  })
+
+  const result = await bootstrapInitialApplicationsForShip(
+    {
+      ownerUserId: "user-1",
+      ship: shipTarget(),
+    },
+    {
+      prismaClient: harness.prismaStub as any,
+      runDeploymentAdapterFn: async () => adapterResult("active"),
+      publishShipApplicationUpdatedFn: () => {},
+      resolveShipyardSecretTemplateValuesFn: async () => ({}),
+      runCommandFn,
+      importCuratedToolForUserFn: async () => ({
+        run: { id: "run-1", ownerUserId: "user-1", catalogEntryId: "tool-n8n", mode: "curated", source: "curated", toolSlug: "n8n", repo: "", sourcePath: "", sourceRef: "", sourceUrl: "", status: "succeeded", exitCode: 0, stdout: "", stderr: "", errorMessage: null, startedAt: new Date().toISOString(), completedAt: new Date().toISOString(), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+        entry: { id: "tool-n8n", slug: "n8n", name: "n8n", description: null, source: "curated", sourceKey: "", repo: "", sourcePath: "", sourceRef: "", sourceUrl: "", isInstalled: true, isSystem: false, installedPath: "", activationStatus: "approved", activationRationale: null, activatedAt: null, activatedByUserId: null, activatedByBridgeCrewId: null, activationSecurityReportId: null, metadata: null, ownerUserId: "user-1", lastSyncedAt: new Date().toISOString(), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+      }),
+      ensureShipToolGrantForBootstrapFn: async () => ({ id: "grant-n8n" } as any),
+    },
+  )
+
+  assert.equal(result.n8n.status, "ready")
+  assert.equal(result.n8n.missingSecrets.length, 0)
+  assert.ok(
+    !result.n8n.errors.some((e) => e.code === "N8N_SECRETS_MISSING"),
+    "cluster DATABASE_URL should fill n8n_database_url so secrets are not missing",
+  )
+  assert.equal(result.n8n.applicationId, "app-n8n-1")
 })
 
 test("bootstrapInitialApplicationsForShip retries once and succeeds on second adapter attempt", async () => {

@@ -18,12 +18,12 @@ import {
   ShieldCheck,
   Webhook,
   BadgeCheck,
-  BookOpen,
   FolderKanban,
-  Database,
-  Video,
   Gauge,
+  Eye,
   Wrench,
+  KeyRound,
+  Landmark,
   Settings2,
 } from "lucide-react"
 // Github is imported from lucide-react as "Github"
@@ -58,6 +58,7 @@ export const sidebarNav: NavGroup[] = [
     label: "Mission Control",
     icon: Crosshair,
     items: [
+      navItem("/mission-control", "Overview", Crosshair),
       navItem("/sessions", "Sessions", MonitorDot),
       navItem("/tasks", "Tasks", ListChecks),
       navItem("/actions", "Actions", Zap),
@@ -89,11 +90,7 @@ export const sidebarNav: NavGroup[] = [
     icon: Radio,
     items: [
       navItem("/bridge", "Bridge", Network),
-      navItem("/bridge-call", "Bridge Call", Video),
-      navItem("/bridge-chat", "Bridge Chat", Radio),
-      navItem("/bridge-connections", "Connections", Webhook),
       navItem("/uss-k8s", "USS-K8S", Ship),
-      navItem("/vault", "Vault", Database),
     ],
   },
   {
@@ -104,10 +101,11 @@ export const sidebarNav: NavGroup[] = [
       navItem("/performance", "Performance", Gauge),
       navItem("/verification", "Verification", BadgeCheck),
       navItem("/security", "Security", ShieldCheck),
+      navItem("/wallet-enclave", "Wallet Enclave", KeyRound),
+      navItem("/treasury", "Treasury", Landmark),
       navItem("/settings", "Settings", Settings2),
       navItem("/hooks", "Hooks", Webhook),
       navItem("/github/prs", "GitHub PRs", Github),
-      navItem("/docs/claude", "Docs", BookOpen),
     ],
   },
   {
@@ -116,6 +114,7 @@ export const sidebarNav: NavGroup[] = [
     icon: Globe,
     items: [
       navItem("/projects", "Projects", FolderKanban),
+      navItem("/views", "Views", Eye),
     ],
   },
 ]
@@ -124,6 +123,9 @@ export const allNavItems: NavItem[] = sidebarNav.flatMap((g) => g.items)
 
 export function matchesPath(pathname: string | null, href: string): boolean {
   if (!pathname) return false
+  if (href === "/mission-control") {
+    return pathname === "/mission-control"
+  }
   if (href === "/sessions") {
     return pathname === "/sessions" || pathname.startsWith("/sessions/")
   }

@@ -6,13 +6,14 @@ export interface ShipMonitoringConfig {
 }
 
 export const SHIP_MONITORING_DEFAULTS = Object.freeze({
-  grafanaUrl:
-    "http://localhost:3001/d/orchwiz-overview/orchwiz-monitoring-overview?orgId=1&refresh=5s",
-  prometheusUrl: "http://localhost:9090/query?g0.expr=sum%20by(job)%20(up)&g0.tab=0",
+  // Use the built-in Grafana patch-through proxy.
+  grafanaUrl: "/api/bridge/runtime-ui/grafana",
+  // Use the built-in Prometheus patch-through proxy.
+  prometheusUrl: "/api/bridge/runtime-ui/prometheus",
   // Use the built-in KubeView patch-through so users don't need a separate port-forward.
   kubeviewUrl: "/api/bridge/runtime-ui/kubeview",
-  // Leave unset by default; configure a direct Langfuse URL per ship in Ship Yard.
-  langfuseUrl: "",
+  // Use the built-in Langfuse patch-through when LANGFUSE_BASE_URL is configured.
+  langfuseUrl: "/api/bridge/runtime-ui/langfuse",
 })
 
 function asRecord(value: unknown): Record<string, unknown> {
