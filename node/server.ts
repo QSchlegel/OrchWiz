@@ -1,3 +1,7 @@
+// Next expects AsyncLocalStorage to be present on the global object at module init time.
+// When running Next programmatically (tsx server.ts), we need to install the baseline first.
+import "next/dist/server/node-environment-baseline"
+
 import "./server-dotenv"
 import fs from "node:fs/promises"
 import http from "node:http"
@@ -7,6 +11,7 @@ import next from "next"
 import { WebSocket, WebSocketServer, type RawData } from "ws"
 import { createAuth } from "./src/lib/auth"
 import { prisma } from "./src/lib/prisma"
+import { runDueNightlySecurityAudits } from "./src/lib/security/audit/nightly"
 import {
   isBridgeStationKey,
   resolveOpenClawRuntimeUrlForStation,
@@ -98,6 +103,56 @@ function parseCliArgs(argv: string[]) {
   }
 
   return args
+}
+
+function startLocalSecurityAuditCron() {
+  const enabled = parseBooleanEnv(process.env.ORCHWIZ_LOCAL_CRON_ENABLED) === true
+  if (!enabled) {
+    return
+  }
+
+  const configuredIntervalMinutes = parseNumber(process.env.ORCHWIZ_LOCAL_CRON_INTERVAL_MINUTES)
+  const intervalMinutes =
+    configuredIntervalMinutes && configuredIntervalMinutes > 0 ? configuredIntervalMinutes : 60
+  const intervalMs = Math.max(1, intervalMinutes) * 60 * 1000
+
+  const configuredIncludeReview = parseBooleanEnv(process.env.ORCHWIZ_LOCAL_CRON_INCLUDE_QUARTERMASTER_REVIEW)
+  const includeQuartermasterReview = configuredIncludeReview ?? true
+
+  let running = false
+  const tick = async () => {
+    if (running) {
+      return
+    }
+    running = true
+
+    try {
+      const summary = await runDueNightlySecurityAudits({ includeQuartermasterReview })
+      console.log("[local-cron] Security audits tick complete", {
+        executedAt: summary.executedAt,
+        dayKey: summary.dayKey,
+        checkedUsers: summary.checkedUsers,
+        succeeded: summary.succeeded,
+        skipped: summary.skipped,
+        failed: summary.failed,
+      })
+    } catch (error) {
+      console.error("[local-cron] Security audits tick failed:", error)
+    } finally {
+      running = false
+    }
+  }
+
+  console.log("[local-cron] Security audits scheduler enabled", {
+    intervalMinutes,
+    includeQuartermasterReview,
+  })
+
+  void tick()
+  const timer = setInterval(() => {
+    void tick()
+  }, intervalMs)
+  timer.unref?.()
 }
 
 const SERVER_ROOT_DIR = path.dirname(fileURLToPath(import.meta.url))
@@ -792,6 +847,7 @@ async function main() {
 
   server.listen(port, hostname, () => {
     console.log(`OrchWiz server listening on http://${hostname}:${port} (dev=${dev})`)
+    startLocalSecurityAuditCron()
   })
 }
 

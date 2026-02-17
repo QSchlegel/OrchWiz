@@ -2488,6 +2488,70 @@ export default function PersonalPage() {
                             }))
                             markSettingsDirty("harness")
                           }}
+                          onTrustGraphEnabledChange={(value) => {
+                            setSettingsDraft((current) => ({
+                              ...current,
+                              harness: {
+                                ...current.harness,
+                                enhancements: {
+                                  ...current.harness.enhancements,
+                                  trustgraph: {
+                                    ...current.harness.enhancements.trustgraph,
+                                    enabled: value,
+                                  },
+                                },
+                              },
+                            }))
+                            markSettingsDirty("harness")
+                          }}
+                          onTrustGraphCollectionChange={(value) => {
+                            setSettingsDraft((current) => ({
+                              ...current,
+                              harness: {
+                                ...current.harness,
+                                enhancements: {
+                                  ...current.harness.enhancements,
+                                  trustgraph: {
+                                    ...current.harness.enhancements.trustgraph,
+                                    collection: value,
+                                  },
+                                },
+                              },
+                            }))
+                            markSettingsDirty("harness")
+                          }}
+                          onTrustGraphFlowIdChange={(value) => {
+                            setSettingsDraft((current) => ({
+                              ...current,
+                              harness: {
+                                ...current.harness,
+                                enhancements: {
+                                  ...current.harness.enhancements,
+                                  trustgraph: {
+                                    ...current.harness.enhancements.trustgraph,
+                                    flowId: value,
+                                  },
+                                },
+                              },
+                            }))
+                            markSettingsDirty("harness")
+                          }}
+                          onTrustGraphMaxCharsChange={(value) => {
+                            setSettingsDraft((current) => ({
+                              ...current,
+                              harness: {
+                                ...current.harness,
+                                enhancements: {
+                                  ...current.harness.enhancements,
+                                  trustgraph: {
+                                    ...current.harness.enhancements.trustgraph,
+                                    maxChars: value,
+                                  },
+                                },
+                              },
+                            }))
+                            markSettingsDirty("harness")
+                          }}
                           onApplyWhenSubagentPresentChange={(value) => {
                             setSettingsDraft((current) => ({
                               ...current,

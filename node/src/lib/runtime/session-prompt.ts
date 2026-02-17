@@ -35,6 +35,12 @@ import {
 } from "@/lib/performance/tracker"
 import { emitTrace } from "@/lib/observability"
 import type { TraceEmitInput } from "@/lib/observability/trace-gateway"
+import {
+  motionFinalizeRuntimePrompt,
+  motionPrecheckRuntimePrompt,
+  type MotionRuntimePromptPrecheckResult,
+} from "@/lib/supervision/motion"
+import { isSecurityLockdownEnabled } from "@/lib/security/lockdown"
 
 function asRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object") {
@@ -387,6 +393,7 @@ export function buildSessionPromptTracePayload(args: {
     stationKey?: string | null
     bridgeCrewId?: string | null
   } | null
+  motion?: Record<string, unknown> | null
   error?: {
     name: string
     message: string
@@ -399,6 +406,11 @@ export function buildSessionPromptTracePayload(args: {
   const runtime: Record<string, unknown> = {}
   if (args.runtimeProfile) runtime.profile = args.runtimeProfile
   if (args.executionKind) runtime.executionKind = args.executionKind
+
+  const metadata: Record<string, unknown> = {}
+  if (args.motion) {
+    metadata.motion = args.motion
+  }
 
   const payload: Record<string, unknown> = {
     input: {
@@ -415,6 +427,7 @@ export function buildSessionPromptTracePayload(args: {
       stationKey: bridge.stationKey ?? null,
       bridgeCrewId: bridge.bridgeCrewId ?? null,
     },
+    metadata,
   }
 
   if (args.durationMs !== undefined) {
@@ -539,6 +552,7 @@ export async function executeSessionPrompt(args: ExecuteSessionPromptArgs): Prom
       const harnessContext = await resolveHarnessPodContext({
         userId: args.userId,
         subagentId: resolvedSubagentId,
+        query: args.prompt,
       })
 
       if (harnessContext.promptFragments.length > 0) {
@@ -635,6 +649,175 @@ export async function executeSessionPrompt(args: ExecuteSessionPromptArgs): Prom
     console.error("Failed to enqueue session->thread mirror for user interaction:", mirrorError)
   }
 
+  const runtimeMetadataRecord = asRecord(metadataForRuntime.runtime)
+  const runtimeProfile = nonEmptyString(runtimeMetadataRecord.profile)
+  const runtimeExecutionKind = nonEmptyString(runtimeMetadataRecord.executionKind)
+
+  try {
+    const lockdown = await isSecurityLockdownEnabled({ ownerUserId: args.userId })
+    if (lockdown.enabled) {
+      const details = {
+        code: "LOCKDOWN_ENABLED",
+        reason: lockdown.reason,
+        updatedAt: lockdown.updatedAt,
+      }
+
+      const errorInteraction = await prisma.sessionInteraction.create({
+        data: {
+          sessionId: args.sessionId,
+          type: "error",
+          content: "Lockdown enabled. Requests are disabled until explicitly re-enabled.",
+          metadata: toJsonMetadata(details),
+        },
+      })
+
+      const shipDeploymentId = await resolveTraceBridgeShipDeploymentId()
+      await emitRuntimeTraceSafe({
+        traceId,
+        userId: args.userId,
+        sessionId: args.sessionId,
+        source: "runtime.session-prompt",
+        status: "locked",
+        payload: buildSessionPromptTracePayload({
+          prompt: args.prompt,
+          interactionId: interaction.id,
+          responseInteractionId: errorInteraction.id,
+          provider: null,
+          fallbackUsed: false,
+          runtimeProfile,
+          executionKind: runtimeExecutionKind,
+          durationMs: null,
+          bridge: {
+            shipDeploymentId,
+            stationKey: bridgeStationKey,
+            bridgeCrewId,
+          },
+          motion: null,
+          error: {
+            name: "Lockdown",
+            message: "Lockdown enabled.",
+            code: "LOCKDOWN_ENABLED",
+            status: 423,
+          },
+        }),
+      })
+
+      throw new SessionPromptError("Lockdown enabled.", 423, details)
+    }
+  } catch (lockdownError) {
+    if (lockdownError instanceof SessionPromptError) {
+      throw lockdownError
+    }
+    console.error("Lockdown check failed (fail-open):", lockdownError)
+  }
+
+  let motionPrecheck: MotionRuntimePromptPrecheckResult | null = null
+  const buildMotionTraceMetadata = (finalize?: {
+    decision?: unknown
+    reasons?: unknown
+    incidentId?: unknown
+    outputEmbedding?: unknown
+  } | null) => {
+    if (!motionPrecheck?.enabled || !motionPrecheck.config) {
+      return null
+    }
+
+    const decision = typeof finalize?.decision === "string" ? finalize.decision : motionPrecheck.decision
+    const reasons = finalize?.reasons ?? motionPrecheck.reasons
+    const incidentId =
+      typeof finalize?.incidentId === "string"
+        ? finalize.incidentId
+        : motionPrecheck.incidentId ?? null
+
+    return {
+      sampleId: motionPrecheck.sample?.id ?? null,
+      decision,
+      reasons,
+      baselineReady: motionPrecheck.baselineReady,
+      entityKey: motionPrecheck.entity.entityKey,
+      entityType: motionPrecheck.entity.entityType,
+      shipDeploymentId: motionPrecheck.entity.shipDeploymentId,
+      subagentId: motionPrecheck.entity.subagentId,
+      stationKey: motionPrecheck.entity.stationKey,
+      bridgeCrewId: motionPrecheck.entity.bridgeCrewId,
+      incidentId,
+      inputSimilarity: motionPrecheck.inputSimilarity,
+      inputEmbedding: motionPrecheck.inputEmbedding,
+      outputEmbedding: Array.isArray(finalize?.outputEmbedding) ? finalize.outputEmbedding : null,
+    }
+  }
+
+  try {
+    motionPrecheck = await motionPrecheckRuntimePrompt({
+      ownerUserId: args.userId,
+      sessionId: args.sessionId,
+      interactionId: interaction.id,
+      traceId,
+      runtimePrompt,
+      metadata: metadataForRuntime,
+      runtimeProfile,
+      executionKind: runtimeExecutionKind,
+    })
+  } catch (motionError) {
+    console.error("Motion supervision precheck failed (fail-open):", motionError)
+  }
+
+  if (
+    motionPrecheck?.enabled
+    && motionPrecheck.config?.mode === "production"
+    && motionPrecheck.decision === "block"
+  ) {
+    const details = {
+      code: "MOTION_OUT_OF_RANGE",
+      motionSampleId: motionPrecheck.sample?.id ?? null,
+      incidentId: motionPrecheck.incidentId,
+      entityKey: motionPrecheck.entity.entityKey,
+      entityType: motionPrecheck.entity.entityType,
+    }
+
+    const errorInteraction = await prisma.sessionInteraction.create({
+      data: {
+        sessionId: args.sessionId,
+        type: "error",
+        content: "Blocked by motion supervision.",
+        metadata: toJsonMetadata(details),
+      },
+    })
+
+    const shipDeploymentId = await resolveTraceBridgeShipDeploymentId()
+    await emitRuntimeTraceSafe({
+      traceId,
+      userId: args.userId,
+      sessionId: args.sessionId,
+      source: "runtime.session-prompt",
+      status: "blocked",
+      payload: buildSessionPromptTracePayload({
+        prompt: args.prompt,
+        interactionId: interaction.id,
+        responseInteractionId: errorInteraction.id,
+        provider: null,
+        fallbackUsed: false,
+        runtimeProfile,
+        executionKind: runtimeExecutionKind,
+        durationMs: null,
+        bridge: {
+          shipDeploymentId,
+          stationKey: bridgeStationKey,
+          bridgeCrewId,
+        },
+        motion: buildMotionTraceMetadata(null),
+        error: {
+          name: "MotionSupervision",
+          message: "Blocked by motion supervision.",
+          code: "MOTION_OUT_OF_RANGE",
+          status: 403,
+        },
+      }),
+    })
+
+    throw new SessionPromptError("Blocked by motion supervision.", 403, details)
+  }
+
   if (dbSession.status === "planning") {
     await prisma.session.update({
       where: { id: args.sessionId },
@@ -642,9 +825,6 @@ export async function executeSessionPrompt(args: ExecuteSessionPromptArgs): Prom
     })
   }
 
-  const runtimeMetadataRecord = asRecord(metadataForRuntime.runtime)
-  const runtimeProfile = nonEmptyString(runtimeMetadataRecord.profile)
-  const runtimeExecutionKind = nonEmptyString(runtimeMetadataRecord.executionKind)
   const runtimeStartedAt = Date.now()
   let runtimeDurationMs: number | null = null
   let runtimeResult: RuntimeResult
@@ -708,6 +888,7 @@ export async function executeSessionPrompt(args: ExecuteSessionPromptArgs): Prom
             stationKey: bridgeStationKey,
             bridgeCrewId,
           },
+          motion: buildMotionTraceMetadata(null),
           error: {
             name: error.name,
             message: error.message,
@@ -762,6 +943,7 @@ export async function executeSessionPrompt(args: ExecuteSessionPromptArgs): Prom
           stationKey: bridgeStationKey,
           bridgeCrewId,
         },
+        motion: buildMotionTraceMetadata(null),
         error: {
           name: errorName,
           message: errorMessage,
@@ -885,6 +1067,30 @@ export async function executeSessionPrompt(args: ExecuteSessionPromptArgs): Prom
     },
   })
 
+  let motionFinalizeResult: Awaited<ReturnType<typeof motionFinalizeRuntimePrompt>> | null = null
+  if (motionPrecheck?.enabled && motionPrecheck.sample) {
+    try {
+      motionFinalizeResult = await motionFinalizeRuntimePrompt({
+        ownerUserId: args.userId,
+        sampleId: motionPrecheck.sample.id,
+        traceId,
+        sessionId: args.sessionId,
+        interactionId: interaction.id,
+        responseInteractionId: responseInteraction.id,
+        runtimePrompt,
+        outputText: finalOutput,
+        durationMs: runtimeDurationMs,
+        provider: runtimeResult.provider,
+        runtimeProfile,
+        executionKind: runtimeExecutionKind,
+        metadata: metadataForRuntime,
+        precheck: motionPrecheck,
+      })
+    } catch (motionError) {
+      console.error("Motion supervision finalize failed (fail-open):", motionError)
+    }
+  }
+
   const traceShipDeploymentId = await resolveTraceBridgeShipDeploymentId()
   await emitRuntimeTraceSafe({
     traceId,
@@ -907,6 +1113,7 @@ export async function executeSessionPrompt(args: ExecuteSessionPromptArgs): Prom
         stationKey: bridgeStationKey,
         bridgeCrewId,
       },
+      motion: buildMotionTraceMetadata(motionFinalizeResult),
     }),
   })
 

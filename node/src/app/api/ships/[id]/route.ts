@@ -8,8 +8,13 @@ import {
   normalizeInfrastructureInConfig,
 } from "@/lib/deployment/profile"
 import { publishNotificationUpdated } from "@/lib/realtime/notifications"
+import {
+  isShipyardManagedDeployment,
+  queueShipyardInfraTeardown,
+} from "@/lib/shipyard/infra-teardown"
 
 export const dynamic = "force-dynamic"
+export const runtime = "nodejs"
 
 function asRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -217,6 +222,9 @@ export async function DELETE(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
 
+    const url = new URL(request.url)
+    const preserveInfra = url.searchParams.get("preserveInfra") === "true"
+
     const { id } = await params
 
     const ship = await prisma.agentDeployment.findFirst({
@@ -228,12 +236,30 @@ export async function DELETE(
       select: {
         id: true,
         nodeId: true,
+        deploymentProfile: true,
+        config: true,
+        metadata: true,
       },
     })
 
     if (!ship) {
       return NextResponse.json({ error: "Ship not found" }, { status: 404 })
     }
+
+    const shouldTeardownInfra = !preserveInfra && isShipyardManagedDeployment(ship.metadata)
+    const shipyardSshTunnels = shouldTeardownInfra
+      ? await prisma.shipyardSshTunnel.findMany({
+          where: {
+            userId: session.user.id,
+            deploymentId: ship.id,
+          },
+          select: {
+            id: true,
+            pid: true,
+            pidFile: true,
+          },
+        })
+      : []
 
     await prisma.agentDeployment.delete({
       where: {
@@ -254,7 +280,21 @@ export async function DELETE(
       entityId: ship.id,
     })
 
-    return NextResponse.json({ success: true })
+    if (shouldTeardownInfra) {
+      await queueShipyardInfraTeardown({
+        shipId: ship.id,
+        userId: session.user.id,
+        deploymentProfile: ship.deploymentProfile,
+        config: ship.config,
+        metadata: ship.metadata,
+        shipyardSshTunnels,
+      })
+    }
+
+    return NextResponse.json({
+      success: true,
+      infraTeardownQueued: shouldTeardownInfra,
+    })
   } catch (error) {
     console.error("Error deleting ship:", error)
     return NextResponse.json({ error: "Internal server error" }, { status: 500 })

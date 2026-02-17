@@ -1,6 +1,6 @@
 "use client"
 
-import type { ReactNode } from "react"
+import { memo, type ReactNode } from "react"
 
 interface DockItem {
   id: string
@@ -14,7 +14,7 @@ interface FocusModeDockProps {
   onSelect: (id: string) => void
 }
 
-export function FocusModeDock({ items, activeId, onSelect }: FocusModeDockProps) {
+export const FocusModeDock = memo(function FocusModeDock({ items, activeId, onSelect }: FocusModeDockProps) {
   return (
     <div className="pointer-events-auto absolute right-4 top-1/2 z-20 flex -translate-y-1/2 flex-col gap-1.5 rounded-xl border border-slate-300/75 bg-white/90 p-1.5 shadow-[0_8px_24px_rgba(15,23,42,0.16)] backdrop-blur-lg dark:border-white/12 dark:bg-slate-950/82">
       {items.map(({ id, icon: Icon, label }) => {
@@ -37,4 +37,4 @@ export function FocusModeDock({ items, activeId, onSelect }: FocusModeDockProps)
       })}
     </div>
   )
-}
+})

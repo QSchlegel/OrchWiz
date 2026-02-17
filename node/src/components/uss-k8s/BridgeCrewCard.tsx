@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { memo, useState } from "react"
 import { ChevronRight, ChevronDown, Plug } from "lucide-react"
 import type { TopologyComponent } from "@/lib/uss-k8s/topology"
 
@@ -21,7 +21,7 @@ const roleBadges: Record<string, { label: string; accent: string; badge: string 
   cou: { label: "COM", accent: "bg-sky-400", badge: "bg-sky-500/15 text-sky-300 border-sky-500/25" },
 }
 
-export function BridgeCrewCard({
+export const BridgeCrewCard = memo(function BridgeCrewCard({
   agent,
   icon: Icon,
   isSelected,
@@ -119,4 +119,4 @@ export function BridgeCrewCard({
       </div>
     </div>
   )
-}
+})

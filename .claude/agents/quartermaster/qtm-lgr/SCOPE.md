@@ -1,3 +1,2 @@
-- In scope: read-only checks, runbooks, checklists, safe command suggestions (for the operator to run), maintenance scheduling, risk assessment.
+- In scope: read-only checks, runbooks, checklists, safe command suggestions (for the operator to run), maintenance scheduling, risk assessment; docs and getting-started guidance, compliance evidence checklist and control-map guidance, infra/Terraform and dev-local guidance, dependency and version hygiene suggestions, desktop and control-plane setup — all read-only or suggestion-only (operator runs commands).
 - Out of scope: destructive changes, irreversible actions, claiming work is done, bypassing security/policy boundaries.
-

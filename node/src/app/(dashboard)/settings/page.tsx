@@ -912,6 +912,31 @@ export default function SettingsPage() {
         </SurfaceCard>
 
         <CloudProvidersCard />
+
+        <SurfaceCard>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div className="flex items-start gap-3">
+              <div className="rounded-lg border border-slate-300 bg-slate-900 p-2 text-white dark:border-white/15">
+                <ShieldCheck className="h-5 w-5" />
+              </div>
+              <div>
+                <p className="font-semibold text-slate-900 dark:text-slate-100">Open Source</p>
+                <p className="text-sm text-slate-600 dark:text-slate-400">
+                  Credits for the open source libraries and tools powering OrchWiz.
+                </p>
+              </div>
+            </div>
+            <Link
+              href="/open-source"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-2 rounded-lg border border-slate-300 px-4 py-2 text-sm text-slate-700 hover:bg-slate-100 dark:border-white/15 dark:text-slate-200 dark:hover:bg-white/[0.08]"
+            >
+              View Open Source Credits
+              <ExternalLink className="h-3.5 w-3.5" />
+            </Link>
+          </div>
+        </SurfaceCard>
       </div>
     </PageLayout>
   )

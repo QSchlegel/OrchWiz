@@ -33,6 +33,15 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000).
 
+## Control plane in Docker
+
+The production image for the OrchWiz control plane is built from `node/Dockerfile` (multi-stage, Node 20). It is used by:
+
+- **dev-local** (optional): `dev-local/docker-compose.control-plane.yml` overlay runs the app in Docker with Postgres and sidecars.
+- **cloudflare-local**: full stack (Postgres, Next.js, Cloudflared) for tunneled deployment.
+
+Default local development runs the app on the host (`npm run dev`) with Postgres and optional sidecars in Docker via `dev-local/docker-compose.yml`.
+
 ## Environment
 
 Copy `node/.env.example`. Key groups:
@@ -41,8 +50,9 @@ Copy `node/.env.example`. Key groups:
 - User role bootstrap: `ORCHWIZ_ADMIN_EMAILS` (comma-separated emails promoted to `admin`; default role is `captain`)
 - GitHub auth/webhooks: `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_WEBHOOK_SECRET`, `ENABLE_GITHUB_WEBHOOK_COMMENTS`, `GITHUB_TOKEN`
 - PostToolUse hooks/webhooks: `HOOK_TRIGGER_BEARER_TOKEN`, `HOOK_WEBHOOK_TARGET_ALLOWLIST`, `HOOK_WEBHOOK_ALLOW_NGROK`, `HOOK_WEBHOOK_TIMEOUT_MS`
-- Command execution policy: `ENABLE_LOCAL_COMMAND_EXECUTION`, `LOCAL_COMMAND_TIMEOUT_MS`, `COMMAND_EXECUTION_SHELL`, `ENABLE_LOCAL_INFRA_AUTO_INSTALL`, `LOCAL_INFRA_COMMAND_TIMEOUT_MS`, `CLOUD_DEPLOY_ONLY` (set `true` to block local starship launches and force cloud-only Ship Yard posture), `LOCAL_SHIPYARD_AUTO_BUILD_APP_IMAGE`, `LOCAL_SHIPYARD_FORCE_REBUILD_APP_IMAGE`, `LOCAL_SHIPYARD_APP_IMAGE`, `LOCAL_SHIPYARD_DOCKERFILE`, `LOCAL_SHIPYARD_DOCKER_CONTEXT`, `LOCAL_SHIPYARD_KIND_CLUSTER_NAME`
+- Command execution policy: `ENABLE_LOCAL_COMMAND_EXECUTION`, `LOCAL_COMMAND_TIMEOUT_MS`, `COMMAND_EXECUTION_SHELL`, `ENABLE_LOCAL_INFRA_AUTO_INSTALL`, `LOCAL_INFRA_COMMAND_TIMEOUT_MS`, `CLOUD_DEPLOY_ONLY` (set `true` to block local starship launches and force cloud-only Ship Yard posture), `LOCAL_SHIPYARD_AUTO_BUILD_APP_IMAGE`, `LOCAL_SHIPYARD_AUTO_CREATE_KIND_CLUSTER`, `LOCAL_SHIPYARD_FORCE_REBUILD_APP_IMAGE`, `LOCAL_SHIPYARD_APP_IMAGE`, `LOCAL_SHIPYARD_DOCKERFILE`, `LOCAL_SHIPYARD_DOCKER_CONTEXT`, `LOCAL_SHIPYARD_KIND_CLUSTER_NAME`
 - Runtime provider: `OPENCLAW_*`, `OPENCLAW_DISPATCH_PATH`, `OPENCLAW_DISPATCH_TIMEOUT_MS`, `ENABLE_OPENAI_RUNTIME_FALLBACK`, `OPENAI_API_KEY`, `OPENAI_RUNTIME_FALLBACK_MODEL`, `CODEX_CLI_PATH`, `CODEX_RUNTIME_TIMEOUT_MS`, `CODEX_RUNTIME_MODEL`, `CODEX_RUNTIME_WORKDIR`, `RUNTIME_PROFILE_DEFAULT`, `RUNTIME_PROFILE_QUARTERMASTER`
+- Harness enhancements (optional): `ENABLE_AGENT_HARNESS_POD`, `TRUSTGRAPH_SOCKET_URL`, `TRUSTGRAPH_TOKEN`
 - Runtime intelligence policy: `RUNTIME_INTELLIGENCE_POLICY_ENABLED`, `RUNTIME_INTELLIGENCE_REQUIRE_CONTROLLABLE_PROVIDERS`, `RUNTIME_INTELLIGENCE_MAX_MODEL`, `RUNTIME_INTELLIGENCE_SIMPLE_MODEL`, `RUNTIME_INTELLIGENCE_CLASSIFIER_MODEL`, `RUNTIME_INTELLIGENCE_CLASSIFIER_TIMEOUT_MS`, `RUNTIME_INTELLIGENCE_LANGFUSE_PROMPT_NAME`, `RUNTIME_INTELLIGENCE_LANGFUSE_PROMPT_LABEL`, `RUNTIME_INTELLIGENCE_LANGFUSE_PROMPT_VERSION`, `RUNTIME_INTELLIGENCE_LANGFUSE_PROMPT_CACHE_TTL_SECONDS`, `RUNTIME_INTELLIGENCE_USD_TO_EUR`, `RUNTIME_INTELLIGENCE_MODEL_PRICING_USD_PER_1M`, `RUNTIME_INTELLIGENCE_THRESHOLD_DEFAULT`, `RUNTIME_INTELLIGENCE_THRESHOLD_MIN`, `RUNTIME_INTELLIGENCE_THRESHOLD_MAX`, `RUNTIME_INTELLIGENCE_LEARNING_RATE`, `RUNTIME_INTELLIGENCE_EXPLORATION_RATE`, `RUNTIME_INTELLIGENCE_TARGET_REWARD`, `RUNTIME_INTELLIGENCE_NIGHTLY_CRON_TOKEN`
 - Bridge TTS (optional Kugelaudio sidecar): `BRIDGE_TTS_ENABLED`, `KUGELAUDIO_TTS_BASE_URL`, `KUGELAUDIO_TTS_TIMEOUT_MS`, `KUGELAUDIO_TTS_BEARER_TOKEN`, `KUGELAUDIO_TTS_CFG_SCALE`, `KUGELAUDIO_TTS_MAX_TOKENS`, `KUGELAUDIO_TTS_VOICE_DEFAULT`, `KUGELAUDIO_TTS_VOICE_XO`, `KUGELAUDIO_TTS_VOICE_OPS`, `KUGELAUDIO_TTS_VOICE_ENG`, `KUGELAUDIO_TTS_VOICE_SEC`, `KUGELAUDIO_TTS_VOICE_MED`, `KUGELAUDIO_TTS_VOICE_COU`
 - Skills catalog/import: `ORCHWIZ_CODEX_HOME_ROOT`, `ORCHWIZ_SKILL_IMPORT_TIMEOUT_MS`, `ORCHWIZ_SKILL_CATALOG_STALE_MS`
@@ -124,10 +134,11 @@ Create flows for both agent and application deployments support profile-aware fi
   - Loads image into the `kind` cluster before running Terraform/Ansible
   - If the built image changes, Ship Yard restarts the in-cluster `orchwiz` Deployment to ensure the new image is picked up even when the tag is unchanged
   - Sets `TF_VAR_app_image` automatically for the provisioning run
-  - Controls: `LOCAL_SHIPYARD_AUTO_BUILD_APP_IMAGE`, `LOCAL_SHIPYARD_FORCE_REBUILD_APP_IMAGE`, `LOCAL_SHIPYARD_APP_IMAGE`, `LOCAL_SHIPYARD_DOCKERFILE`, `LOCAL_SHIPYARD_DOCKER_CONTEXT`, `LOCAL_SHIPYARD_KIND_CLUSTER_NAME`
+  - Controls: `LOCAL_SHIPYARD_AUTO_BUILD_APP_IMAGE`, `LOCAL_SHIPYARD_AUTO_CREATE_KIND_CLUSTER`, `LOCAL_SHIPYARD_FORCE_REBUILD_APP_IMAGE`, `LOCAL_SHIPYARD_APP_IMAGE`, `LOCAL_SHIPYARD_DOCKERFILE`, `LOCAL_SHIPYARD_DOCKER_CONTEXT`, `LOCAL_SHIPYARD_KIND_CLUSTER_NAME`
 - Local launch requests are rejected when `CLOUD_DEPLOY_ONLY=true`
-- Local flow validates kube context presence but does not auto-create/start clusters
+- Local flow validates kube context presence; when `LOCAL_SHIPYARD_AUTO_CREATE_KIND_CLUSTER=true` (default) and the target `kind` cluster is missing, Ship Yard creates it before loading the app image.
 - Failures return structured non-2xx responses with `error`, `code`, and optional `details.suggestedCommands`
+- Local flow does not delete/reset clusters automatically; use the debug loop or `/api/ship-yard/local/cluster/reset` when you need a fresh cluster.
 
 ### Ship Yard Local Debug Loop
 
@@ -185,6 +196,7 @@ Operational note:
     - `n8n_basic_auth_password` and `n8n_encryption_key` are generated when empty.
     - Local profile can derive `n8n_database_url` from `postgres_password` + namespace using `orchwiz-postgres-postgresql.<namespace>.svc.cluster.local`.
     - Cloud profile derives `n8n_database_url` from `database_url` when present.
+  - At launch, if the template has no `postgres_password` (local) or `database_url` (cloud), the control plane may read `DATABASE_URL` from the cluster secret (`orchwiz-env`) and use it for n8n, so you need not set those in the template when the cluster already has the app secret.
     - `n8n_public_base_url` defaults to `<nodeUrl-origin>/n8n` when node URL is available, otherwise profile fallback (`http://localhost:5678/n8n` local, `https://n8n.example.com` cloud).
   - Apps auto-fill does not persist by itself; values persist when `Save Template` is used.
 

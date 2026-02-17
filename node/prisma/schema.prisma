@@ -78,6 +78,10 @@ model User {
 
   securityIncidents   SecurityIncident[]
   securityIntegrationSecrets SecurityIntegrationSecrets?
+  securityLockdownConfig SecurityLockdownConfig?
+  motionSupervisionConfig MotionSupervisionConfig?
+  motionBaselines MotionBaseline[]
+  motionSamples MotionSample[]
   treasuryConfigsUpdated TreasuryConfig[] @relation("TreasuryConfigUpdatedBy")
 }
 
@@ -201,6 +205,7 @@ model Session {
   bridgeAgentChatReplyJobs BridgeAgentChatReplyJob[] @relation("BridgeAgentChatReplyRecipientSession")
   ragPerformanceSamples RagPerformanceSample[]
   runtimePerformanceSamples RuntimePerformanceSample[]
+  motionSamples      MotionSample[]
 
   securityIncident SecurityIncident?
 }
@@ -306,6 +311,7 @@ model BridgeThread {
 model SecurityIncident {
   id            String                  @id @default(cuid())
   ownerUserId   String
+  dedupeKey     String?                 @unique
   title         String
   summary       String?
   status        SecurityIncidentStatus  @default(open)
@@ -328,6 +334,7 @@ model SecurityIncident {
 
   owner         User                    @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
   session       Session?                @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  motionSamples MotionSample[]
 
   @@index([ownerUserId, updatedAt(sort: Desc)])
   @@index([ownerUserId, status, severity, updatedAt(sort: Desc)])
@@ -346,6 +353,190 @@ model SecurityIntegrationSecrets {
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
+}
+
+model SecurityLockdownConfig {
+  id          String   @id @default(cuid())
+  ownerUserId String   @unique
+  enabled     Boolean  @default(false)
+  reason      String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  owner       User     @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+
+  @@index([ownerUserId])
+  @@index([enabled])
+}
+
+enum MotionSupervisionMode {
+  observation
+  production
+  off
+}
+
+enum MotionStrictness {
+  lenient
+  standard
+  strict
+}
+
+enum MotionFailMode {
+  fail_open_alert
+  fail_closed
+  fail_open_silent
+}
+
+enum MotionEntityType {
+  user
+  subagent
+  ship_subagent
+  ship_station
+}
+
+enum MotionEventType {
+  runtime_prompt
+  command_execution
+}
+
+enum MotionDecision {
+  allow
+  warn
+  block
+}
+
+model MotionSupervisionConfig {
+  id               String               @id @default(cuid())
+  ownerUserId      String               @unique
+  mode             MotionSupervisionMode @default(observation)
+  strictness       MotionStrictness     @default(strict)
+  failMode         MotionFailMode       @default(fail_open_alert)
+  baselineMinSamples Int                @default(10)
+  embeddingModel   String               @default("text-embedding-3-small")
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+
+  owner            User                 @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+
+  @@index([ownerUserId])
+  @@index([mode])
+}
+
+model MotionBaseline {
+  id                       String          @id @default(cuid())
+  ownerUserId              String
+  entityType               MotionEntityType
+  entityKey                String
+  shipDeploymentId          String?
+  subagentId               String?
+  stationKey               BridgeCrewRole?
+  sampleCount              Int             @default(0)
+
+  promptCharsMean          Float?
+  promptCharsM2            Float?
+  promptCharsCount         Int             @default(0)
+
+  outputCharsMean          Float?
+  outputCharsM2            Float?
+  outputCharsCount         Int             @default(0)
+
+  durationMsMean           Float?
+  durationMsM2             Float?
+  durationMsCount          Int             @default(0)
+
+  inputCentroid            Json?
+  inputSimMean             Float?
+  inputSimM2               Float?
+  inputSimCount            Int             @default(0)
+
+  outputCentroid           Json?
+  outputSimMean            Float?
+  outputSimM2              Float?
+  outputSimCount           Int             @default(0)
+
+  toolBindingSlugCounts    Json?
+  skillPolicySlugCounts    Json?
+  shipGrantedToolSlugCounts Json?
+  commandUsageCounts       Json?
+
+  createdAt                DateTime        @default(now())
+  updatedAt                DateTime        @updatedAt
+
+  owner                    User            @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+  subagent                 Subagent?       @relation(fields: [subagentId], references: [id], onDelete: SetNull)
+  samples                  MotionSample[]
+
+  @@unique([ownerUserId, entityKey])
+  @@index([ownerUserId, entityType])
+  @@index([ownerUserId, updatedAt(sort: Desc)])
+  @@index([shipDeploymentId])
+  @@index([subagentId])
+  @@index([stationKey])
+}
+
+model MotionSample {
+  id                        String          @id @default(cuid())
+  ownerUserId               String
+  baselineId                String?
+  entityType                MotionEntityType
+  entityKey                 String
+  eventType                 MotionEventType
+  decision                  MotionDecision
+  reasons                   Json
+  baselineReady             Boolean         @default(false)
+
+  shipDeploymentId           String?
+  subagentId                String?
+  stationKey                BridgeCrewRole?
+  bridgeCrewId              String?
+
+  sessionId                 String?
+  interactionId             String?
+  responseInteractionId     String?
+  traceId                   String?
+  commandExecutionId        String?
+  incidentId                String?
+
+  runtimeProfile            String?
+  executionKind             String?
+  provider                  String?
+
+  promptChars               Int?
+  outputChars               Int?
+  durationMs                Int?
+
+  inputSimilarity           Float?
+  outputSimilarity          Float?
+
+  toolBindingSlugs          Json?
+  skillPolicySlugs          Json?
+  shipGrantedToolSlugs      Json?
+  shipRequestableToolSlugs  Json?
+
+  commandId                 String?
+  commandName               String?
+  commandPath               String?
+  commandCandidates         Json?
+
+  createdAt                 DateTime        @default(now())
+
+  owner                     User            @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+  baseline                  MotionBaseline? @relation(fields: [baselineId], references: [id], onDelete: SetNull)
+  session                   Session?        @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  subagent                  Subagent?       @relation(fields: [subagentId], references: [id], onDelete: SetNull)
+  commandExecution          CommandExecution? @relation(fields: [commandExecutionId], references: [id], onDelete: SetNull)
+  incident                  SecurityIncident? @relation(fields: [incidentId], references: [id], onDelete: SetNull)
+
+  @@index([ownerUserId, createdAt(sort: Desc)])
+  @@index([ownerUserId, decision, createdAt(sort: Desc)])
+  @@index([entityKey, createdAt(sort: Desc)])
+  @@index([baselineId])
+  @@index([sessionId])
+  @@index([subagentId])
+  @@index([stationKey])
+  @@index([commandExecutionId])
+  @@index([incidentId])
+  @@index([shipDeploymentId])
 }
 
 model BridgeMessage {
@@ -606,6 +797,7 @@ model CommandExecution {
   session Session? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
   subagent Subagent? @relation(fields: [subagentId], references: [id], onDelete: SetNull)
   user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  motionSamples MotionSample[]
 
   @@index([commandId])
   @@index([sessionId])
@@ -646,6 +838,8 @@ model Subagent {
   bridgeCrewAssignments BridgeCrewSubagentAssignment[] @relation("BridgeCrewSubagentAssignmentSubagent")
   governanceGrantEvents GovernanceGrantEvent[] @relation("GovernanceGrantEventSubagent")
   commandExecutions CommandExecution[]
+  motionBaselines MotionBaseline[]
+  motionSamples MotionSample[]
   agentSyncSignals AgentSyncSignal[]
   agentSyncRuns AgentSyncRun[]
   agentSyncSuggestions AgentSyncSuggestion[]

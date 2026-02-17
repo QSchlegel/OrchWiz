@@ -41,6 +41,12 @@ app_env = {
   # LANGFUSE_SECRET_KEY = "replace-with-langfuse-secret-key"
 }
 
+enable_security_audit_cron   = false
+security_audit_cron_schedule = "0 * * * *"
+security_audit_cron_token    = "orchwiz-security-audit-dev-token"
+vault_pvc_enabled            = false
+vault_pvc_size               = "1Gi"
+
 # Kubeview is deployed by default in local profile.
 # Ingress exposure is opt-in; keep disabled unless local ingress is configured.
 enable_kubeview          = true
@@ -51,3 +57,44 @@ kubeview_ingress_host    = ""
 kubeview_ingress_path    = "/kubeview"
 kubeview_ingress_class_name = "nginx"
 kubeview_ingress_annotations = {}
+
+# Monitoring stack (Grafana, Prometheus, Loki, ClickHouse, Langfuse). Set enable_* = true to provision.
+# When enabled, OrchWiz app uses in-cluster URLs. For local dev with app on host, port-forward monitoring services or set GRAFANA_UPSTREAM_URL / PROMETHEUS_UPSTREAM_URL.
+# enable_grafana   = false
+# enable_prometheus = false
+# enable_loki      = false
+# enable_clickhouse = false
+# enable_langfuse  = false
+# monitoring_storage_class = ""
+
+# Optional: install arbitrary Helm charts into this ship.
+# NOTE: Prefer subdomains (not path prefixes) for Next.js-based UIs to avoid /_next collisions.
+#
+# extra_helm_releases = {
+#   serviceradar = {
+#     repository      = "oci://ghcr.io/carverauto/charts"
+#     chart           = "serviceradar"
+#     version         = "1.0.75"
+#     timeout_seconds = 1200
+#     set = {
+#       # Pin images to the matching app version tag.
+#       "global.imageTag" = "v1.0.75"
+#
+#       # Disable chart-provided ingress (it adds external-dns annotations).
+#       "ingress.enabled" = "false"
+#
+#       # Avoid requiring an imagePullSecret by default (set this to your secret name if needed).
+#       "image.registryPullSecret" = ""
+#     }
+#   }
+# }
+#
+# # Optional: expose add-ons via ingress (host auto-defaults to NAME.<namespace>.localhost).
+# extra_ingresses = {
+#   serviceradar = {
+#     path         = "/"
+#     service_name = "serviceradar-web"
+#     service_port = 3000
+#     annotations  = {}
+#   }
+# }

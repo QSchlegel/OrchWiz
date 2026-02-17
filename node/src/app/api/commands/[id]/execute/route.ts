@@ -6,6 +6,11 @@ import { recordCommandExecutionSignal } from "@/lib/agentsync/signals"
 import { runPostToolUseHooks } from "@/lib/hooks/runner"
 import type { PostToolUseStatus } from "@/lib/hooks/types"
 import {
+  motionFinalizeCommandExecution,
+  motionPrecheckCommandExecution,
+} from "@/lib/supervision/motion"
+import { isSecurityLockdownEnabled } from "@/lib/security/lockdown"
+import {
   AccessControlError,
   assertCanReadOwnedResource,
   requireAccessActor,
@@ -82,6 +87,19 @@ export async function POST(
   try {
     const actor = await requireAccessActor()
 
+    const lockdown = await isSecurityLockdownEnabled({ ownerUserId: actor.userId })
+    if (lockdown.enabled) {
+      return NextResponse.json(
+        {
+          error: "Lockdown enabled.",
+          code: "LOCKDOWN_ENABLED",
+          reason: lockdown.reason,
+          updatedAt: lockdown.updatedAt,
+        },
+        { status: 423 },
+      )
+    }
+
     const { id } = await params
     const body = await request.json()
     const sessionId = typeof body?.sessionId === "string" && body.sessionId.trim() ? body.sessionId.trim() : null
@@ -141,6 +159,56 @@ export async function POST(
       },
     })
 
+    const commandCandidates = [
+      command.name,
+      command.path || "",
+      command.scriptContent.split("\n")[0] || "",
+    ]
+
+    let motionPrecheck: Awaited<ReturnType<typeof motionPrecheckCommandExecution>> | null = null
+    try {
+      motionPrecheck = await motionPrecheckCommandExecution({
+        ownerUserId: actor.userId,
+        commandExecutionId: execution.id,
+        sessionId,
+        subagentId: effectiveSubagentId,
+        command: {
+          id: command.id,
+          name: command.name,
+          path: command.path || null,
+          candidates: commandCandidates,
+        },
+      })
+    } catch (motionError) {
+      console.error("Motion supervision precheck failed (fail-open):", motionError)
+    }
+
+    if (motionPrecheck?.enabled && motionPrecheck.config?.mode === "production" && motionPrecheck.decision === "block") {
+      const completedAt = new Date()
+      const duration = Math.max(0, completedAt.getTime() - startedAt.getTime())
+
+      await prisma.commandExecution.update({
+        where: { id: execution.id },
+        data: {
+          status: "failed",
+          output: null,
+          error: "Blocked by motion supervision",
+          completedAt,
+          duration,
+        },
+      })
+
+      return NextResponse.json(
+        {
+          error: "Blocked by motion supervision",
+          code: "MOTION_OUT_OF_RANGE",
+          motionSampleId: motionPrecheck.sample?.id ?? null,
+          incidentId: motionPrecheck.incidentId ?? null,
+        },
+        { status: 403 },
+      )
+    }
+
     const result = await executeCommandWithPolicy(command, { subagentId: effectiveSubagentId })
     const completedAt = new Date()
     const duration = Math.max(result.durationMs, completedAt.getTime() - startedAt.getTime())
@@ -159,6 +227,30 @@ export async function POST(
         duration,
       },
     })
+
+    let motionSummary: { sampleId: string; decision: string; incidentId: string | null } | null = null
+    if (motionPrecheck?.enabled && motionPrecheck.sample) {
+      try {
+        const motionFinal = await motionFinalizeCommandExecution({
+          ownerUserId: actor.userId,
+          sampleId: motionPrecheck.sample.id,
+          commandExecutionId: updatedExecution.id,
+          sessionId,
+          subagentId: effectiveSubagentId,
+          output: updatedExecution.output || null,
+          durationMs: duration,
+          precheck: motionPrecheck,
+        })
+
+        motionSummary = {
+          sampleId: motionPrecheck.sample.id,
+          decision: motionFinal.decision,
+          incidentId: motionFinal.incidentId,
+        }
+      } catch (motionError) {
+        console.error("Motion supervision finalize failed (fail-open):", motionError)
+      }
+    }
 
     const hookSummary = await runCommandPostToolUseHooks({
       ownerUserId: actor.userId,
@@ -210,6 +302,7 @@ export async function POST(
       blocked: result.status === "blocked",
       metadata: result.metadata,
       hooks: hookSummary,
+      motion: motionSummary,
     })
   } catch (error) {
     if (error instanceof AccessControlError) {

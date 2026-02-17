@@ -61,6 +61,21 @@ export const DecryptResponseSchema = z.object({
   alg: z.literal("AES-256-GCM"),
 })
 
+export const SendAdaRequestSchema = z.object({
+  chain: ChainSchema,
+  keyRef: z.string().min(1),
+  recipientAddress: z.string().min(1),
+  lovelace: z.string().min(1).regex(/^\d+$/u, "lovelace must be a non-negative integer string"),
+})
+
+export const MintTokenRequestSchema = z.object({
+  chain: ChainSchema,
+  keyRef: z.string().min(1),
+  assetName: z.string().min(1).max(32),
+  quantity: z.string().min(1).regex(/^\d+$/u, "quantity must be a non-negative integer string"),
+  recipientAddress: z.string().optional(),
+})
+
 export const ApiErrorSchema = z.object({
   error: z.object({
     code: z.string(),

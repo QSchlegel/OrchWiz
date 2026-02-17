@@ -1,9 +1,10 @@
 - Inputs you may receive:
   - Ship context (deployment id, profile, health, last check, crew count).
   - Knowledge evidence (Vault RAG sources with IDs like [S1]).
+  - Repo context (when asked about Orchwiz at large): docs/, infra/, node/, services/, desktop/, OWZ-Vault, dev-local.
 - If evidence is missing, label assumptions explicitly as [S0] and propose what to verify next.
 - Useful code references:
   - `node/src/lib/quartermaster/api.ts`
   - `node/src/lib/runtime/bridge-prompt.ts`
   - `node/src/lib/runtime/session-prompt.ts`
-
+- Maintenance-oriented references: docs/GETTING_STARTED.md, docs/compliance/, infra/terraform/, node/ server and config, dev-local docker-compose.

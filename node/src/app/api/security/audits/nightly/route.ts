@@ -1,22 +1,37 @@
 import { NextRequest, NextResponse } from "next/server"
-import { prisma } from "@/lib/prisma"
-import { persistSecurityAuditVerificationRun } from "@/lib/security/audit/persistence"
-import { runSecurityAudit } from "@/lib/security/audit/run"
+import { parseBearerToken, asRecord } from "@/lib/agentsync/route-helpers"
+import { runDueNightlySecurityAudits } from "@/lib/security/audit/nightly"
 
 export const dynamic = "force-dynamic"
 
-function parseBearerToken(headerValue: string | null): string | null {
-  if (!headerValue) {
-    return null
-  }
-
-  const match = headerValue.match(/^Bearer\s+(.+)$/i)
-  return match?.[1]?.trim() || null
+export interface SecurityAuditNightlyRouteDeps {
+  expectedToken: () => string | null
+  now: () => Date
+  runDueAudits: (args: {
+    now: Date
+    includeQuartermasterReview: boolean
+    dryRun: boolean
+    force: boolean
+  }) => Promise<unknown>
 }
 
-export async function POST(request: NextRequest) {
+const defaultDeps: SecurityAuditNightlyRouteDeps = {
+  expectedToken: () => process.env.SECURITY_AUDIT_CRON_TOKEN?.trim() || null,
+  now: () => new Date(),
+  runDueAudits: (args) => runDueNightlySecurityAudits({
+    now: args.now,
+    includeQuartermasterReview: args.includeQuartermasterReview,
+    dryRun: args.dryRun,
+    force: args.force,
+  }),
+}
+
+export async function handlePostNightly(
+  request: NextRequest,
+  deps: SecurityAuditNightlyRouteDeps = defaultDeps,
+) {
   try {
-    const expectedToken = process.env.SECURITY_AUDIT_CRON_TOKEN?.trim()
+    const expectedToken = deps.expectedToken()
     if (!expectedToken) {
       return NextResponse.json({ error: "SECURITY_AUDIT_CRON_TOKEN is not configured" }, { status: 503 })
     }
@@ -26,53 +41,25 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
 
-    const users = await prisma.user.findMany({
-      select: {
-        id: true,
-      },
+    const body = asRecord(await request.json().catch(() => ({})))
+    const includeQuartermasterReview = body.includeQuartermasterReview !== false
+    const dryRun = body.dryRun === true
+    const force = body.force === true
+
+    const payload = await deps.runDueAudits({
+      now: deps.now(),
+      includeQuartermasterReview,
+      dryRun,
+      force,
     })
 
-    let succeeded = 0
-    let failed = 0
-    const reports: Array<{ userId: string; reportId: string; riskScore: number }> = []
-
-    for (const user of users) {
-      try {
-        const result = await runSecurityAudit({
-          userId: user.id,
-          includeBridgeCrewStress: false,
-          mode: "safe_sim",
-        })
-
-        await persistSecurityAuditVerificationRun({
-          userId: user.id,
-          report: result.report,
-        })
-
-        reports.push({
-          userId: user.id,
-          reportId: result.report.reportId,
-          riskScore: result.report.riskScore.score,
-        })
-        succeeded += 1
-      } catch (error) {
-        failed += 1
-        console.error("Nightly security audit failed:", {
-          userId: user.id,
-          error: error instanceof Error ? error.message : "Unknown audit error",
-        })
-      }
-    }
-
-    return NextResponse.json({
-      checkedUsers: users.length,
-      succeeded,
-      failed,
-      reports,
-      executedAt: new Date().toISOString(),
-    })
+    return NextResponse.json(payload)
   } catch (error) {
     console.error("Error running nightly security audit:", error)
     return NextResponse.json({ error: "Internal server error" }, { status: 500 })
   }
+}
+
+export async function POST(request: NextRequest) {
+  return handlePostNightly(request)
 }

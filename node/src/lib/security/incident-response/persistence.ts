@@ -13,6 +13,9 @@ import {
 } from "@/lib/security/access-control"
 import { buildEmptyAuroraCaseFile } from "./aurora-template"
 import { normalizeImportedAuroraCaseFile } from "./aurora-normalize"
+import { securityIncidentsEnabled } from "./feature-flag"
+import { writeSecurityIncidentEvidenceBlob } from "./evidence-store"
+import { nextRecid } from "./recid"
 import type { AuroraCaseFile } from "./types"
 
 function asNonEmptyString(value: unknown): string | null {
@@ -304,4 +307,163 @@ export async function updateIncident(args: {
   })
 
   return { updatedAt: updated.updatedAt.toISOString() }
+}
+
+export async function upsertMotionIncident(args: {
+  ownerUserId: string
+  entityKey: string
+  entityType: string
+  decision: "warn" | "block"
+  reasons: unknown
+  now?: Date
+  shipDeploymentId?: string | null
+  subagentId?: string | null
+  stationKey?: string | null
+  bridgeCrewId?: string | null
+  traceId?: string | null
+  sessionId?: string | null
+  interactionId?: string | null
+  responseInteractionId?: string | null
+  motionSampleId?: string | null
+}): Promise<{ incidentId: string; evidencePath: string | null; created: boolean } | null> {
+  if (!securityIncidentsEnabled()) {
+    return null
+  }
+
+  const now = args.now || new Date()
+  const dedupeKey = `motion:${args.ownerUserId}:${args.entityKey}`
+  const title = `Motion anomaly: ${args.entityKey}`
+
+  const evidencePayload = {
+    kind: "motion_supervision_anomaly",
+    at: now.toISOString(),
+    entityKey: args.entityKey,
+    entityType: args.entityType,
+    decision: args.decision,
+    reasons: args.reasons,
+    refs: {
+      motionSampleId: args.motionSampleId ?? null,
+      traceId: args.traceId ?? null,
+      sessionId: args.sessionId ?? null,
+      interactionId: args.interactionId ?? null,
+      responseInteractionId: args.responseInteractionId ?? null,
+    },
+    context: {
+      shipDeploymentId: args.shipDeploymentId ?? null,
+      subagentId: args.subagentId ?? null,
+      stationKey: args.stationKey ?? null,
+      bridgeCrewId: args.bridgeCrewId ?? null,
+    },
+  }
+
+  let evidencePath: string | null = null
+  const timelineEntry = {
+    recid: 0,
+    date_time: now.toISOString(),
+    event_type: { id: 10, text: "Misc" },
+    attribution: "motion-supervision",
+    event_data: JSON.stringify(
+      {
+        decision: args.decision,
+        entityKey: args.entityKey,
+        entityType: args.entityType,
+        shipDeploymentId: args.shipDeploymentId ?? null,
+        subagentId: args.subagentId ?? null,
+        stationKey: args.stationKey ?? null,
+        bridgeCrewId: args.bridgeCrewId ?? null,
+        refs: {
+          motionSampleId: args.motionSampleId ?? null,
+          traceId: args.traceId ?? null,
+          sessionId: args.sessionId ?? null,
+          interactionId: args.interactionId ?? null,
+          responseInteractionId: args.responseInteractionId ?? null,
+        },
+        reasons: args.reasons,
+      },
+      null,
+      2,
+    ),
+    followup: args.decision === "block",
+    visual: false,
+  }
+
+  const existing = await prisma.securityIncident.findUnique({
+    where: {
+      dedupeKey,
+    },
+    select: {
+      id: true,
+      status: true,
+      caseFile: true,
+    },
+  })
+
+  if (!existing) {
+    const caseFile = buildEmptyAuroraCaseFile()
+    timelineEntry.recid = nextRecid(caseFile.timeline)
+    caseFile.timeline.push(timelineEntry as any)
+
+    const created = await prisma.securityIncident.create({
+      data: {
+        ownerUserId: args.ownerUserId,
+        dedupeKey,
+        title,
+        severity: args.decision === "block" ? "high" : "medium",
+        status: "open",
+        caseFile: caseFile as unknown as Prisma.InputJsonValue,
+      },
+      select: {
+        id: true,
+      },
+    })
+
+    try {
+      const written = await writeSecurityIncidentEvidenceBlob({
+        incidentId: created.id,
+        provider: "supervision",
+        kind: "motion",
+        payload: evidencePayload,
+        now,
+      })
+      evidencePath = written.path
+    } catch (error) {
+      console.error("Failed to write supervision evidence blob (fail-open):", error)
+    }
+
+    return { incidentId: created.id, evidencePath, created: true }
+  }
+
+  const normalized = normalizeImportedAuroraCaseFile(existing.caseFile)
+  timelineEntry.recid = nextRecid(normalized.timeline)
+  normalized.timeline.push(timelineEntry as any)
+
+  const updated = await prisma.securityIncident.update({
+    where: {
+      id: existing.id,
+    },
+    data: {
+      status: existing.status === "closed" ? "open" : existing.status,
+      ...(existing.status === "closed" ? { closedAt: null } : {}),
+      severity: args.decision === "block" ? "high" : undefined,
+      caseFile: normalized as unknown as Prisma.InputJsonValue,
+    },
+    select: {
+      id: true,
+    },
+  })
+
+  try {
+    const written = await writeSecurityIncidentEvidenceBlob({
+      incidentId: updated.id,
+      provider: "supervision",
+      kind: "motion",
+      payload: evidencePayload,
+      now,
+    })
+    evidencePath = written.path
+  } catch (error) {
+    console.error("Failed to write supervision evidence blob (fail-open):", error)
+  }
+
+  return { incidentId: updated.id, evidencePath, created: false }
 }

@@ -4,6 +4,8 @@ const DEFAULT_SENSITIVE_TRACE_FIELDS = [
   "tool.args",
   "tool.result",
   "metadata.rawModelIO",
+  "metadata.motion.inputEmbedding",
+  "metadata.motion.outputEmbedding",
 ] as const
 
 function envFlag(name: string, fallback = true): boolean {

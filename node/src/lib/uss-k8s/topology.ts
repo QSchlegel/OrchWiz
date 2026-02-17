@@ -26,6 +26,7 @@ export interface TopologyComponent extends SubsystemComponent {
   subagentName?: string
   subagentDescription?: string
   status?: string
+  serviceUrl?: string
 }
 
 export interface SubsystemEdge {
@@ -62,11 +63,11 @@ export const USS_K8S_COMPONENTS: SubsystemComponent[] = [
   { id: "state", label: "File-backed State", sublabel: "logs/*.jsonl · OWZ-Vault/**", group: "openclaw", componentType: "runtime" },
 
   // ── OBSERVABILITY & ANALYTICS ──────────────────────
-  { id: "lf", label: "Langfuse", sublabel: "traces / spans / scores", group: "obs", componentType: "observability" },
+  { id: "lf", label: "Langfuse", sublabel: "traces / spans / scores", group: "obs", componentType: "observability", serviceUrl: "/api/bridge/runtime-ui/langfuse" },
   { id: "ch", label: "ClickHouse", sublabel: "Langfuse storage / analytics", group: "obs", componentType: "observability" },
-  { id: "loki", label: "Grafana Loki", sublabel: "log aggregation", group: "obs", componentType: "observability" },
-  { id: "prom", label: "Prometheus", sublabel: "metrics", group: "obs", componentType: "observability" },
-  { id: "graf", label: "Grafana", sublabel: "dashboards + alerts", group: "obs", componentType: "observability" },
+  { id: "loki", label: "Grafana Loki", sublabel: "log aggregation", group: "obs", componentType: "observability", serviceUrl: "/api/bridge/runtime-ui/loki" },
+  { id: "prom", label: "Prometheus", sublabel: "metrics", group: "obs", componentType: "observability", serviceUrl: "/api/bridge/runtime-ui/prometheus" },
+  { id: "graf", label: "Grafana", sublabel: "dashboards + alerts", group: "obs", componentType: "observability", serviceUrl: "/api/bridge/runtime-ui/grafana" },
   { id: "evt", label: "k8s-event-exporter", sublabel: "K8s Events → Loki", group: "obs", componentType: "observability" },
 
   // ── KUBERNETES CLUSTER ─────────────────────────────

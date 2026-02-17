@@ -8,7 +8,7 @@ function safeStamp(now = new Date()): string {
 
 export async function writeSecurityIncidentEvidenceBlob(args: {
   incidentId: string
-  provider: "vt" | "misp"
+  provider: "vt" | "misp" | "supervision"
   kind: string
   payload: unknown
   now?: Date
@@ -24,4 +24,3 @@ export async function writeSecurityIncidentEvidenceBlob(args: {
   await writeFile(path, JSON.stringify(args.payload, null, 2), "utf8")
   return { path }
 }
-

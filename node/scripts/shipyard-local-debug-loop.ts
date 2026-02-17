@@ -399,6 +399,8 @@ async function main(): Promise<void> {
   cleanupUrl.searchParams.set("confirm", "delete-all")
   cleanupUrl.searchParams.set("namePrefix", args.namePrefix)
   cleanupUrl.searchParams.set("deploymentProfile", "local_starship_build")
+  // Cluster reset tears down local infra, so skip terraform destroy during bulk ship cleanup.
+  cleanupUrl.searchParams.set("preserveInfra", "true")
 
   console.log(`[local-debug] prelaunch cleanup: prefix=${args.namePrefix}`)
   const cleanup = await requestJson<CleanupResponse>({

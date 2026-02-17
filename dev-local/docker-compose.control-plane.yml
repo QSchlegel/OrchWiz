@@ -1,0 +1,32 @@
+# Optional overlay: run OrchWiz control plane (Next.js) in Docker.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.control-plane.yml up -d
+
+services:
+  control-plane:
+    build:
+      context: ../node
+      dockerfile: Dockerfile
+    image: orchwiz-control-plane:latest
+    container_name: orchwiz-control-plane-dev-local
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      wallet-enclave:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-orchwiz}:${POSTGRES_PASSWORD:-orchwiz_dev}@postgres:5432/${POSTGRES_DB:-orchis}?schema=public
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-dev-secret-min-32-chars-required}
+      BETTER_AUTH_URL: ${BETTER_AUTH_URL:-http://localhost:3000}
+      NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
+      WALLET_ENCLAVE_URL: http://wallet-enclave:3377
+      AGENT_LIGHTNING_STORE_URL: http://agent-lightning-store:4747
+      NODE_ENV: production
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/api/health').then(r=>r.json()).then(d=>process.exit(d.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s

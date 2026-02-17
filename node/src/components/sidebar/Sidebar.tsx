@@ -15,7 +15,7 @@ export function Sidebar() {
       {/* Logo */}
       <div className="flex h-14 shrink-0 items-center gap-2 border-b border-slate-200/70 px-4 dark:border-white/10">
         <Link
-          href="/sessions"
+          href="/mission-control"
           className={`inline-flex items-center gap-2 rounded-lg px-1 py-1 text-sm font-semibold text-slate-900 hover:bg-slate-100 dark:text-slate-100 dark:hover:bg-white/[0.06] ${
             displayCollapsed ? "justify-center w-full" : ""
           }`}
@@ -86,7 +86,7 @@ export function Sidebar() {
         {/* Logo */}
         <div className="flex h-14 shrink-0 items-center gap-2 border-b border-slate-200/70 px-4 dark:border-white/10">
           <Link
-            href="/sessions"
+            href="/mission-control"
             className="inline-flex items-center gap-2 rounded-lg px-1 py-1 text-sm font-semibold text-slate-900 hover:bg-slate-100 dark:text-slate-100 dark:hover:bg-white/[0.06]"
           >
             <OrchWizMark size={18} className="shrink-0 drop-shadow-[0_1px_6px_rgba(15,23,42,0.2)]" />

@@ -141,6 +141,7 @@ function parseComponents(value: unknown): TopologyComponent[] {
         ? { subagentDescription: asNonEmptyString(record.subagentDescription) || undefined }
         : {}),
       ...(typeof record.status === "string" ? { status: record.status } : {}),
+      ...(asNonEmptyString(record.serviceUrl) ? { serviceUrl: asNonEmptyString(record.serviceUrl) || undefined } : {}),
     })
   }
 

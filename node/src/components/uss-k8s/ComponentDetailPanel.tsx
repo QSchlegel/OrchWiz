@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { memo, useEffect, useState } from "react"
 import {
   Activity,
   ArrowDownLeft,
@@ -53,7 +53,7 @@ export const DEFAULT_NODE_DRILLDOWN_CONFIG: NodeDrilldownConfig = {
   notes: "",
 }
 
-export function ComponentDetailPanel({
+export const ComponentDetailPanel = memo(function ComponentDetailPanel({
   component,
   components,
   edges,
@@ -375,4 +375,4 @@ export function ComponentDetailPanel({
       </div>
     </div>
   )
-}
+})

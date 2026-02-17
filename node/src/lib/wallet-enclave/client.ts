@@ -254,3 +254,58 @@ export async function decryptWithWalletEnclave(args: {
     },
   )
 }
+
+export interface EnclaveSendAdaResponse {
+  txHash: string
+  fromAddress: string
+  recipientAddress: string
+  lovelace: string
+}
+
+export async function sendAdaViaEnclave(args: {
+  keyRef: string
+  recipientAddress: string
+  lovelace: string
+  enclaveUrl?: string
+  timeoutMs?: number
+}): Promise<EnclaveSendAdaResponse> {
+  return requestEnclave<EnclaveSendAdaResponse>(
+    "/v1/send-ada",
+    {
+      chain: "cardano",
+      keyRef: args.keyRef,
+      recipientAddress: args.recipientAddress,
+      lovelace: args.lovelace,
+    },
+    { enclaveUrl: args.enclaveUrl, timeoutMs: args.timeoutMs ?? 30000 },
+  )
+}
+
+export interface EnclaveMintTokenResponse {
+  txHash: string
+  policyId: string
+  assetName: string
+  quantity: string
+  recipientAddress: string
+}
+
+export async function mintTokenViaEnclave(args: {
+  keyRef: string
+  assetName: string
+  quantity: string
+  recipientAddress?: string
+  enclaveUrl?: string
+  timeoutMs?: number
+}): Promise<EnclaveMintTokenResponse> {
+  return requestEnclave<EnclaveMintTokenResponse>(
+    "/v1/mint-token",
+    {
+      chain: "cardano",
+      keyRef: args.keyRef,
+      assetName: args.assetName,
+      quantity: args.quantity,
+      recipientAddress: args.recipientAddress,
+    },
+    { enclaveUrl: args.enclaveUrl, timeoutMs: args.timeoutMs ?? 30000 },
+  )
+}

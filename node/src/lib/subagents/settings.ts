@@ -43,12 +43,43 @@ const HarnessAutoloadSchema = z.object({
   skills: z.boolean().default(true),
 })
 
+const TrustGraphHarnessEnhancementSchema = z.object({
+  enabled: z.boolean().default(false),
+  collection: z.string().default("default"),
+  flowId: z.string().default("default"),
+  maxChars: z.number().int().min(1).max(20_000).default(2000),
+})
+
+const HarnessEnhancementsSchema = z.object({
+  trustgraph: TrustGraphHarnessEnhancementSchema.default({
+    enabled: false,
+    collection: "default",
+    flowId: "default",
+    maxChars: 2000,
+  }),
+}).default({
+  trustgraph: {
+    enabled: false,
+    collection: "default",
+    flowId: "default",
+    maxChars: 2000,
+  },
+})
+
 const HarnessSettingsSchema = z.object({
   runtimeProfile: z.enum(HARNESS_RUNTIME_PROFILES).default("default"),
   autoload: HarnessAutoloadSchema.default({
     context: true,
     tools: true,
     skills: true,
+  }),
+  enhancements: HarnessEnhancementsSchema.default({
+    trustgraph: {
+      enabled: false,
+      collection: "default",
+      flowId: "default",
+      maxChars: 2000,
+    },
   }),
   applyWhenSubagentPresent: z.boolean().default(true),
   failureMode: z.literal("fail-open").default("fail-open"),
@@ -83,6 +114,14 @@ export const SubagentSettingsSchema = z.object({
       tools: true,
       skills: true,
     },
+    enhancements: {
+      trustgraph: {
+        enabled: false,
+        collection: "default",
+        flowId: "default",
+        maxChars: 2000,
+      },
+    },
     applyWhenSubagentPresent: true,
     failureMode: "fail-open",
   }),
@@ -97,6 +136,14 @@ export const PartialSubagentSettingsSchema = z.object({
   harness: z.object({
     runtimeProfile: z.enum(HARNESS_RUNTIME_PROFILES).optional(),
     autoload: HarnessAutoloadSchema.partial().optional(),
+    enhancements: z.object({
+      trustgraph: z.object({
+        enabled: z.boolean().optional(),
+        collection: z.string().optional(),
+        flowId: z.string().optional(),
+        maxChars: z.number().int().min(1).max(20_000).optional(),
+      }).optional(),
+    }).optional(),
     applyWhenSubagentPresent: z.boolean().optional(),
     failureMode: z.literal("fail-open").optional(),
   }).optional(),

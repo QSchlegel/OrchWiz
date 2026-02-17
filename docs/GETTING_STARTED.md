@@ -72,6 +72,17 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000).
 
+## Optional: run control plane in Docker
+
+To run the OrchWiz app (control plane) inside Docker with the same Postgres and sidecars:
+
+```bash
+cd dev-local
+docker compose -f docker-compose.yml -f docker-compose.control-plane.yml up -d
+```
+
+Run migrations once (e.g. from `node/` with `DATABASE_URL` pointing at `localhost:5435`) before or after starting. The app is built from `node/Dockerfile` and listens on port 3000.
+
 ## Optional: verify Ship Yard API smoke harness
 
 Use this after local setup when you want a quick auth + endpoint readiness check for Ship Yard user API key flows.
@@ -243,3 +254,7 @@ After login, verify these paths:
 - Port conflicts:
   - App default: `3000`
   - Local Postgres: `5435`
+- **Bridge Comms Deck – "Runtime UI upstream is unreachable" (Grafana/Prometheus/KubeView):**  
+  The app proxies to local upstreams by default (e.g. Grafana `127.0.0.1:3001`, Prometheus `127.0.0.1:9090`, KubeView `127.0.0.1:18080`). Start the matching service or set `GRAFANA_UPSTREAM_URL` / `PROMETHEUS_UPSTREAM_URL` / `KUBEVIEW_UPSTREAM_URL` in `node/.env` to a reachable URL. See `node/.env.example` for Bridge embedded monitoring.
+- **Bridge Comms Deck – "Invalid token signature" (KubeView/OpenClaw via runtime-edge):**  
+  Runtime-edge must use the same `ORCHWIZ_RUNTIME_JWT_SECRET` as the Next.js app. Run runtime-edge from `node/` so it loads the same `.env` (`npm run runtime-edge`). If runtime-edge runs in another environment (e.g. port-forward into cluster), ensure that environment has the same secret.

@@ -16,7 +16,7 @@ import Link from "next/link"
 import { OnboardingWizard } from "@/components/onboarding/OnboardingWizard"
 import { XoTeaserChatWindow } from "@/components/landing/XoTeaserChatWindow"
 import { DownloadSection } from "@/components/landing/DownloadSection"
-import { LandingMarkBackdrop3D } from "@/components/landing/LandingMarkBackdrop3D"
+import { LandingFloatingMark } from "@/components/landing/LandingFloatingMark"
 
 const links = {
   startLocal: "/login?ref=landing_start_local_15m",
@@ -151,15 +151,16 @@ export default function Home() {
         <div className="absolute -bottom-40 left-1/3 w-[450px] h-[450px] bg-blue-500/8 dark:bg-blue-600/10 rounded-full blur-[110px] animate-glow delay-3000" />
       </div>
 
-      {/* 3D mark (lazy-loaded last) */}
-      <LandingMarkBackdrop3D />
-
       {/* Grid overlay */}
       <div className="absolute inset-0 bridge-grid pointer-events-none opacity-25 dark:opacity-40" aria-hidden />
 
       <div className="relative z-10">
         {/* ── Hero ── */}
-        <section id="hero" className="flex flex-col items-center justify-center min-h-[90vh] px-6 md:px-12 text-center">
+        <section
+          id="hero"
+          className="relative flex flex-col items-center justify-center min-h-[90vh] px-6 md:px-12 text-center"
+        >
+          <LandingFloatingMark />
           <div className="animate-fade-up max-w-3xl">
             {/* Title */}
             <h1 className="text-5xl sm:text-6xl md:text-7xl font-extrabold tracking-tight leading-[0.95] mb-6">
@@ -435,7 +436,20 @@ export default function Home() {
         <footer className="px-6 md:px-12 pb-8">
           <div className="max-w-6xl mx-auto flex items-center justify-between text-xs text-slate-500 dark:text-gray-500" style={{ fontFamily: 'var(--font-mono)' }}>
             <span>OrchWiz</span>
-            <span>Orchestration Wizard</span>
+            <div className="flex items-center gap-3">
+              <span className="hidden sm:inline">Orchestration Wizard</span>
+              <Link href="/open-source" className="hover:text-slate-700 dark:hover:text-slate-300">
+                Open Source
+              </Link>
+              <a
+                href={links.github}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="hover:text-slate-700 dark:hover:text-slate-300"
+              >
+                GitHub
+              </a>
+            </div>
           </div>
         </footer>
       </div>

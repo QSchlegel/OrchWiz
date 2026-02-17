@@ -1,6 +1,9 @@
+import { execFile } from "node:child_process"
+import { promisify } from "node:util"
 import { NextRequest, NextResponse } from "next/server"
 import type { Prisma } from "@prisma/client"
 import { prisma } from "@/lib/prisma"
+import type { RunCommandFn } from "@/lib/shipyard/cluster-database-url"
 import { publishRealtimeEvent } from "@/lib/realtime/events"
 import { AccessControlError } from "@/lib/security/access-control"
 import {
@@ -8,6 +11,7 @@ import {
   type DeploymentAdapterResult,
 } from "@/lib/deployment/adapter"
 import { runShipyardLocalLaunch } from "@/lib/deployment/shipyard-local-launch"
+import { runLocalBootstrap } from "@/lib/deployment/local-bootstrap"
 import {
   normalizeDeploymentProfileInput,
   type InfrastructureConfig,
@@ -51,6 +55,15 @@ import {
   bootstrapInitialApplicationsForShipFailOpen,
 } from "@/lib/shipyard/initial-applications"
 import { SHIP_LATEST_VERSION } from "@/lib/shipyard/versions"
+import {
+  publishShipLaunchLog,
+  createCloudBootstrapLoggingRuntime,
+  createLocalBootstrapLoggingRuntime,
+  type ShipLaunchLogLevel,
+  type ShipLaunchLogSource,
+  type ShipLaunchLogStream,
+} from "@/lib/shipyard/launch-logging"
+import { cleanupFailedLocalLaunch } from "@/lib/shipyard/infra-teardown"
 
 export const dynamic = "force-dynamic"
 
@@ -150,6 +163,32 @@ export async function POST(request: NextRequest) {
     })
     const ownerUserId = actor.userId
     const requestId = asString(body?.requestId)
+    let launchDeploymentId: string | null = null
+
+    const emitLaunchLog = (entry: {
+      level: ShipLaunchLogLevel
+      source: ShipLaunchLogSource
+      stream?: ShipLaunchLogStream
+      lines: string[]
+    }) => {
+      if (!requestId) return
+      const lines = Array.isArray(entry.lines)
+        ? entry.lines.filter((line) => typeof line === "string" && line.trim().length > 0)
+        : []
+      if (lines.length === 0) return
+
+      publishShipLaunchLog({
+        userId: ownerUserId,
+        payload: {
+          requestId,
+          deploymentId: launchDeploymentId,
+          level: entry.level,
+          source: entry.source,
+          ...(entry.stream ? { stream: entry.stream } : {}),
+          lines,
+        },
+      })
+    }
 
     const emitLaunchProgress = (progress: {
       percent: number
@@ -182,11 +221,10 @@ export async function POST(request: NextRequest) {
     }
 
     emitLaunchProgress({
-      percent: 5,
-      stage: "validated",
-      message: "Validating launch request",
+      percent: 2,
+      stage: "validating_crew",
+      message: "Validating crew",
     })
-
     const crewRoles = uniqueCrewRoles(body?.crewRoles)
     if (crewRoles.length === 0) {
       return NextResponse.json(
@@ -207,6 +245,17 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    emitLaunchProgress({
+      percent: 5,
+      stage: "validated",
+      message: "Validating launch request",
+    })
+    emitLaunchLog({
+      level: "info",
+      source: "ship-yard",
+      lines: ["Validating launch request"],
+    })
+
     const crewOverrides = parseCrewOverrides(body?.crewOverrides)
 
     const normalizedProfile = normalizeDeploymentProfileInput({
@@ -215,6 +264,12 @@ export async function POST(request: NextRequest) {
       nodeType: body?.nodeType,
       advancedNodeTypeOverride: body?.advancedNodeTypeOverride,
       config: body?.config,
+    })
+
+    emitLaunchProgress({
+      percent: 8,
+      stage: "profile_ready",
+      message: "Preparing launch profile",
     })
 
     if (
@@ -254,6 +309,12 @@ export async function POST(request: NextRequest) {
       infrastructure: normalizedProfile.infrastructure,
       crewRoles,
       baseRequirementsEstimate,
+    })
+
+    emitLaunchProgress({
+      percent: 12,
+      stage: "creating_record",
+      message: "Creating deployment record",
     })
 
     const created = await prisma.$transaction(async (tx) => {
@@ -312,11 +373,24 @@ export async function POST(request: NextRequest) {
 
       return { deployment, bridgeCrew }
     })
+    launchDeploymentId = created.deployment.id
 
     emitLaunchProgress({
       percent: 18,
       stage: "records_created",
-      message: "Creating ship deployment record",
+      message: "Deployment record created",
+      deploymentId: created.deployment.id,
+    })
+    emitLaunchLog({
+      level: "info",
+      source: "ship-yard",
+      lines: ["Creating ship deployment record"],
+    })
+
+    emitLaunchProgress({
+      percent: 22,
+      stage: "assigning_quartermaster",
+      message: "Assigning ship quartermaster",
       deploymentId: created.deployment.id,
     })
 
@@ -329,7 +403,7 @@ export async function POST(request: NextRequest) {
     emitLaunchProgress({
       percent: 25,
       stage: "quartermaster_ready",
-      message: "Assigning ship quartermaster",
+      message: "Quartermaster ready",
       deploymentId: created.deployment.id,
     })
 
@@ -339,10 +413,22 @@ export async function POST(request: NextRequest) {
     })
 
     emitLaunchProgress({
+      percent: 28,
+      stage: "preparing_provisioning",
+      message: "Preparing provisioning",
+      deploymentId: created.deployment.id,
+    })
+
+    emitLaunchProgress({
       percent: 32,
       stage: "deploying",
       message: "Provisioning infrastructure",
       deploymentId: created.deployment.id,
+    })
+    emitLaunchLog({
+      level: "info",
+      source: "ship-yard",
+      lines: ["Provisioning infrastructure"],
     })
 
     const bridgeCrew = created.bridgeCrew.sort(
@@ -373,6 +459,31 @@ export async function POST(request: NextRequest) {
       metadata?: Record<string, unknown>
       httpStatus?: number
     }) => {
+      emitLaunchLog({
+        level: "error",
+        source: "ship-yard",
+        lines: [`Launch failed (${args.code}): ${args.error}`],
+      })
+      if (
+        args.details
+        && typeof args.details === "object"
+        && !Array.isArray(args.details)
+        && Array.isArray((args.details as Record<string, unknown>).suggestedCommands)
+      ) {
+        const suggested = (args.details as Record<string, unknown>).suggestedCommands as unknown[]
+        const lines = suggested
+          .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+          .slice(0, 12)
+          .map((command) => `suggested: ${command}`)
+        if (lines.length > 0) {
+          emitLaunchLog({
+            level: "info",
+            source: "ship-yard",
+            lines,
+          })
+        }
+      }
+
       emitLaunchProgress({
         percent: 100,
         stage: "failed",
@@ -475,10 +586,21 @@ export async function POST(request: NextRequest) {
     let adapterResult: DeploymentAdapterResult
     if (created.deployment.deploymentProfile === "local_starship_build") {
       emitLaunchProgress({
+        percent: 36,
+        stage: "checking_tools",
+        message: "Checking local tools",
+        deploymentId: created.deployment.id,
+      })
+      emitLaunchProgress({
         percent: 42,
         stage: "launching_local",
         message: "Bootstrapping local Starship build",
         deploymentId: created.deployment.id,
+      })
+      emitLaunchLog({
+        level: "info",
+        source: "ship-yard",
+        lines: ["Bootstrapping local Starship build"],
       })
 
       const launchResult = await runShipyardLocalLaunch({
@@ -486,9 +608,33 @@ export async function POST(request: NextRequest) {
         infrastructure: normalizedProfile.infrastructure as InfrastructureConfig,
         saneBootstrap,
         openClawContextBundle,
+      }, {
+        localBootstrapRunner: (input) =>
+          runLocalBootstrap(
+            input,
+            createLocalBootstrapLoggingRuntime({
+              emitLaunchLog,
+              onProgress: (percent, stage, message) =>
+                emitLaunchProgress({
+                  percent,
+                  stage,
+                  message,
+                  deploymentId: created.deployment.id,
+                }),
+            }),
+          ),
       })
 
       if (!launchResult.ok) {
+        void cleanupFailedLocalLaunch({
+          deploymentId: created.deployment.id,
+          userId: ownerUserId,
+          deploymentProfile: created.deployment.deploymentProfile,
+          config: created.deployment.config,
+          metadata: launchResult.metadata as Record<string, unknown> | undefined,
+        }).catch((err) => {
+          console.error("[shipyard] cleanup after launch failure", err)
+        })
         return await failLaunch({
           error: launchResult.error,
           code: launchResult.code,
@@ -684,7 +830,7 @@ export async function POST(request: NextRequest) {
           infrastructure: normalizedProfile.infrastructure as InfrastructureConfig,
           cloudProvider,
           sshPrivateKey,
-        })
+        }, createCloudBootstrapLoggingRuntime({ emitLaunchLog }))
 
         if (!cloudLaunch.ok) {
           return await failLaunch({
@@ -715,6 +861,11 @@ export async function POST(request: NextRequest) {
           message: "Provisioning deployment",
           deploymentId: created.deployment.id,
         })
+        emitLaunchLog({
+          level: "info",
+          source: "deployment-adapter",
+          lines: ["Provisioning deployment (deployment adapter)"],
+        })
 
         adapterResult = await runDeploymentAdapter({
           kind: "agent",
@@ -737,6 +888,18 @@ export async function POST(request: NextRequest) {
       percent: 74,
       stage: "adapter_complete",
       message: "Deployment adapter complete. Bootstrapping applications",
+      deploymentId: created.deployment.id,
+    })
+    emitLaunchLog({
+      level: "info",
+      source: "apps-bootstrap",
+      lines: ["Bootstrapping initial applications"],
+    })
+
+    emitLaunchProgress({
+      percent: 76,
+      stage: "preparing_apps",
+      message: "Preparing initial applications",
       deploymentId: created.deployment.id,
     })
 
@@ -766,20 +929,66 @@ export async function POST(request: NextRequest) {
       deploymentId: deployment.id,
     })
 
-    const bootstrap = await bootstrapInitialApplicationsForShipFailOpen({
-      ownerUserId,
-      ship: {
-        id: deployment.id,
-        name: deployment.name,
-        userId: deployment.userId,
-        nodeId: deployment.nodeId,
-        nodeType: deployment.nodeType,
-        nodeUrl: deployment.nodeUrl,
-        deploymentProfile: deployment.deploymentProfile,
-        provisioningMode: deployment.provisioningMode,
-        config: deployment.config,
+    const runCommandFn: RunCommandFn = async (command, args, options = {}) => {
+      try {
+        const execFileAsync = promisify(execFile)
+        const { stdout, stderr } = await execFileAsync(command, args, {
+          timeout: options.timeoutMs ?? 15_000,
+          maxBuffer: 1024 * 1024,
+          encoding: "utf8",
+        })
+        return { code: 0, stdout: stdout ?? "", stderr: stderr ?? "" }
+      } catch (err: unknown) {
+        const code = typeof (err as NodeJS.ErrnoException)?.code === "number" ? (err as NodeJS.ErrnoException).code : 1
+        return {
+          code: code ?? 1,
+          stderr: err instanceof Error ? err.message : String(err),
+        }
+      }
+    }
+
+    const bootstrap = await bootstrapInitialApplicationsForShipFailOpen(
+      {
+        ownerUserId,
+        ship: {
+          id: deployment.id,
+          name: deployment.name,
+          userId: deployment.userId,
+          nodeId: deployment.nodeId,
+          nodeType: deployment.nodeType,
+          nodeUrl: deployment.nodeUrl,
+          deploymentProfile: deployment.deploymentProfile,
+          provisioningMode: deployment.provisioningMode,
+          config: deployment.config,
+        },
+        shipStatus: deployment.status,
       },
-      shipStatus: deployment.status,
+      {
+        onProgress: (message, percent) => {
+          if (percent != null) {
+            emitLaunchProgress({
+              percent,
+              stage: "bootstrapping_apps",
+              message,
+              deploymentId: deployment.id,
+            })
+          }
+        },
+        runCommandFn,
+      },
+    )
+
+    emitLaunchProgress({
+      percent: 90,
+      stage: "apps_bootstrap_complete",
+      message: "Applications bootstrap complete",
+      deploymentId: deployment.id,
+    })
+    emitLaunchProgress({
+      percent: 92,
+      stage: "applications_ready",
+      message: "Applications ready",
+      deploymentId: deployment.id,
     })
 
     console.info("Ship launch initial application bootstrap summary", {
@@ -837,6 +1046,11 @@ export async function POST(request: NextRequest) {
       stage: "complete",
       message: "Ship launch complete",
       deploymentId: deployment.id,
+    })
+    emitLaunchLog({
+      level: "info",
+      source: "ship-yard",
+      lines: ["Ship launch complete"],
     })
 
     return NextResponse.json({

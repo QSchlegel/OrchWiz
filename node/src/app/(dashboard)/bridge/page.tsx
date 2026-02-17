@@ -1305,6 +1305,20 @@ export default function BridgePage() {
               Voice Utility
             </Link>
 
+            <Link
+              href={`/bridge-connections${selectedShipDeploymentId ? `?shipDeploymentId=${selectedShipDeploymentId}` : ""}`}
+              className="inline-flex items-center gap-2 rounded-lg border border-slate-400/35 bg-white/80 px-3 py-2 text-sm text-slate-700 transition hover:bg-white dark:bg-slate-900/70 dark:text-slate-200"
+            >
+              Connections
+            </Link>
+
+            <Link
+              href="/vault"
+              className="inline-flex items-center gap-2 rounded-lg border border-slate-400/35 bg-white/80 px-3 py-2 text-sm text-slate-700 transition hover:bg-white dark:bg-slate-900/70 dark:text-slate-200"
+            >
+              Vault
+            </Link>
+
             {(["grafana", "prometheus", "kubeview", "langfuse"] as const).map((service) => {
               const status = monitoring?.[service] || null
               const label =

@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useRef, type ReactNode } from "react"
+import { memo, useEffect, useRef, type ReactNode } from "react"
 import { X } from "lucide-react"
 
 interface FocusModeDrawerProps {
@@ -11,7 +11,7 @@ interface FocusModeDrawerProps {
   children: ReactNode
 }
 
-export function FocusModeDrawer({ title, subtitle, isOpen, onClose, children }: FocusModeDrawerProps) {
+export const FocusModeDrawer = memo(function FocusModeDrawer({ title, subtitle, isOpen, onClose, children }: FocusModeDrawerProps) {
   const panelRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -60,4 +60,4 @@ export function FocusModeDrawer({ title, subtitle, isOpen, onClose, children }: 
       </div>
     </>
   )
-}
+})

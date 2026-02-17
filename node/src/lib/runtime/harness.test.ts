@@ -24,6 +24,7 @@ test("resolveHarnessPodContext emits context/tools/skills fragments when enabled
     {
       userId: "user-1",
       subagentId: "sub-1",
+      query: "What time is it?",
     },
     {
       enabled: () => true,
@@ -73,6 +74,9 @@ test("resolveHarnessPodContext emits context/tools/skills fragments when enabled
           },
         },
       ]),
+      resolveTrustGraphGraphRag: async () => {
+        throw new Error("should not run")
+      },
       listEnabledSkillPolicies: async () => ([
         {
           policyId: "policy-1",
@@ -103,6 +107,7 @@ test("resolveHarnessPodContext respects autoload toggles", async () => {
     {
       userId: "user-1",
       subagentId: "sub-1",
+      query: "Hello",
     },
     {
       enabled: () => true,
@@ -129,6 +134,9 @@ test("resolveHarnessPodContext respects autoload toggles", async () => {
       listEnabledToolBindings: async () => {
         throw new Error("should not run")
       },
+      resolveTrustGraphGraphRag: async () => {
+        throw new Error("should not run")
+      },
       listEnabledSkillPolicies: async () => {
         throw new Error("should not run")
       },
@@ -145,6 +153,7 @@ test("resolveHarnessPodContext fails open on partial loader failure", async () =
     {
       userId: "user-1",
       subagentId: "sub-1",
+      query: "Hello",
     },
     {
       enabled: () => true,
@@ -163,6 +172,9 @@ test("resolveHarnessPodContext fails open on partial loader failure", async () =
           },
         },
       ]),
+      resolveTrustGraphGraphRag: async () => {
+        throw new Error("should not run")
+      },
       listEnabledSkillPolicies: async () => ([
         {
           policyId: "policy-1",
@@ -184,4 +196,100 @@ test("resolveHarnessPodContext fails open on partial loader failure", async () =
   assert.equal(result.promptFragments.length, 2)
   assert.equal(result.warnings.length, 1)
   assert.match(result.warnings[0], /Harness context autoload failed/u)
+})
+
+test("resolveHarnessPodContext injects TrustGraph GraphRAG block when enabled", async () => {
+  const result = await resolveHarnessPodContext(
+    {
+      userId: "user-1",
+      subagentId: "sub-1",
+      query: "cats",
+    },
+    {
+      enabled: () => true,
+      resolveWorkspaceRoot: () => "/tmp/repo",
+      loadSubagent: async () =>
+        sampleSubagent({
+          settings: {
+            ...DEFAULT_SUBAGENT_SETTINGS,
+            harness: {
+              ...DEFAULT_SUBAGENT_SETTINGS.harness,
+              enhancements: {
+                trustgraph: {
+                  enabled: true,
+                  collection: "default",
+                  flowId: "default",
+                  maxChars: 2000,
+                },
+              },
+            },
+          },
+        }),
+      loadContextFiles: async () => ({
+        source: "filesystem",
+        rootPath: ".claude/agents/xo-cb01",
+        files: [],
+        totals: {
+          wordCount: 0,
+          estimatedTokens: 0,
+        },
+      }),
+      listEnabledToolBindings: async () => [],
+      resolveTrustGraphGraphRag: async () => "TrustGraph Context (GraphRAG):\nResult:\nCats are mammals.",
+      listEnabledSkillPolicies: async () => [],
+    },
+  )
+
+  assert.equal(result.warnings.length, 0)
+  assert.equal(result.promptFragments.length, 1)
+  assert.match(result.promptFragments[0], /TrustGraph Context \(GraphRAG\):/u)
+})
+
+test("resolveHarnessPodContext fails open when TrustGraph enhancer errors", async () => {
+  const result = await resolveHarnessPodContext(
+    {
+      userId: "user-1",
+      subagentId: "sub-1",
+      query: "cats",
+    },
+    {
+      enabled: () => true,
+      resolveWorkspaceRoot: () => "/tmp/repo",
+      loadSubagent: async () =>
+        sampleSubagent({
+          settings: {
+            ...DEFAULT_SUBAGENT_SETTINGS,
+            harness: {
+              ...DEFAULT_SUBAGENT_SETTINGS.harness,
+              enhancements: {
+                trustgraph: {
+                  enabled: true,
+                  collection: "default",
+                  flowId: "default",
+                  maxChars: 2000,
+                },
+              },
+            },
+          },
+        }),
+      loadContextFiles: async () => ({
+        source: "filesystem",
+        rootPath: ".claude/agents/xo-cb01",
+        files: [],
+        totals: {
+          wordCount: 0,
+          estimatedTokens: 0,
+        },
+      }),
+      listEnabledToolBindings: async () => [],
+      resolveTrustGraphGraphRag: async () => {
+        throw new Error("trustgraph offline")
+      },
+      listEnabledSkillPolicies: async () => [],
+    },
+  )
+
+  assert.deepEqual(result.promptFragments, [])
+  assert.equal(result.warnings.length, 1)
+  assert.match(result.warnings[0], /TrustGraph enhancement failed: trustgraph offline/u)
 })

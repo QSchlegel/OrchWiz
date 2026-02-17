@@ -1,0 +1,62 @@
+name: Dependency Security
+
+on:
+  pull_request:
+    branches: [main]
+  schedule:
+    # Daily at 05:17 UTC
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  dependency_review:
+    name: Dependency Review (PR)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Review Dependency Changes
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+
+  osv_scan:
+    name: OSV Scan (Scheduled + PR)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scan Dependency Manifests
+        id: scan
+        continue-on-error: true
+        uses: google/osv-scanner-action@v1
+        with:
+          scan-args: |-
+            --format=sarif
+            --output=osv-results.sarif
+            node/package-lock.json
+            desktop/package-lock.json
+            services/provider-proxy/package-lock.json
+            services/wallet-enclave/package-lock.json
+            services/agent-lightning-store/requirements.txt
+            services/kugelaudio-tts/requirements.txt
+            infra/vendor/kubeview/go.mod
+
+      - name: Upload SARIF (Code Scanning)
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: osv-results.sarif
+
+      - name: Upload OSV Report Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: osv-results
+          path: osv-results.sarif
+          if-no-files-found: error
+

@@ -2,6 +2,7 @@ import type { Prisma } from "@prisma/client"
 import { prisma } from "@/lib/prisma"
 import { publishRealtimeEvent } from "@/lib/realtime/events"
 import type { SecurityAuditReport } from "./types"
+import type { UnusualReading } from "./unusual-readings"
 
 async function ensureSecurityAuditSession(userId: string): Promise<string> {
   const existing = await prisma.session.findFirst({
@@ -44,16 +45,35 @@ async function ensureSecurityAuditSession(userId: string): Promise<string> {
 export async function persistSecurityAuditVerificationRun(args: {
   userId: string
   report: SecurityAuditReport
+  trigger: "manual" | "cron"
+  dayKey?: string | null
+  unusualReadings?: UnusualReading[]
 }): Promise<string> {
   const sessionId = await ensureSecurityAuditSession(args.userId)
+  const trigger = args.trigger
+  const dayKey = trigger === "cron" ? (args.dayKey || null) : null
   const resultPayload = {
     securityAudit: {
+      trigger,
+      dayKey,
       reportId: args.report.reportId,
+      createdAt: args.report.createdAt,
+      mode: args.report.mode,
       riskScore: args.report.riskScore,
       severityCounts: args.report.severityCounts,
       findingsCount: args.report.findings.length,
+      riskDelta: args.report.riskDelta,
+      previousRiskScore: args.report.previousRiskScore,
       reportPathMd: args.report.reportPathMd || null,
       reportPathJson: args.report.reportPathJson || null,
+      checks: args.report.checks.map((check) => ({
+        id: check.id,
+        name: check.name,
+        status: check.status,
+        findingsCount: check.findings.length,
+      })),
+      unusualReadings: args.unusualReadings || [],
+      quartermasterReview: null,
     },
   }
 
@@ -64,7 +84,7 @@ export async function persistSecurityAuditVerificationRun(args: {
       status: args.report.riskScore.level,
       result: resultPayload as unknown as Prisma.InputJsonValue,
       iterations: 1,
-      feedback: `Security audit ${args.report.reportId} completed with risk score ${args.report.riskScore.score}.`,
+      feedback: `[${trigger}] Security audit ${args.report.reportId} completed with risk score ${args.report.riskScore.score}.`,
       completedAt: new Date(args.report.createdAt),
     },
     select: {

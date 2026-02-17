@@ -23,6 +23,8 @@ export type ShipyardSecretFieldKey =
   | "n8n_public_base_url"
   | "postgres_password"
   | "database_url"
+  | "dokploy_base_url"
+  | "dokploy_api_key"
 
 export interface ShipyardSecretTemplateValues {
   better_auth_secret?: string
@@ -37,6 +39,8 @@ export interface ShipyardSecretTemplateValues {
   n8n_public_base_url?: string
   postgres_password?: string
   database_url?: string
+  dokploy_base_url?: string
+  dokploy_api_key?: string
 }
 
 export interface ShipyardSecretFieldSummary {
@@ -120,6 +124,8 @@ const SHIPYARD_SECRET_FIELD_KEYS: ShipyardSecretFieldKey[] = [
   "n8n_public_base_url",
   "postgres_password",
   "database_url",
+  "dokploy_base_url",
+  "dokploy_api_key",
 ]
 
 const COMMON_SHIPYARD_SECRET_FIELDS: ShipyardSecretFieldKey[] = [
@@ -140,6 +146,8 @@ const PROFILE_SPECIFIC_FIELDS: Record<DeploymentProfile, ShipyardSecretFieldKey[
   cloud_shipyard: ["database_url"],
 }
 
+const APP_OPTIONAL_FIELDS: ShipyardSecretFieldKey[] = ["dokploy_base_url", "dokploy_api_key"]
+
 const ENV_SNIPPET_KEYS: Array<{ field: ShipyardSecretFieldKey; env: string }> = [
   { field: "better_auth_secret", env: "BETTER_AUTH_SECRET" },
   { field: "github_client_id", env: "GITHUB_CLIENT_ID" },
@@ -152,6 +160,8 @@ const ENV_SNIPPET_KEYS: Array<{ field: ShipyardSecretFieldKey; env: string }> = 
   { field: "n8n_encryption_key", env: "N8N_ENCRYPTION_KEY" },
   { field: "n8n_public_base_url", env: "N8N_PUBLIC_BASE_URL" },
   { field: "database_url", env: "DATABASE_URL" },
+  { field: "dokploy_base_url", env: "DOKPLOY_BASE_URL" },
+  { field: "dokploy_api_key", env: "DOKPLOY_API_KEY" },
 ]
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -184,7 +194,11 @@ function encryptionRequired(): boolean {
 }
 
 function profileAllowsField(profile: DeploymentProfile, field: ShipyardSecretFieldKey): boolean {
-  return COMMON_SHIPYARD_SECRET_FIELDS.includes(field) || PROFILE_SPECIFIC_FIELDS[profile].includes(field)
+  return (
+    COMMON_SHIPYARD_SECRET_FIELDS.includes(field) ||
+    PROFILE_SPECIFIC_FIELDS[profile].includes(field) ||
+    APP_OPTIONAL_FIELDS.includes(field)
+  )
 }
 
 function tfvarsDbFieldForProfile(profile: DeploymentProfile): ShipyardSecretFieldKey {
