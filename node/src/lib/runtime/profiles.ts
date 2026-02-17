@@ -1,13 +1,8 @@
-import type { RuntimeRequest, RuntimeProvider } from "@/lib/types/runtime"
+import { BUILTIN_RUNTIME_PROVIDER_IDS, type RuntimeRequest, type RuntimeProvider } from "@/lib/types/runtime"
 
 export type RuntimeProfileName = "default" | "quartermaster"
 
-const KNOWN_PROVIDER_SET = new Set<RuntimeProvider>([
-  "openclaw",
-  "openai-fallback",
-  "local-fallback",
-  "codex-cli",
-])
+const KNOWN_PROVIDER_SET = new Set<string>(BUILTIN_RUNTIME_PROVIDER_IDS)
 
 const DEFAULT_PROFILE_CHAIN: Record<RuntimeProfileName, RuntimeProvider[]> = {
   default: ["openclaw", "openai-fallback", "local-fallback"],

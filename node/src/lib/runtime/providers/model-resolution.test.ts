@@ -1,7 +1,10 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 import { resolveOpenAiFallbackModel } from "./openai-fallback"
-import { resolveCodexRuntimeModel } from "./codex-cli"
+import {
+  resolveCodexRuntimeModel,
+  resolveQuartermasterCodexExecutionConfig,
+} from "./codex-cli"
 
 function withEnv<K extends keyof NodeJS.ProcessEnv>(key: K, value: string | undefined) {
   const previous = process.env[key]
@@ -73,4 +76,16 @@ test("resolveCodexRuntimeModel falls back to CODEX_RUNTIME_MODEL when intelligen
   } finally {
     restoreCodexModel()
   }
+})
+
+test("resolveQuartermasterCodexExecutionConfig defaults to read-only when metadata is missing", () => {
+  const config = resolveQuartermasterCodexExecutionConfig({
+    sessionId: "session-4",
+    prompt: "hello",
+    metadata: {},
+  })
+
+  assert.equal(config.executionLevel, "read_only")
+  assert.equal(config.sandbox, "read-only")
+  assert.equal(config.fullAuto, false)
 })

@@ -6,6 +6,7 @@ import {
   loadShipQuartermasterStateWithInteractions,
   QuartermasterApiResponseError,
 } from "@/lib/quartermaster/api"
+import { isQuartermasterExecutionLevel } from "@/lib/quartermaster/constants"
 import { parseRagBackend } from "@/lib/memory/rag-backend"
 
 export const dynamic = "force-dynamic"
@@ -83,12 +84,24 @@ export async function handlePostShipQuartermaster(
       return NextResponse.json({ error: "prompt required" }, { status: 400 })
     }
 
+    const executionLevelRaw = body.executionLevel
+    if (
+      executionLevelRaw !== undefined
+      && !isQuartermasterExecutionLevel(executionLevelRaw)
+    ) {
+      return NextResponse.json(
+        { error: "executionLevel must be one of: read_only, workspace_write, danger_full_access" },
+        { status: 400 },
+      )
+    }
+
     const payload = await deps.runPrompt({
       userId,
       shipDeploymentId: args.shipDeploymentId,
       prompt,
       requestedBackend: parseRagBackend(asString(body.backend)),
       autoProvisionIfMissing: true,
+      executionLevel: isQuartermasterExecutionLevel(executionLevelRaw) ? executionLevelRaw : undefined,
       routePath: "/api/ships/[id]/quartermaster",
     })
 

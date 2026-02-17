@@ -7,19 +7,19 @@ import {
   resolveBridgeDispatchRuntime,
 } from "./dispatch-runtime"
 
-test("resolveBridgeDispatchRuntime defaults to openclaw when runtime is missing", () => {
-  assert.equal(resolveBridgeDispatchRuntime(undefined), BRIDGE_DISPATCH_DEFAULT_RUNTIME)
-  assert.equal(resolveBridgeDispatchRuntime(""), BRIDGE_DISPATCH_DEFAULT_RUNTIME)
+test("resolveBridgeDispatchRuntime defaults to openclaw when runtime is missing", async () => {
+  assert.equal(await resolveBridgeDispatchRuntime(undefined), BRIDGE_DISPATCH_DEFAULT_RUNTIME)
+  assert.equal(await resolveBridgeDispatchRuntime(""), BRIDGE_DISPATCH_DEFAULT_RUNTIME)
 })
 
-test("parseBridgeDispatchRuntimeStrict accepts explicit openclaw runtime", () => {
-  assert.equal(parseBridgeDispatchRuntimeStrict("openclaw"), "openclaw")
-  assert.equal(parseBridgeDispatchRuntimeStrict(" OPENCLAW "), "openclaw")
+test("parseBridgeDispatchRuntimeStrict accepts explicit openclaw runtime", async () => {
+  assert.equal(await parseBridgeDispatchRuntimeStrict("openclaw"), "openclaw")
+  assert.equal(await parseBridgeDispatchRuntimeStrict(" OPENCLAW "), "openclaw")
 })
 
-test("parseBridgeDispatchRuntimeStrict rejects unknown explicit runtime", () => {
-  assert.throws(
-    () => parseBridgeDispatchRuntimeStrict("nano-claw"),
+test("parseBridgeDispatchRuntimeStrict rejects unknown explicit runtime", async () => {
+  await assert.rejects(
+    async () => parseBridgeDispatchRuntimeStrict("nano-claw"),
     (error) => {
       assert.ok(error instanceof BridgeDispatchRuntimeValidationError)
       assert.deepEqual(error.supportedRuntimeIds, ["openclaw"])

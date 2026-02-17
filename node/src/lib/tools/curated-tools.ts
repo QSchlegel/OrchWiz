@@ -1,3 +1,5 @@
+export type ToolchainProtocol = "mcp_sse" | "mcp_stdio" | "openai_compat" | "webhook"
+
 export interface CuratedToolDefinition {
   slug: string
   name: string
@@ -7,6 +9,10 @@ export interface CuratedToolDefinition {
   sourceRef?: string | null
   sourceUrl?: string | null
   sourceUriEnvKey?: string
+  protocol?: ToolchainProtocol
+  endpoint?: string | null
+  authRef?: string | null
+  capabilities?: Record<string, unknown> | null
 }
 
 export interface ResolvedCuratedToolDefinition extends CuratedToolDefinition {

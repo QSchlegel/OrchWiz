@@ -6,6 +6,8 @@ import {
   buildSessionPromptTracePayload,
   buildQuartermasterCitationFooter,
   enforceQuartermasterCitationFooter,
+  finalizeQuartermasterRuntimeOutput,
+  quartermasterRuntimeFallbackMessage,
 } from "./session-prompt"
 
 test("buildQuartermasterCitationFooter renders source list", () => {
@@ -88,6 +90,67 @@ test("buildSessionPromptTracePayload includes prompt/output and ship context", (
   assert.equal((payload.bridge as any).shipDeploymentId, "ship-1")
   assert.equal((payload.bridge as any).stationKey, "xo")
   assert.equal((payload.bridge as any).bridgeCrewId, "crew-1")
+})
+
+test("finalizeQuartermasterRuntimeOutput returns prompt-safe fallback text and diagnostics", () => {
+  const finalized = finalizeQuartermasterRuntimeOutput({
+    runtimeResult: {
+      provider: "local-fallback",
+      output: "Runtime fallback active. Provider chain did not return a result.\n\nPrompt received:\nsecret-prompt",
+      fallbackUsed: true,
+      metadata: {
+        reason: "codex-cli:CODEX_TIMEOUT:Timed out",
+        providerErrors: [
+          {
+            provider: "codex-cli",
+            code: "CODEX_TIMEOUT",
+            message: "Timed out",
+          },
+        ],
+      },
+    },
+    metadataForRuntime: {
+      quartermaster: {
+        knowledge: {
+          sources: [],
+        },
+      },
+    },
+  })
+
+  assert.equal(finalized.output, quartermasterRuntimeFallbackMessage())
+  assert.equal(finalized.fallback?.active, true)
+  assert.equal(finalized.fallback?.provider, "local-fallback")
+  assert.equal(finalized.fallback?.providerErrors.length, 1)
+  assert.equal(finalized.fallback?.providerErrors[0].code, "CODEX_TIMEOUT")
+  assert.equal(finalized.output.includes("Prompt received"), false)
+})
+
+test("finalizeQuartermasterRuntimeOutput appends citation footer for non-fallback providers", () => {
+  const finalized = finalizeQuartermasterRuntimeOutput({
+    runtimeResult: {
+      provider: "codex-cli",
+      output: "Ship ready.",
+      fallbackUsed: false,
+      metadata: {},
+    },
+    metadataForRuntime: {
+      quartermaster: {
+        knowledge: {
+          sources: [
+            {
+              id: "S1",
+              path: "kb/ships/ship-1/readiness.md",
+              title: "Readiness",
+            },
+          ],
+        },
+      },
+    },
+  })
+
+  assert.match(finalized.output, /Citations: \[S1\]/)
+  assert.equal(finalized.fallback, null)
 })
 
 test("appendExocompCapabilityInstructions injects capability block for exocomp metadata.subagentId", async () => {

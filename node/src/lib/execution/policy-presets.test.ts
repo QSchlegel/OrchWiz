@@ -7,6 +7,8 @@ test("SYSTEM_PERMISSION_POLICY_PRESETS includes required profile slugs", () => {
   assert.deepEqual(slugs, [
     "safe-core",
     "quartermaster-readonly",
+    "quartermaster-executive-workspace",
+    "quartermaster-executive-full",
     "balanced-devops",
     "power-operator",
     "github-ingest",
@@ -77,6 +79,42 @@ test("github-ingest includes gh allow rules and hardened denies", () => {
   )
   assert.equal(
     preset?.rules.some((rule) => rule.commandPattern === "rm -rf *" && rule.status === "deny"),
+    true,
+  )
+})
+
+test("quartermaster-executive-workspace allows workspace-write and denies danger-full-access", () => {
+  const preset = SYSTEM_PERMISSION_POLICY_PRESETS.find((entry) => entry.slug === "quartermaster-executive-workspace")
+  assert.ok(preset)
+
+  assert.equal(
+    preset?.rules.some(
+      (rule) => rule.commandPattern === "codex exec --sandbox workspace-write --skip-git-repo-check *" && rule.status === "allow",
+    ),
+    true,
+  )
+  assert.equal(
+    preset?.rules.some(
+      (rule) => rule.commandPattern === "codex exec * --sandbox danger-full-access*" && rule.status === "deny",
+    ),
+    true,
+  )
+})
+
+test("quartermaster-executive-full allows danger-full-access with quartermaster guardrails", () => {
+  const preset = SYSTEM_PERMISSION_POLICY_PRESETS.find((entry) => entry.slug === "quartermaster-executive-full")
+  assert.ok(preset)
+
+  assert.equal(
+    preset?.rules.some(
+      (rule) => rule.commandPattern === "codex exec --sandbox danger-full-access --skip-git-repo-check *" && rule.status === "allow",
+    ),
+    true,
+  )
+  assert.equal(
+    preset?.rules.some(
+      (rule) => rule.commandPattern === "codex exec * --dangerously-bypass-approvals-and-sandbox*" && rule.status === "deny",
+    ),
     true,
   )
 })

@@ -29,6 +29,21 @@ services:
     networks:
       - orchwiz-network
 
+  spacebot:
+    build:
+      context: ../services/spacebot
+      target: slim
+    container_name: orchwiz-spacebot
+    restart: unless-stopped
+    environment:
+      WEBHOOK_ENABLED: "true"
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    volumes:
+      - spacebot_data:/data
+    networks:
+      - orchwiz-network
+
   nextjs:
     build:
       context: ../node
@@ -47,6 +62,11 @@ services:
       GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID}
       GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET}
       AGENT_LIGHTNING_STORE_URL: http://agent-lightning-store:4747
+      SPACEBOT_WEBHOOK_BASE_URL: http://spacebot:18789
+      RUNTIME_ADAPTER_REGISTRY_ENABLED: ${RUNTIME_ADAPTER_REGISTRY_ENABLED:-false}
+      BRIDGE_DISPATCH_REGISTRY_ENABLED: ${BRIDGE_DISPATCH_REGISTRY_ENABLED:-false}
+      TOOLCHAIN_PROTOCOL_REGISTRY_ENABLED: ${TOOLCHAIN_PROTOCOL_REGISTRY_ENABLED:-false}
+      SPACEBOT_CONNECTOR_ENABLED: ${SPACEBOT_CONNECTOR_ENABLED:-false}
       NODE_ENV: production
     ports:
       - "3000:3000"
@@ -77,6 +97,8 @@ services:
 
 volumes:
   postgres_data:
+    driver: local
+  spacebot_data:
     driver: local
 
 networks:

@@ -1,6 +1,11 @@
 import test from "node:test"
 import assert from "node:assert/strict"
-import { codexCliRuntimeProvider } from "./codex-cli"
+import {
+  buildCodexCanonicalCommandCandidate,
+  codexCliRuntimeProvider,
+  resolveCodexTimeoutMs,
+  resolveQuartermasterCodexExecutionConfig,
+} from "./codex-cli"
 import { RuntimeProviderError } from "@/lib/runtime/errors"
 
 function withEnv<K extends keyof NodeJS.ProcessEnv>(key: K, value: string | undefined) {
@@ -34,6 +39,7 @@ test("codex provider returns recoverable error when codex binary is missing", as
           {
             profile: "default",
             previousErrors: [],
+            previousErrorDetails: [],
           },
         ),
       (error) => {
@@ -69,6 +75,7 @@ test("codex provider blocks quartermaster calls without subagent metadata", asyn
         {
           profile: "quartermaster",
           previousErrors: [],
+          previousErrorDetails: [],
         },
       ),
     (error) => {
@@ -117,6 +124,7 @@ test("codex provider uses provider proxy when configured", async () => {
       {
         profile: "default",
         previousErrors: [],
+        previousErrorDetails: [],
       },
     )
 
@@ -128,5 +136,103 @@ test("codex provider uses provider proxy when configured", async () => {
     restoreProxyUrl()
     restoreProxyKey()
     restoreCliPath()
+  }
+})
+
+test("resolveQuartermasterCodexExecutionConfig maps execution levels to sandbox args", () => {
+  const readOnly = resolveQuartermasterCodexExecutionConfig({
+    sessionId: "session-qtm-ro",
+    prompt: "ping",
+    metadata: {
+      quartermaster: {
+        executionLevel: "read_only",
+      },
+    },
+  })
+  assert.equal(readOnly.sandbox, "read-only")
+  assert.equal(readOnly.fullAuto, false)
+
+  const workspace = resolveQuartermasterCodexExecutionConfig({
+    sessionId: "session-qtm-ws",
+    prompt: "ping",
+    metadata: {
+      quartermaster: {
+        executionLevel: "workspace_write",
+      },
+    },
+  })
+  assert.equal(workspace.sandbox, "workspace-write")
+  assert.equal(workspace.fullAuto, false)
+
+  const danger = resolveQuartermasterCodexExecutionConfig({
+    sessionId: "session-qtm-danger",
+    prompt: "ping",
+    metadata: {
+      quartermaster: {
+        executionLevel: "danger_full_access",
+        loop: {
+          fullAuto: true,
+        },
+      },
+    },
+  })
+  assert.equal(danger.sandbox, "danger-full-access")
+  assert.equal(danger.fullAuto, true)
+})
+
+test("buildCodexCanonicalCommandCandidate reflects sandbox and full-auto mode", () => {
+  const candidate = buildCodexCanonicalCommandCandidate(
+    "gpt-5",
+    {
+      executionLevel: "workspace_write",
+      sandbox: "workspace-write",
+      fullAuto: true,
+    },
+  )
+
+  assert.match(candidate, /--sandbox workspace-write/)
+  assert.match(candidate, /--full-auto/)
+  assert.match(candidate, /-m <model>$/)
+})
+
+test("resolveCodexTimeoutMs prefers quartermaster timeout override for quartermaster requests", () => {
+  const restoreQuartermasterTimeout = withEnv("CODEX_RUNTIME_TIMEOUT_MS_QUARTERMASTER", "210000")
+  const restoreDefaultTimeout = withEnv("CODEX_RUNTIME_TIMEOUT_MS", "120000")
+
+  try {
+    const timeout = resolveCodexTimeoutMs({
+      sessionId: "session-qtm-timeout",
+      prompt: "status",
+      metadata: {
+        runtime: {
+          profile: "quartermaster",
+        },
+      },
+    })
+    assert.equal(timeout, 210000)
+  } finally {
+    restoreQuartermasterTimeout()
+    restoreDefaultTimeout()
+  }
+})
+
+test("resolveCodexTimeoutMs falls back to default timeout for non-quartermaster requests", () => {
+  const restoreQuartermasterTimeout = withEnv("CODEX_RUNTIME_TIMEOUT_MS_QUARTERMASTER", "210000")
+  const restoreDefaultTimeout = withEnv("CODEX_RUNTIME_TIMEOUT_MS", "90000")
+
+  try {
+    const timeout = resolveCodexTimeoutMs({
+      sessionId: "session-default-timeout",
+      prompt: "status",
+      metadata: {
+        runtime: {
+          profile: "default",
+        },
+      },
+    })
+    assert.equal(timeout, 90000)
+  } finally {
+    restoreQuartermasterTimeout()
+    restoreDefaultTimeout()
   }
 })

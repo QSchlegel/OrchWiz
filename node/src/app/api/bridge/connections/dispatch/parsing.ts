@@ -88,7 +88,7 @@ function parseBridgeContext(value: unknown): ParsedBridgeDispatchContext | undef
   }
 }
 
-export function parseBridgeDispatchRequestBody(body: unknown): ParsedBridgeDispatchRequest {
+export async function parseBridgeDispatchRequestBody(body: unknown): Promise<ParsedBridgeDispatchRequest> {
   const payload = asRecord(body)
   const deploymentId = asNonEmptyString(payload.deploymentId)
   const message = asNonEmptyString(payload.message)
@@ -97,7 +97,7 @@ export function parseBridgeDispatchRequestBody(body: unknown): ParsedBridgeDispa
     throw new BridgeDispatchRequestValidationError("deploymentId and message are required.")
   }
 
-  const runtime = parseBridgeDispatchRuntimeStrict(payload.runtime)
+  const runtime = await parseBridgeDispatchRuntimeStrict(payload.runtime)
   const bridgeContext = parseBridgeContext(payload.bridgeContext)
   const connectionIds = isBridgeConnectionIdList(payload.connectionIds)
     ? payload.connectionIds

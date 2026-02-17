@@ -207,6 +207,42 @@ variable "openclaw_gateway_tokens" {
   default     = {}
 }
 
+variable "enable_spacebot" {
+  type        = bool
+  description = "Whether to deploy Spacebot runtime connector service"
+  default     = false
+}
+
+variable "spacebot_image" {
+  type        = string
+  description = "Container image for Spacebot runtime connector service"
+  default     = "ghcr.io/qschlegel/orchwiz-spacebot:latest"
+}
+
+variable "spacebot_api_port" {
+  type        = number
+  description = "Service port for Spacebot API/UI"
+  default     = 19898
+}
+
+variable "spacebot_webhook_port" {
+  type        = number
+  description = "Service port for Spacebot webhook adapter"
+  default     = 18789
+}
+
+variable "spacebot_storage_size" {
+  type        = string
+  description = "PVC storage size for Spacebot data"
+  default     = "2Gi"
+}
+
+variable "spacebot_env" {
+  type        = map(string)
+  description = "Additional environment variables for Spacebot deployment"
+  default     = {}
+}
+
 variable "enable_provider_proxy" {
   type        = bool
   description = "Whether to deploy provider-proxy (Codex runtime proxy) inside the shipyard namespace"

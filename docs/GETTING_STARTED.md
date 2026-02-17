@@ -17,6 +17,7 @@ For ISO 27001 + SOC 2 cert-ready baseline documentation, see
 ```bash
 git clone git@github.com:QSchlegel/OrchWiz.git
 cd OrchWiz
+git submodule update --init --recursive
 
 cd dev-local
 docker compose up -d
@@ -52,6 +53,28 @@ CODEX_CLI_PATH=/Applications/Codex.app/Contents/Resources/codex
 # Optional:
 CODEX_RUNTIME_MODEL=
 CODEX_RUNTIME_WORKDIR=/absolute/path/to/workspace
+CODEX_RUNTIME_TIMEOUT_MS_QUARTERMASTER=180000
+```
+
+Optional runtime adapter/toolchain platform flags (all default to `false` for backward-compatible rollout):
+
+```dotenv
+RUNTIME_ADAPTER_REGISTRY_ENABLED=false
+BRIDGE_DISPATCH_REGISTRY_ENABLED=false
+TOOLCHAIN_PROTOCOL_REGISTRY_ENABLED=false
+SPACEBOT_CONNECTOR_ENABLED=false
+```
+
+Optional Spacebot connector settings (used only when `SPACEBOT_CONNECTOR_ENABLED=true` and `spacebot-webhook` is bound):
+
+```dotenv
+SPACEBOT_WEBHOOK_BASE_URL=http://spacebot:18789
+SPACEBOT_WEBHOOK_AUTH_TOKEN=
+SPACEBOT_WEBHOOK_SEND_PATH=/send
+SPACEBOT_WEBHOOK_POLL_PATH_TEMPLATE=/poll/{conversationId}
+SPACEBOT_WEBHOOK_HEALTH_PATH=/health
+SPACEBOT_WEBHOOK_POLL_INTERVAL_MS=1000
+SPACEBOT_WEBHOOK_TIMEOUT_MS=45000
 ```
 
 Generate a local auth secret:

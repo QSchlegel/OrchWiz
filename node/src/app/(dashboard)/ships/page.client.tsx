@@ -27,6 +27,8 @@ import {
   Info,
   Check,
   Radio,
+  Timer,
+  ArrowLeft,
 } from "lucide-react"
 import { NodeInfoCard } from "@/components/orchestration/NodeInfoCard"
 import { ShipToolsPanel } from "@/components/shipyard/ShipToolsPanel"
@@ -292,6 +294,8 @@ export default function ShipsPage() {
   const [runtimeOpen, setRuntimeOpen] = useState(false)
   const [tab, setTab] = useState<DetailTab>("overview")
   const [copied, setCopied] = useState(false)
+  const [wizardStep, setWizardStep] = useState<1 | 2 | 3>(1)
+  const [pendingAction, setPendingAction] = useState<string | null>(null)
 
   const [form, setForm] = useState<DeploymentFormData>({
     name: "", description: "", subagentId: "", nodeId: "",
@@ -310,6 +314,18 @@ export default function ShipsPage() {
     () => deriveNodeType(form.deploymentProfile, form.advancedNodeTypeOverride, form.nodeType),
     [form.advancedNodeTypeOverride, form.deploymentProfile, form.nodeType],
   )
+
+  // Restore selected ship from localStorage on mount
+  useEffect(() => {
+    const saved = localStorage.getItem("fleet-selected-ship")
+    if (saved) setSelectedId(saved)
+  }, [])
+
+  // Persist selected ship
+  useEffect(() => {
+    if (selectedId) localStorage.setItem("fleet-selected-ship", selectedId)
+    else localStorage.removeItem("fleet-selected-ship")
+  }, [selectedId])
 
   const fetchRuntimeMetrics = useCallback(async () => {
     try {
@@ -466,17 +482,21 @@ export default function ShipsPage() {
 
   async function handleDelete(id: string) {
     if (!confirm("Are you sure you want to delete this ship? (Ship Yard infra will be removed in the background when applicable.)")) return
+    setPendingAction(id)
     try {
       const r = await fetch(`/api/ships/${id}`, { method: "DELETE" })
       if (r.ok) { if (selectedId === id) setSelectedId(null); fetchDeployments() }
     } catch (e) { console.error("Error deleting:", e) }
+    finally { setPendingAction(null) }
   }
 
   async function handleStatus(id: string, status: Deployment["status"]) {
+    setPendingAction(id)
     try {
       const r = await fetch(`/api/ships/${id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status }) })
       if (r.ok) fetchDeployments()
     } catch (e) { console.error("Error updating:", e) }
+    finally { setPendingAction(null) }
   }
 
   function handleCopy(nodeId: string) {
@@ -555,7 +575,7 @@ export default function ShipsPage() {
               </div>
             </div>
             <button
-              onClick={() => setShowModal(true)}
+              onClick={() => { setWizardStep(1); setShowModal(true) }}
               className="flex items-center gap-2 rounded-xl bg-gradient-to-r from-violet-600 to-fuchsia-600 dark:from-purple-600 dark:to-pink-600 px-5 py-2.5 text-sm font-medium text-white shadow-lg shadow-violet-500/20 dark:shadow-purple-500/20 transition-all duration-200 hover:shadow-xl hover:shadow-violet-500/30 dark:hover:shadow-purple-500/30 hover:brightness-110 active:scale-[0.98]"
             >
               <Rocket className="h-4 w-4" />
@@ -583,9 +603,9 @@ export default function ShipsPage() {
         <div className="bridge-divider mb-6" />
 
         {/* ── Master / Detail ─────────────────────────────────────────── */}
-        <div className="flex flex-col gap-5 lg:flex-row lg:items-start animate-fade-up stagger-2">
+        <div className="flex flex-col gap-5 md:flex-row md:items-start animate-fade-up stagger-2">
           {/* ─── LEFT: Ship List ────────────────────────────────────── */}
-          <aside className="w-full shrink-0 lg:w-[400px] xl:w-[440px]">
+          <aside className={`w-full shrink-0 md:w-[340px] lg:w-[400px] xl:w-[440px] ${selectedId ? "hidden md:block" : ""}`}>
             {/* Search + Filters */}
             <div className="mb-3 space-y-2">
               <label className="flex items-center gap-2 glass rounded-lg px-3 py-2">
@@ -597,7 +617,7 @@ export default function ShipsPage() {
                   className="w-full bg-transparent text-sm text-slate-900 dark:text-white outline-none placeholder:text-slate-400 dark:placeholder:text-gray-500"
                 />
                 {search && (
-                  <button onClick={() => setSearch("")} className="text-slate-400 dark:text-gray-500 hover:text-slate-600 dark:hover:text-gray-300 transition-colors">
+                  <button onClick={() => setSearch("")} aria-label="Clear search" className="text-slate-400 dark:text-gray-500 hover:text-slate-600 dark:hover:text-gray-300 transition-colors">
                     <X className="h-3.5 w-3.5" />
                   </button>
                 )}
@@ -676,6 +696,7 @@ export default function ShipsPage() {
                     <button
                       key={ship.id}
                       onClick={() => { setSelectedId(ship.id); setTab("overview") }}
+                      aria-label={`Select ship ${ship.name}`}
                       className={`animate-fade-up group relative w-full rounded-xl border text-left transition-all duration-200 ${
                         isSel
                           ? "glass-elevated border-cyan-500/30 dark:border-cyan-400/30 surface-glow-cyan"
@@ -683,9 +704,9 @@ export default function ShipsPage() {
                       }`}
                       style={{ animationDelay: `${Math.min(i, 12) * 40}ms` }}
                     >
-                      {/* LCARS-style left accent bar */}
+                      {/* LCARS-style left accent bar — always visible, colored by status */}
                       <div className={`absolute left-0 top-3 bottom-3 w-[3px] rounded-r-full transition-all ${
-                        isSel ? "opacity-100" : "opacity-0 group-hover:opacity-60"
+                        isSel ? "opacity-100" : "opacity-40 group-hover:opacity-70"
                       } ${st.accent}`} />
 
                       <div className="flex items-center gap-3 px-4 py-3 pl-5">
@@ -699,17 +720,48 @@ export default function ShipsPage() {
                           </div>
                           <div className="mt-0.5 flex items-center gap-1.5">
                             <span className="font-tactical text-[11px] text-slate-400 dark:text-gray-500 truncate">{ship.nodeId}</span>
-                            {ship.infrastructure && (
-                              <>
-                                <span className="text-slate-300 dark:text-white/15">&middot;</span>
-                                <span className="readout text-slate-400 dark:text-gray-600">{infrastructureKindLabels[ship.infrastructure.kind]}</span>
-                              </>
-                            )}
                           </div>
                         </div>
-                        <div className={`shrink-0 flex items-center gap-1 rounded-md border px-2 py-0.5 ${st.bg} ${st.border}`}>
+                        {/* Status badge — fades on hover to reveal quick actions */}
+                        <div className={`shrink-0 flex items-center gap-1 rounded-md border px-2 py-0.5 transition-opacity group-hover:opacity-0 ${st.bg} ${st.border}`}>
                           <StatusIcon className={`h-3 w-3 ${st.color} ${st.pulse ? "animate-pulse" : ""}`} />
                           <span className={`readout ${st.color}`}>{st.label}</span>
+                        </div>
+                        {/* Quick actions — hover reveal */}
+                        <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-150">
+                          {pendingAction === ship.id ? (
+                            <RefreshCw className="h-3.5 w-3.5 animate-spin text-slate-400" />
+                          ) : (
+                            <>
+                              {ship.status === "active" ? (
+                                <button
+                                  type="button"
+                                  onClick={(e) => { e.stopPropagation(); handleStatus(ship.id, "inactive") }}
+                                  className="rounded-md p-1.5 text-orange-500 hover:bg-orange-500/10 transition-colors"
+                                  aria-label={`Stop ${ship.name}`}
+                                >
+                                  <Square className="h-3.5 w-3.5" />
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={(e) => { e.stopPropagation(); handleStatus(ship.id, "active") }}
+                                  className="rounded-md p-1.5 text-emerald-500 hover:bg-emerald-500/10 transition-colors"
+                                  aria-label={`Start ${ship.name}`}
+                                >
+                                  <Play className="h-3.5 w-3.5" />
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                onClick={(e) => { e.stopPropagation(); handleDelete(ship.id) }}
+                                className="rounded-md p-1.5 text-rose-500 hover:bg-rose-500/10 transition-colors"
+                                aria-label={`Delete ${ship.name}`}
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
+                            </>
+                          )}
                         </div>
                       </div>
                     </button>
@@ -733,7 +785,7 @@ export default function ShipsPage() {
                 <div className="glass mt-2 animate-slide-in space-y-3 rounded-xl p-3">
                   <div className="flex items-center justify-between">
                     <span className="readout text-slate-500 dark:text-gray-500">DOCKER CONTEXT</span>
-                    <button onClick={fetchRuntime} className="readout flex items-center gap-1 text-cyan-600 dark:text-cyan-400 hover:underline">
+                    <button onClick={fetchRuntime} aria-label="Refresh runtime status" className="readout flex items-center gap-1 text-cyan-600 dark:text-cyan-400 hover:underline">
                       <RefreshCw className={`h-3 w-3 ${runtimeLoading ? "animate-spin" : ""}`} />
                       REFRESH
                     </button>
@@ -793,17 +845,26 @@ export default function ShipsPage() {
           {/* ─── RIGHT: Detail Panel ───────────────────────────────── */}
           <main className="min-w-0 flex-1 animate-fade-up stagger-3">
             {selected ? (
-              <DetailPanel
-                ship={selected} tab={tab} onTab={setTab}
-                onStatus={handleStatus} onDelete={handleDelete}
-                onCopy={handleCopy} copied={copied}
-                kindCluster={selected.infrastructure?.kind === "kind" ? kindByCtx.get(selected.infrastructure.kubeContext) : undefined}
-                runtime={runtime}
-                runtimeMetrics={runtimeMetrics}
-                onShipNotFound={handlePanelShipNotFound}
-              />
+              <>
+                {/* Mobile back button */}
+                <button
+                  onClick={() => setSelectedId(null)}
+                  className="md:hidden glass flex items-center gap-1.5 rounded-lg px-3 py-2 mb-3 text-xs font-medium text-slate-600 dark:text-gray-300"
+                >
+                  <ArrowLeft className="h-3.5 w-3.5" /> Back to fleet
+                </button>
+                <DetailPanel
+                  ship={selected} tab={tab} onTab={setTab}
+                  onStatus={handleStatus} onDelete={handleDelete}
+                  onCopy={handleCopy} copied={copied}
+                  kindCluster={selected.infrastructure?.kind === "kind" ? kindByCtx.get(selected.infrastructure.kubeContext) : undefined}
+                  runtime={runtime}
+                  runtimeMetrics={runtimeMetrics}
+                  onShipNotFound={handlePanelShipNotFound}
+                />
+              </>
             ) : (
-              <div className="glass flex min-h-[420px] flex-col items-center justify-center rounded-2xl">
+              <div className="hidden md:flex glass min-h-[420px] flex-col items-center justify-center rounded-2xl">
                 <div className="relative mb-4">
                   <div className="absolute inset-0 -m-4 rounded-full bg-cyan-500/5 dark:bg-cyan-400/5 animate-ping" style={{ animationDuration: "3s" }} />
                   <Anchor className="relative h-12 w-12 text-slate-300 dark:text-gray-600" />
@@ -814,85 +875,106 @@ export default function ShipsPage() {
                 <p className="mt-1 readout text-slate-400 dark:text-gray-600">
                   {summary.total === 0 ? "YOUR FLEET IS EMPTY" : `${summary.total} SHIP${summary.total !== 1 ? "S" : ""} IN FLEET`}
                 </p>
+                <p className="hidden md:block mt-2 text-xs text-slate-400 dark:text-gray-600">
+                  &larr; Choose from the fleet list
+                </p>
               </div>
             )}
           </main>
         </div>
       </div>
 
-      {/* ── Modal ──────────────────────────────────────────────────── */}
+      {/* ── Modal — 3-Step Wizard ──────────────────────────────────── */}
       {showModal && (
-        <div className="welcome-modal-backdrop fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 dark:bg-black/60 backdrop-blur-sm pt-[5vh] pb-12" onClick={() => setShowModal(false)}>
+        <div className="welcome-modal-backdrop fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 dark:bg-black/60 backdrop-blur-sm pt-[5vh] pb-12" onClick={() => { setShowModal(false); setWizardStep(1) }}>
           <div
-            className="welcome-modal-enter relative w-full max-w-2xl glass-elevated rounded-2xl border border-slate-200/80 dark:border-white/15 p-6 shadow-2xl bg-white/90 dark:bg-slate-950/95"
+            className="welcome-modal-enter relative w-full max-w-2xl mx-4 sm:mx-0 glass-elevated rounded-2xl border border-slate-200/80 dark:border-white/15 p-4 sm:p-6 shadow-2xl bg-white/90 dark:bg-slate-950/95"
             onClick={e => e.stopPropagation()}
           >
-            <div className="mb-5 flex items-center justify-between">
+            <div className="mb-4 flex items-center justify-between">
               <div>
                 <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Launch New Ship</h2>
-                <p className="readout mt-1 text-slate-500 dark:text-gray-500">CONFIGURE DEPLOYMENT PARAMETERS</p>
+                {/* Step indicator */}
+                <div className="mt-2 flex items-center gap-1.5">
+                  {([
+                    { step: 1 as const, label: "BASICS" },
+                    { step: 2 as const, label: "INFRA" },
+                    { step: 3 as const, label: "MONITORING" },
+                  ] as const).map((s, i) => (
+                    <div key={s.step} className="flex items-center gap-1.5">
+                      {i > 0 && <div className={`h-px w-4 sm:w-6 ${wizardStep >= s.step ? "bg-cyan-500/50" : "bg-slate-300/30 dark:bg-white/10"}`} />}
+                      <button
+                        type="button"
+                        onClick={() => setWizardStep(s.step)}
+                        className={`flex items-center gap-1 rounded-md px-2 py-0.5 readout transition-colors ${
+                          wizardStep === s.step
+                            ? "bg-cyan-500/15 text-cyan-700 dark:text-cyan-300 border border-cyan-500/25"
+                            : wizardStep > s.step
+                              ? "text-emerald-600 dark:text-emerald-400"
+                              : "text-slate-400 dark:text-gray-600"
+                        }`}
+                      >
+                        {wizardStep > s.step && <Check className="h-3 w-3" />}
+                        {s.label}
+                      </button>
+                    </div>
+                  ))}
+                </div>
               </div>
-              <button onClick={() => setShowModal(false)} className="rounded-lg p-1.5 text-slate-400 dark:text-gray-400 hover:bg-slate-100 dark:hover:bg-white/10 transition-colors">
+              <button onClick={() => { setShowModal(false); setWizardStep(1) }} aria-label="Close modal" className="rounded-lg p-1.5 text-slate-400 dark:text-gray-400 hover:bg-slate-100 dark:hover:bg-white/10 transition-colors">
                 <X className="h-5 w-5" />
               </button>
             </div>
 
-            <div className="bridge-divider mb-5" />
+            <div className="bridge-divider mb-4" />
 
             <form onSubmit={handleCreate} className="space-y-4">
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <div>
-                  <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">NAME</label>
-                  <input type="text" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} required className={inputCls} placeholder="my-ship" />
-                </div>
-                <div>
-                  <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">SUBAGENT</label>
-                  <select value={form.subagentId} onChange={e => setForm({ ...form, subagentId: e.target.value })} className={`${selectCls} w-full`}>
-                    <option value="">None (Custom Agent)</option>
-                    {subagents.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">NODE ID</label>
-                  <input type="text" value={form.nodeId} onChange={e => setForm({ ...form, nodeId: e.target.value })} required className={inputCls} placeholder="node-001" />
-                </div>
-                <div>
-                  <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">DEPLOYMENT PROFILE</label>
-                  <select
-                    value={form.deploymentProfile}
-                    onChange={e => {
-                      const dp = e.target.value as DeploymentProfile
-                      setForm({ ...form, deploymentProfile: dp, advancedNodeTypeOverride: dp === "cloud_shipyard" ? form.advancedNodeTypeOverride : false, nodeType: dp === "local_starship_build" ? "local" : form.nodeType === "hybrid" ? "hybrid" : "cloud", infrastructure: defaultInfrastructure(dp) })
-                    }}
-                    className={`${selectCls} w-full`}
-                  >
-                    <option value="local_starship_build">Local Starship Build</option>
-                    <option value="cloud_shipyard">Cloud Shipyard</option>
-                  </select>
-                </div>
-                <div className="sm:col-span-2">
-                  <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">PROVISIONING MODE</label>
-                  <select value={form.provisioningMode} onChange={e => setForm({ ...form, provisioningMode: e.target.value as ProvisioningMode })} className={`${selectCls} w-full`}>
-                    <option value="terraform_ansible">Terraform + Ansible</option>
-                    <option value="terraform_only" disabled>Terraform only (coming soon)</option>
-                    <option value="ansible_only" disabled>Ansible only (coming soon)</option>
-                  </select>
-                  <p className="mt-1 font-tactical text-[11px] text-slate-400 dark:text-gray-600">
-                    {deploymentProfileLabels[form.deploymentProfile]} &rarr; {nodeTypeCfg[derivedNodeType].label}
-                  </p>
-                </div>
-                {form.deploymentProfile === "cloud_shipyard" && (
+              {/* Step 1: Basics */}
+              {wizardStep === 1 && (
+                <div className="animate-slide-in grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <div>
+                    <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">NAME</label>
+                    <input type="text" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} required className={inputCls} placeholder="my-ship" />
+                  </div>
+                  <div>
+                    <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">NODE ID</label>
+                    <input type="text" value={form.nodeId} onChange={e => setForm({ ...form, nodeId: e.target.value })} required className={inputCls} placeholder="node-001" />
+                  </div>
+                  <div>
+                    <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">SUBAGENT</label>
+                    <select value={form.subagentId} onChange={e => setForm({ ...form, subagentId: e.target.value })} className={`${selectCls} w-full`}>
+                      <option value="">None (Custom Agent)</option>
+                      {subagents.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">DEPLOYMENT PROFILE</label>
+                    <select
+                      value={form.deploymentProfile}
+                      onChange={e => {
+                        const dp = e.target.value as DeploymentProfile
+                        setForm({ ...form, deploymentProfile: dp, advancedNodeTypeOverride: dp === "cloud_shipyard" ? form.advancedNodeTypeOverride : false, nodeType: dp === "local_starship_build" ? "local" : form.nodeType === "hybrid" ? "hybrid" : "cloud", infrastructure: defaultInfrastructure(dp) })
+                      }}
+                      className={`${selectCls} w-full`}
+                    >
+                      <option value="local_starship_build">Local Starship Build</option>
+                      <option value="cloud_shipyard">Cloud Shipyard</option>
+                    </select>
+                  </div>
                   <div className="sm:col-span-2">
-                    <label className="inline-flex items-center gap-2 text-xs text-slate-500 dark:text-gray-400">
-                      <input type="checkbox" checked={form.advancedNodeTypeOverride} onChange={e => setForm({ ...form, advancedNodeTypeOverride: e.target.checked, nodeType: e.target.checked ? form.nodeType : "cloud" })} />
-                      Advanced: allow hybrid node type
-                    </label>
-                    {form.advancedNodeTypeOverride && (
-                      <select value={form.nodeType} onChange={e => setForm({ ...form, nodeType: e.target.value as NodeType })} className={`${selectCls} mt-2 w-full`}>
-                        <option value="cloud">Cloud</option>
-                        <option value="hybrid">Hybrid</option>
-                      </select>
-                    )}
+                    <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">PROVISIONING MODE</label>
+                    <select value={form.provisioningMode} onChange={e => setForm({ ...form, provisioningMode: e.target.value as ProvisioningMode })} className={`${selectCls} w-full`}>
+                      <option value="terraform_ansible">Terraform + Ansible</option>
+                      <option value="terraform_only" disabled>Terraform only (coming soon)</option>
+                      <option value="ansible_only" disabled>Ansible only (coming soon)</option>
+                    </select>
+                    <p className="mt-1 font-tactical text-[11px] text-slate-400 dark:text-gray-600">
+                      {deploymentProfileLabels[form.deploymentProfile]} &rarr; {nodeTypeCfg[derivedNodeType].label}
+                    </p>
+                  </div>
+                  <div className="sm:col-span-2">
+                    <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">DESCRIPTION</label>
+                    <textarea value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} rows={2} className={inputCls} placeholder="Ship description..." />
                   </div>
                 )}
                 <div className="sm:col-span-2">
@@ -950,7 +1032,7 @@ export default function ShipsPage() {
                       setForm({
                         ...form,
                         monitoring: { ...form.monitoring, langfuseUrl: e.target.value },
-                    })}
+                      })}
                     className={inputCls}
                     placeholder="/api/bridge/runtime-ui/langfuse"
                   />
@@ -968,32 +1050,131 @@ export default function ShipsPage() {
                         ? <option value="existing_k8s">{infrastructureKindLabels.existing_k8s}</option>
                         : <><option value="kind">{infrastructureKindLabels.kind}</option><option value="minikube">{infrastructureKindLabels.minikube}</option></>}
                     </select>
+                  </div>
+                  <div>
+                    <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">KUBE CONTEXT</label>
                     <input type="text" value={form.infrastructure.kubeContext} onChange={e => setForm({ ...form, infrastructure: { ...form.infrastructure, kubeContext: e.target.value } })} className={inputCls} placeholder="kube context" />
+                  </div>
+                  <div>
+                    <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">NAMESPACE</label>
                     <input type="text" value={form.infrastructure.namespace} onChange={e => setForm({ ...form, infrastructure: { ...form.infrastructure, namespace: e.target.value } })} className={inputCls} placeholder="namespace" />
+                  </div>
+                  <div>
+                    <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">NODE URL (OPTIONAL)</label>
+                    <input type="url" value={form.nodeUrl} onChange={e => setForm({ ...form, nodeUrl: e.target.value })} className={inputCls} placeholder="https://node.example.com" />
+                  </div>
+                  <div>
+                    <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">TERRAFORM WORKSPACE</label>
                     <input type="text" value={form.infrastructure.terraformWorkspace} onChange={e => setForm({ ...form, infrastructure: { ...form.infrastructure, terraformWorkspace: e.target.value } })} className={inputCls} placeholder="terraform workspace" />
+                  </div>
+                  <div>
+                    <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">TERRAFORM ENV DIR</label>
                     <input type="text" value={form.infrastructure.terraformEnvDir} onChange={e => setForm({ ...form, infrastructure: { ...form.infrastructure, terraformEnvDir: e.target.value } })} className={inputCls} placeholder="terraform env directory" />
+                  </div>
+                  <div>
+                    <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">ANSIBLE INVENTORY</label>
                     <input type="text" value={form.infrastructure.ansibleInventory} onChange={e => setForm({ ...form, infrastructure: { ...form.infrastructure, ansibleInventory: e.target.value } })} className={inputCls} placeholder="ansible inventory" />
+                  </div>
+                  <div>
+                    <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">ANSIBLE PLAYBOOK</label>
                     <input type="text" value={form.infrastructure.ansiblePlaybook} onChange={e => setForm({ ...form, infrastructure: { ...form.infrastructure, ansiblePlaybook: e.target.value } })} className={inputCls} placeholder="ansible playbook" />
                   </div>
+                  {form.deploymentProfile === "cloud_shipyard" && (
+                    <div className="sm:col-span-2">
+                      <label className="inline-flex items-center gap-2 text-xs text-slate-500 dark:text-gray-400">
+                        <input type="checkbox" checked={form.advancedNodeTypeOverride} onChange={e => setForm({ ...form, advancedNodeTypeOverride: e.target.checked, nodeType: e.target.checked ? form.nodeType : "cloud" })} />
+                        Advanced: allow hybrid node type
+                      </label>
+                      {form.advancedNodeTypeOverride && (
+                        <select value={form.nodeType} onChange={e => setForm({ ...form, nodeType: e.target.value as NodeType })} className={`${selectCls} mt-2 w-full`}>
+                          <option value="cloud">Cloud</option>
+                          <option value="hybrid">Hybrid</option>
+                        </select>
+                      )}
+                    </div>
+                  )}
                 </div>
-                <div className="sm:col-span-2">
-                  <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">DESCRIPTION</label>
-                  <textarea value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} rows={2} className={inputCls} placeholder="Ship description..." />
+              )}
+
+              {/* Step 3: Monitoring (Optional) */}
+              {wizardStep === 3 && (
+                <div className="animate-slide-in space-y-4">
+                  <p className="text-xs text-slate-500 dark:text-gray-400">
+                    These monitoring URLs are optional. Defaults are pre-filled and can be changed later.
+                  </p>
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    <div>
+                      <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">GRAFANA URL</label>
+                      <input
+                        type="url"
+                        value={form.monitoring.grafanaUrl}
+                        onChange={e => setForm({ ...form, monitoring: { ...form.monitoring, grafanaUrl: e.target.value } })}
+                        className={inputCls}
+                        placeholder="https://grafana.example.com/d/..."
+                      />
+                    </div>
+                    <div>
+                      <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">PROMETHEUS URL</label>
+                      <input
+                        type="url"
+                        value={form.monitoring.prometheusUrl}
+                        onChange={e => setForm({ ...form, monitoring: { ...form.monitoring, prometheusUrl: e.target.value } })}
+                        className={inputCls}
+                        placeholder="https://prometheus.example.com/graph"
+                      />
+                    </div>
+                    <div>
+                      <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">KUBEVIEW URL</label>
+                      <input
+                        type="url"
+                        value={form.monitoring.kubeviewUrl}
+                        onChange={e => setForm({ ...form, monitoring: { ...form.monitoring, kubeviewUrl: e.target.value } })}
+                        className={inputCls}
+                        placeholder="/api/bridge/runtime-ui/kubeview"
+                      />
+                    </div>
+                    <div>
+                      <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">LANGFUSE URL</label>
+                      <input
+                        type="url"
+                        value={form.monitoring.langfuseUrl}
+                        onChange={e => setForm({ ...form, monitoring: { ...form.monitoring, langfuseUrl: e.target.value } })}
+                        className={inputCls}
+                        placeholder="https://langfuse.example.com"
+                      />
+                    </div>
+                  </div>
                 </div>
-              </div>
+              )}
 
               <div className="bridge-divider" />
 
-              <div className="flex justify-end gap-3 pt-1">
-                <button type="button" onClick={() => setShowModal(false)} className="glass rounded-lg px-4 py-2 text-sm text-slate-600 dark:text-gray-300 hover:brightness-105 transition-all">
-                  Cancel
-                </button>
-                <button
-                  type="submit" disabled={isCreating}
-                  className="rounded-lg bg-gradient-to-r from-violet-600 to-fuchsia-600 dark:from-purple-600 dark:to-pink-600 px-5 py-2 text-sm font-medium text-white transition-all hover:brightness-110 disabled:opacity-50 active:scale-[0.98]"
-                >
-                  {isCreating ? "Launching..." : "Launch"}
-                </button>
+              {/* Wizard navigation */}
+              <div className="flex justify-between gap-3 pt-1">
+                <div>
+                  {wizardStep > 1 && (
+                    <button type="button" onClick={() => setWizardStep((wizardStep - 1) as 1 | 2 | 3)} className="glass rounded-lg px-4 py-2 text-sm text-slate-600 dark:text-gray-300 hover:brightness-105 transition-all">
+                      Back
+                    </button>
+                  )}
+                </div>
+                <div className="flex gap-3">
+                  <button type="button" onClick={() => { setShowModal(false); setWizardStep(1) }} className="glass rounded-lg px-4 py-2 text-sm text-slate-600 dark:text-gray-300 hover:brightness-105 transition-all">
+                    Cancel
+                  </button>
+                  {wizardStep < 3 ? (
+                    <button type="button" onClick={() => setWizardStep((wizardStep + 1) as 1 | 2 | 3)} className="rounded-lg bg-gradient-to-r from-violet-600 to-fuchsia-600 dark:from-purple-600 dark:to-pink-600 px-5 py-2 text-sm font-medium text-white transition-all hover:brightness-110">
+                      Next
+                    </button>
+                  ) : (
+                    <button
+                      type="submit" disabled={isCreating}
+                      className="rounded-lg bg-gradient-to-r from-violet-600 to-fuchsia-600 dark:from-purple-600 dark:to-pink-600 px-5 py-2 text-sm font-medium text-white transition-all hover:brightness-110 disabled:opacity-50 active:scale-[0.98]"
+                    >
+                      {isCreating ? "Launching..." : "Launch"}
+                    </button>
+                  )}
+                </div>
               </div>
             </form>
           </div>
@@ -1083,6 +1264,28 @@ function DetailPanel({
           ))}
         </div>
 
+        {/* Prominent health/uptime strip */}
+        {ship.status === "active" && (
+          <div className="mt-3 flex flex-wrap items-center gap-4">
+            {ship.deployedAt && (
+              <div className="flex items-center gap-1.5">
+                <Timer className="h-3.5 w-3.5 text-emerald-500" />
+                <span className="readout text-emerald-600 dark:text-emerald-400">
+                  UPTIME {formatUptime(new Date(ship.deployedAt))}
+                </span>
+              </div>
+            )}
+            {ship.lastHealthCheck && (
+              <div className="flex items-center gap-1.5">
+                <Activity className="h-3.5 w-3.5 text-cyan-500" />
+                <span className="readout text-cyan-600 dark:text-cyan-400">
+                  HEALTH CHECK {relativeTime(ship.lastHealthCheck)}
+                </span>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Actions */}
         <div className="mt-4 flex flex-wrap gap-2">
           {ship.status === "active" ? (
@@ -1145,9 +1348,9 @@ function DetailPanel({
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
               {[
                 { label: "PROFILE", value: ship.deploymentProfile === "local_starship_build" ? "Local" : "Cloud" },
-                { label: "UPTIME", value: ship.deployedAt ? formatUptime(new Date(ship.deployedAt)) : "N/A" },
-                { label: "CONTEXT", value: ship.infrastructure?.kubeContext || "N/A" },
-                { label: "NAMESPACE", value: ship.infrastructure?.namespace || "N/A" },
+                { label: "DEPLOYED", value: ship.deployedAt ? relativeTime(ship.deployedAt) : "N/A" },
+                { label: "LAST CHECK", value: relativeTime(ship.lastHealthCheck) },
+                { label: "CREATED", value: relativeTime(ship.createdAt) },
               ].map(m => (
                 <div key={m.label} className="glass rounded-lg px-3 py-2.5">
                   <p className="readout text-slate-400 dark:text-gray-600">{m.label}</p>
@@ -1158,27 +1361,35 @@ function DetailPanel({
 
             <div className="bridge-divider" />
 
-            {/* Full NodeInfoCard */}
-            <NodeInfoCard
-              nodeType={ship.nodeType} nodeId={ship.nodeId}
-              nodeUrl={ship.nodeUrl} healthStatus={ship.healthStatus}
-              deployedAt={ship.deployedAt}
-              deploymentProfile={ship.deploymentProfile}
-              provisioningMode={ship.provisioningMode}
-              infrastructure={ship.infrastructure}
-              showCapabilities showConfig showSecurity showUseCases
-              dataForwarding={{
-                enabled: ship.nodeType !== "local" || !!ship.metadata?.forwardingEnabled,
-                targetNode: ship.metadata?.forwardTarget,
-                sourceNodes: ship.metadata?.sourceNodeCount,
-              }}
-              metrics={ship.status === "active" ? {
-                uptime: ship.deployedAt ? formatUptime(new Date(ship.deployedAt)) : undefined,
-                activeSessions: typeof ship.metadata?.activeSessions === "number" ? ship.metadata.activeSessions : undefined,
-                cpu: runtimeMetrics?.signals.cpuPercent,
-                memory: runtimeMetrics?.signals.heapPressurePercent,
-              } : undefined}
-            />
+            {/* Collapsible detailed node configuration */}
+            <details className="group">
+              <summary className="flex cursor-pointer list-none items-center gap-2 readout text-slate-500 dark:text-gray-400 select-none py-2 [&::-webkit-details-marker]:hidden">
+                <ChevronDown className="h-3.5 w-3.5 transition-transform duration-200 group-open:rotate-180" />
+                DETAILED NODE CONFIGURATION
+              </summary>
+              <div className="animate-slide-in mt-2">
+                <NodeInfoCard
+                  nodeType={ship.nodeType} nodeId={ship.nodeId}
+                  nodeUrl={ship.nodeUrl} healthStatus={ship.healthStatus}
+                  deployedAt={ship.deployedAt}
+                  deploymentProfile={ship.deploymentProfile}
+                  provisioningMode={ship.provisioningMode}
+                  infrastructure={ship.infrastructure}
+                  showCapabilities showConfig showSecurity showUseCases
+                  dataForwarding={{
+                    enabled: ship.nodeType !== "local" || !!ship.metadata?.forwardingEnabled,
+                    targetNode: ship.metadata?.forwardTarget,
+                    sourceNodes: ship.metadata?.sourceNodeCount,
+                  }}
+                  metrics={ship.status === "active" ? {
+                    uptime: ship.deployedAt ? formatUptime(new Date(ship.deployedAt)) : undefined,
+                    activeSessions: typeof ship.metadata?.activeSessions === "number" ? ship.metadata.activeSessions : undefined,
+                    cpu: runtimeMetrics?.signals.cpuPercent,
+                    memory: runtimeMetrics?.signals.heapPressurePercent,
+                  } : undefined}
+                />
+              </div>
+            </details>
 
             {ship.subagent && (
               <>

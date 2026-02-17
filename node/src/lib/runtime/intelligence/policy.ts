@@ -9,13 +9,14 @@ import {
   loadRuntimeIntelligencePolicyState,
   updateRuntimeIntelligencePolicyStateOnline,
 } from "@/lib/runtime/intelligence/state"
+import { isRuntimeProviderControllable } from "@/lib/runtime/registry"
 import type {
   RuntimeExecutionKind,
   RuntimeIntelligenceDecisionState,
   RuntimeIntelligenceFinalizeResult,
   RuntimeIntelligencePolicyResolution,
 } from "@/lib/runtime/intelligence/types"
-import type { RuntimeProvider, RuntimeRequest } from "@/lib/types/runtime"
+import type { RuntimeAdapterCatalogEntry, RuntimeProvider, RuntimeRequest } from "@/lib/types/runtime"
 
 function asRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -247,8 +248,15 @@ function mergeIntelligenceMetadata(args: {
   }
 }
 
-function filterProviderOrder(providerOrder: RuntimeProvider[]): RuntimeProvider[] {
-  const filtered = providerOrder.filter((provider) => provider !== "openclaw")
+function filterProviderOrder(
+  providerOrder: RuntimeProvider[],
+  catalogByAdapterId?: Map<string, RuntimeAdapterCatalogEntry>,
+): RuntimeProvider[] {
+  const filtered = providerOrder.filter((provider) =>
+    isRuntimeProviderControllable({
+      providerId: provider,
+      catalogByAdapterId,
+    }))
   const deduped = uniqueProviders(filtered)
   if (!deduped.includes("local-fallback")) {
     deduped.push("local-fallback")
@@ -260,6 +268,7 @@ export async function applyRuntimeIntelligencePolicy(args: {
   request: RuntimeRequest
   providerOrder: RuntimeProvider[]
   profile: RuntimeProfileName
+  catalogByAdapterId?: Map<string, RuntimeAdapterCatalogEntry>
 }): Promise<RuntimeIntelligencePolicyResolution> {
   const config = runtimeIntelligenceConfig()
   const metadata = asRecord(args.request.metadata)
@@ -372,7 +381,7 @@ export async function applyRuntimeIntelligencePolicy(args: {
   })
 
   const providerOrder = config.requireControllableProviders
-    ? filterProviderOrder(args.providerOrder)
+    ? filterProviderOrder(args.providerOrder, args.catalogByAdapterId)
     : args.providerOrder
 
   return {

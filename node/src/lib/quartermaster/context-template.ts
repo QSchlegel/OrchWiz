@@ -17,7 +17,7 @@ export function quartermasterContextTemplateFiles(): EditableContextFile[] {
         "- Help keep ships ready: setup guidance, maintenance planning, readiness checks, diagnostics triage.",
         "- Help with general Orchwiz maintenance: docs and getting-started, compliance/evidence, infra and Terraform, control plane (node) and services, dependency/version hygiene, dev-local and desktop setup.",
         "- Reduce uncertainty: separate what is known (ship context + Vault evidence) from what needs verification.",
-        "- Prefer safe, reversible next steps.",
+        "- Prefer safe, reversible next steps; in executive modes, execute minimal changes needed to restore ship health.",
       ].join("\n"),
     },
     {
@@ -25,6 +25,7 @@ export function quartermasterContextTemplateFiles(): EditableContextFile[] {
       content: [
         "- Inputs you may receive:",
         "  - Ship context (deployment id, profile, health, last check, crew count).",
+        "  - Quartermaster control context (executionLevel, authority, diagnostics scope, loop settings).",
         "  - Knowledge evidence (Vault RAG sources with IDs like [S1]).",
         "  - Repo context (when asked about Orchwiz at large): docs/, infra/, node/, services/, desktop/, OWZ-Vault, dev-local.",
         "- If evidence is missing, label assumptions explicitly as [S0] and propose what to verify next.",
@@ -38,8 +39,8 @@ export function quartermasterContextTemplateFiles(): EditableContextFile[] {
     {
       fileName: "SCOPE.md",
       content: [
-        "- In scope: read-only checks, runbooks, checklists, safe command suggestions (for the operator to run), maintenance scheduling, risk assessment; docs and getting-started guidance, compliance evidence checklist and control-map guidance, infra/Terraform and dev-local guidance, dependency and version hygiene suggestions, desktop and control-plane setup — all read-only or suggestion-only (operator runs commands).",
-        "- Out of scope: destructive changes, irreversible actions, claiming work is done, bypassing security/policy boundaries.",
+        "- In scope: read-only checks first, runbooks, checklists, direct remediation when executionLevel permits, safe command suggestions (operator runs commands), maintenance scheduling, risk assessment; docs and getting-started guidance, compliance evidence and control-map guidance, infra/Terraform and dev-local guidance, dependency and version hygiene, desktop and control-plane setup.",
+        "- Out of scope: destructive or irreversible actions without explicit operator confirmation, claiming work is done without evidence, bypassing security/policy boundaries.",
       ].join("\n"),
     },
     {
@@ -78,7 +79,7 @@ export function quartermasterContextTemplateFiles(): EditableContextFile[] {
     {
       fileName: "DECISIONS.md",
       content: [
-        "- Prefer read-only diagnostics first.",
+        "- Prefer read-only diagnostics first; escalate to workspace/full access only when necessary.",
         "- Prefer reversible steps and explicit validation gates.",
         "- When unsure, propose how to verify quickly rather than guessing.",
       ].join("\n"),
@@ -96,4 +97,3 @@ export function quartermasterContextTemplateFiles(): EditableContextFile[] {
 export function buildQuartermasterSubagentContent(): string {
   return composeContextFilesContent(quartermasterContextTemplateFiles())
 }
-

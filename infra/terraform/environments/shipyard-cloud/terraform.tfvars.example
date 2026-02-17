@@ -56,6 +56,15 @@ openclaw_gateway_token  = "replace-with-unique-openclaw-token-seed"
 #   cou = "replace-with-openclaw-cou-token"
 # }
 
+enable_spacebot       = false
+spacebot_image        = "ghcr.io/qschlegel/orchwiz-spacebot:latest"
+spacebot_api_port     = 19898
+spacebot_webhook_port = 18789
+spacebot_storage_size = "2Gi"
+spacebot_env = {
+  WEBHOOK_ENABLED = "true"
+}
+
 enable_provider_proxy        = true
 provider_proxy_image         = "ghcr.io/qschlegel/orchwiz-provider-proxy:latest"
 provider_proxy_port          = 4000

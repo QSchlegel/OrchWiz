@@ -35,6 +35,12 @@ module "shipyard_k8s" {
   openclaw_image          = var.openclaw_image
   openclaw_gateway_token  = var.openclaw_gateway_token
   openclaw_gateway_tokens = var.openclaw_gateway_tokens
+  enable_spacebot         = var.enable_spacebot
+  spacebot_image          = var.spacebot_image
+  spacebot_api_port       = var.spacebot_api_port
+  spacebot_webhook_port   = var.spacebot_webhook_port
+  spacebot_storage_size   = var.spacebot_storage_size
+  spacebot_env            = var.spacebot_env
 
   enable_provider_proxy        = var.enable_provider_proxy
   provider_proxy_image         = var.provider_proxy_image
@@ -148,3 +154,5 @@ output "langfuse_enabled" { value = module.shipyard_k8s.langfuse_enabled }
 output "langfuse_url" { value = module.shipyard_k8s.langfuse_url }
 output "runtime_ui_langfuse_url" { value = module.shipyard_k8s.runtime_ui_langfuse_url }
 output "langfuse_base_url_in_cluster" { value = module.shipyard_k8s.langfuse_base_url_in_cluster }
+output "spacebot_enabled" { value = module.shipyard_k8s.spacebot_enabled }
+output "spacebot_service_name" { value = module.shipyard_k8s.spacebot_service_name }

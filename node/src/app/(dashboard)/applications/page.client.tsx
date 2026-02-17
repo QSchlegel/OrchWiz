@@ -4,7 +4,9 @@ import { useCallback, useEffect, useMemo, useState } from "react"
 import {
   Activity,
   AlertCircle,
+  ArrowLeft,
   Box,
+  Check,
   CheckCircle2,
   ChevronDown,
   ChevronUp,
@@ -17,6 +19,7 @@ import {
   GitBranch,
   HardDrive,
   Hash,
+  Info,
   Layers,
   Network,
   Package,
@@ -168,6 +171,7 @@ const statusConfig = {
     color: "text-amber-700 dark:text-amber-300",
     bg: "bg-amber-500/15 dark:bg-amber-500/20",
     border: "border-amber-500/30",
+    accent: "bg-amber-400 dark:bg-amber-400",
     pulse: true,
   },
   deploying: {
@@ -176,6 +180,7 @@ const statusConfig = {
     color: "text-blue-700 dark:text-blue-300",
     bg: "bg-blue-500/15 dark:bg-blue-500/20",
     border: "border-blue-500/30",
+    accent: "bg-blue-500 dark:bg-blue-400",
     pulse: true,
   },
   active: {
@@ -184,6 +189,7 @@ const statusConfig = {
     color: "text-emerald-700 dark:text-emerald-300",
     bg: "bg-emerald-500/15 dark:bg-emerald-500/20",
     border: "border-emerald-500/30",
+    accent: "bg-emerald-500 dark:bg-emerald-400",
     pulse: false,
   },
   inactive: {
@@ -192,6 +198,7 @@ const statusConfig = {
     color: "text-slate-700 dark:text-slate-300",
     bg: "bg-slate-500/12 dark:bg-slate-500/20",
     border: "border-slate-500/30",
+    accent: "bg-slate-400 dark:bg-slate-500",
     pulse: false,
   },
   failed: {
@@ -200,6 +207,7 @@ const statusConfig = {
     color: "text-rose-700 dark:text-rose-300",
     bg: "bg-rose-500/15 dark:bg-rose-500/20",
     border: "border-rose-500/30",
+    accent: "bg-rose-500 dark:bg-rose-400",
     pulse: false,
   },
   updating: {
@@ -208,6 +216,7 @@ const statusConfig = {
     color: "text-orange-700 dark:text-orange-300",
     bg: "bg-orange-500/15 dark:bg-orange-500/20",
     border: "border-orange-500/30",
+    accent: "bg-orange-500 dark:bg-orange-400",
     pulse: true,
   },
 }
@@ -424,6 +433,8 @@ function asApplicationListItem(application: Application): ApplicationListItem {
   }
 }
 
+type DetailTab = "overview" | "infrastructure"
+
 export default function ApplicationsPage() {
   const initialDeploymentProfile: DeploymentProfile = "local_starship_build"
   const { selectedShipDeploymentId, setSelectedShipDeploymentId } = useShipSelection()
@@ -438,8 +449,10 @@ export default function ApplicationsPage() {
 
   const [selectedApplicationId, setSelectedApplicationId] = useState<string | null>(null)
   const [showCreateForm, setShowCreateForm] = useState(false)
+  const [wizardStep, setWizardStep] = useState<1 | 2 | 3>(1)
   const [showTopology, setShowTopology] = useState(true)
   const [showAdvancedDeployConfig, setShowAdvancedDeployConfig] = useState(false)
+  const [detailTab, setDetailTab] = useState<DetailTab>("overview")
 
   const [includeForwarded, setIncludeForwarded] = useState(() => searchParams.get("includeForwarded") === "true")
   const [sourceNodeId, setSourceNodeId] = useState(() => searchParams.get("sourceNodeId") ?? "")
@@ -684,6 +697,16 @@ export default function ApplicationsPage() {
     const ship = ships.find((entry) => entry.id === resolvedShipId) || ships[0]
     setFormData((current) => applyShipToForm(ship, { ...current, shipDeploymentId: ship.id }))
   }, [applyShipToForm, selectedShipDeploymentId, setSelectedShipDeploymentId, ships])
+
+  useEffect(() => {
+    const saved = localStorage.getItem("apps-selected-application")
+    if (saved) setSelectedApplicationId(saved)
+  }, [])
+
+  useEffect(() => {
+    if (selectedApplicationId) localStorage.setItem("apps-selected-application", selectedApplicationId)
+    else localStorage.removeItem("apps-selected-application")
+  }, [selectedApplicationId])
 
   useEffect(() => {
     setSelectedApplicationId((current) => resolveSelectedApplicationId(filteredApplications, current))
@@ -996,7 +1019,7 @@ export default function ApplicationsPage() {
       <div className="pointer-events-none fixed inset-0 bridge-grid opacity-40 dark:opacity-100" />
 
       <div className="relative mx-auto max-w-[1600px] px-4 py-6 sm:px-6 lg:px-8">
-        <header className="mb-6">
+        <header className="mb-6 animate-fade-up">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-4">
               <div className="rounded-2xl bg-gradient-to-br from-blue-500/20 to-cyan-500/20 p-3">
@@ -1016,14 +1039,14 @@ export default function ApplicationsPage() {
                 setShowCreateForm(true)
               }}
               disabled={isLoadingShips || ships.length === 0}
-              className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-blue-600 to-cyan-600 px-5 py-2.5 text-sm font-medium text-white transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
+              className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-blue-600 to-cyan-600 px-5 py-2.5 text-sm font-medium text-white shadow-lg shadow-blue-500/20 transition-all hover:brightness-110 hover:shadow-xl hover:shadow-blue-500/30 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
             >
               <Package className="h-4 w-4" />
               Deploy Application
             </button>
           </div>
 
-          <div className="mt-5 flex flex-wrap gap-2">
+          <div className="mt-5 flex flex-wrap gap-2 animate-fade-up stagger-1">
             {[
               { label: "TOTAL", value: summary.total, cls: "border-slate-300/70 text-slate-700 dark:text-slate-200" },
               { label: "ACTIVE", value: summary.active, cls: "border-emerald-500/25 text-emerald-700 dark:text-emerald-300" },
@@ -1060,7 +1083,7 @@ export default function ApplicationsPage() {
           )}
         </header>
 
-        <div className="mb-4 rounded-xl border border-slate-300/70 bg-white/70 p-3 dark:border-white/10 dark:bg-white/[0.03]">
+        <div className="mb-4 rounded-xl border border-slate-300/70 bg-white/70 p-3 dark:border-white/10 dark:bg-white/[0.03] animate-fade-up stagger-1">
           <div className="grid grid-cols-1 gap-2 lg:grid-cols-[minmax(0,1fr)_repeat(3,minmax(0,170px))_auto]">
             <label className="flex items-center gap-2 rounded-lg border border-slate-300/70 bg-white/70 px-3 py-2 dark:border-white/15 dark:bg-white/[0.04]">
               <Search className="h-4 w-4 text-slate-400 dark:text-slate-500" />
@@ -1137,7 +1160,7 @@ export default function ApplicationsPage() {
           </div>
         </div>
 
-        <OrchestrationSurface level={4} className="mb-5">
+        <OrchestrationSurface level={4} className="mb-5 animate-fade-up stagger-2">
           <div className="flex items-center justify-between">
             <div>
               <h2 className="text-lg font-semibold text-slate-900 dark:text-white">Application Topology</h2>
@@ -1167,12 +1190,12 @@ export default function ApplicationsPage() {
           ) : null}
         </OrchestrationSurface>
 
-        <div className="flex flex-col gap-5 lg:flex-row lg:items-start">
-          <aside className="w-full shrink-0 lg:w-[410px] xl:w-[450px]">
+        <div className="flex flex-col gap-5 md:flex-row md:items-start animate-fade-up stagger-2">
+          <aside className={`w-full shrink-0 md:w-[410px] xl:w-[450px] ${selectedApplicationId ? "hidden md:block" : ""}`}>
             <div className="card-scroll space-y-2 overflow-y-auto pr-1" style={{ maxHeight: "calc(100vh - 350px)" }}>
               {isLoading ? (
                 Array.from({ length: 6 }).map((_, index) => (
-                  <div key={index} className="skeleton-shimmer h-[74px] rounded-xl" />
+                  <div key={index} className="skeleton-shimmer h-[74px] rounded-xl" style={{ animationDelay: `${index * 80}ms` }} />
                 ))
               ) : filteredApplications.length === 0 ? (
                 <div className="glass rounded-xl px-5 py-10 text-center">
@@ -1242,26 +1265,33 @@ export default function ApplicationsPage() {
                   )}
                 </div>
               ) : (
-                filteredApplications.map((application) => {
+                filteredApplications.map((application, index) => {
                   const statusInfo = statusConfig[application.status]
                   const StatusIcon = statusInfo.icon
                   const appTypeInfo = appTypeConfig[application.applicationType]
                   const AppTypeIcon = appTypeInfo.icon
                   const selected = application.id === selectedApplicationId
                   const capability = getApplicationActionCapability(asApplicationListItem(application))
+                  const isItemPending = pendingAction?.id === application.id
 
                   return (
                     <button
                       key={application.id}
                       type="button"
-                      onClick={() => setSelectedApplicationId(application.id)}
-                      className={`group relative w-full rounded-xl border text-left transition-all ${
+                      onClick={() => { setSelectedApplicationId(application.id); setDetailTab("overview") }}
+                      className={`animate-fade-up group relative w-full rounded-xl border text-left transition-all duration-200 ${
                         selected
-                          ? "glass-elevated border-cyan-500/35 surface-glow-cyan"
-                          : "glass border-transparent hover:border-slate-300/70 dark:hover:border-white/15"
+                          ? "glass-elevated border-cyan-500/30 dark:border-cyan-400/30 surface-glow-cyan"
+                          : "glass border-transparent hover:border-slate-300/50 dark:hover:border-white/15"
                       }`}
+                      style={{ animationDelay: `${Math.min(index, 12) * 40}ms` }}
                     >
-                      <div className="flex items-center gap-3 px-4 py-3">
+                      {/* LCARS accent bar */}
+                      <div className={`absolute left-0 top-3 bottom-3 w-[3px] rounded-r-full transition-all ${
+                        selected ? "opacity-100" : "opacity-40 group-hover:opacity-70"
+                      } ${statusInfo.accent}`} />
+
+                      <div className="flex items-center gap-3 px-4 pl-5 py-3">
                         <div className={`rounded-lg border p-1.5 ${appTypeInfo.bg} ${statusInfo.border}`}>
                           <AppTypeIcon className={`h-4 w-4 ${appTypeInfo.color}`} />
                         </div>
@@ -1287,9 +1317,53 @@ export default function ApplicationsPage() {
                           </div>
                         </div>
 
-                        <div className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 ${statusInfo.bg} ${statusInfo.border}`}>
+                        {/* Status badge -- fades on hover to reveal quick actions */}
+                        <div className={`shrink-0 inline-flex items-center gap-1 rounded-md border px-2 py-0.5 transition-opacity group-hover:opacity-0 ${statusInfo.bg} ${statusInfo.border}`}>
                           <StatusIcon className={`h-3 w-3 ${statusInfo.color} ${statusInfo.pulse ? "animate-pulse" : ""}`} />
                           <span className={`readout ${statusInfo.color}`}>{statusInfo.label}</span>
+                        </div>
+
+                        {/* Quick actions -- hover reveal */}
+                        <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-150">
+                          {isItemPending ? (
+                            <RefreshCw className="h-3.5 w-3.5 animate-spin text-slate-400" />
+                          ) : capability.canMutate ? (
+                            <>
+                              {application.status === "active" ? (
+                                <span
+                                  role="button"
+                                  tabIndex={0}
+                                  onClick={(e) => { e.stopPropagation(); handleStatusUpdate(application, "inactive") }}
+                                  onKeyDown={(e) => { if (e.key === "Enter") { e.stopPropagation(); handleStatusUpdate(application, "inactive") } }}
+                                  className="rounded-md p-1.5 text-orange-500 hover:bg-orange-500/10 transition-colors"
+                                  aria-label={`Stop ${application.name}`}
+                                >
+                                  <Square className="h-3.5 w-3.5" />
+                                </span>
+                              ) : (
+                                <span
+                                  role="button"
+                                  tabIndex={0}
+                                  onClick={(e) => { e.stopPropagation(); handleStatusUpdate(application, "active") }}
+                                  onKeyDown={(e) => { if (e.key === "Enter") { e.stopPropagation(); handleStatusUpdate(application, "active") } }}
+                                  className="rounded-md p-1.5 text-emerald-500 hover:bg-emerald-500/10 transition-colors"
+                                  aria-label={`Start ${application.name}`}
+                                >
+                                  <Play className="h-3.5 w-3.5" />
+                                </span>
+                              )}
+                              <span
+                                role="button"
+                                tabIndex={0}
+                                onClick={(e) => { e.stopPropagation(); handleDelete(application) }}
+                                onKeyDown={(e) => { if (e.key === "Enter") { e.stopPropagation(); handleDelete(application) } }}
+                                className="rounded-md p-1.5 text-rose-500 hover:bg-rose-500/10 transition-colors"
+                                aria-label={`Delete ${application.name}`}
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </span>
+                            </>
+                          ) : null}
                         </div>
                       </div>
                     </button>
@@ -1301,16 +1375,28 @@ export default function ApplicationsPage() {
 
           <main className="min-w-0 flex-1">
             {selectedApplication ? (
-              <ApplicationDetailPanel
-                application={selectedApplication}
-                runtimeMetrics={runtimeMetrics}
-                pendingAction={pendingAction}
-                onCopyNodeId={handleCopyNodeId}
-                onDelete={handleDelete}
-                onStatusUpdate={handleStatusUpdate}
-              />
+              <>
+                <button
+                  type="button"
+                  onClick={() => setSelectedApplicationId(null)}
+                  className="md:hidden glass flex items-center gap-1.5 rounded-lg px-3 py-2 mb-3 text-xs font-medium text-slate-600 dark:text-gray-300"
+                >
+                  <ArrowLeft className="h-3.5 w-3.5" />
+                  Back to applications
+                </button>
+                <ApplicationDetailPanel
+                  application={selectedApplication}
+                  runtimeMetrics={runtimeMetrics}
+                  pendingAction={pendingAction}
+                  onCopyNodeId={handleCopyNodeId}
+                  onDelete={handleDelete}
+                  onStatusUpdate={handleStatusUpdate}
+                  tab={detailTab}
+                  onTab={setDetailTab}
+                />
+              </>
             ) : (
-              <div className="glass flex min-h-[420px] flex-col items-center justify-center rounded-2xl text-center">
+              <div className="hidden md:flex glass min-h-[420px] flex-col items-center justify-center rounded-2xl text-center">
                 <Package className="mb-3 h-10 w-10 text-slate-400 dark:text-slate-500" />
                 <p className="text-sm font-medium text-slate-700 dark:text-slate-300">
                   {summary.total === 0 ? "Deploy an application to begin" : "Select an application to view details"}
@@ -1326,32 +1412,54 @@ export default function ApplicationsPage() {
 
       {showCreateForm && (
         <div
-          className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 pt-[5vh] pb-12 backdrop-blur-sm"
-          onClick={() => {
-            if (!isCreating) {
-              setShowCreateForm(false)
-            }
-          }}
+          className="welcome-modal-backdrop fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 dark:bg-black/60 backdrop-blur-sm pt-[5vh] pb-12"
+          onClick={() => { if (!isCreating) { setShowCreateForm(false); setWizardStep(1) } }}
         >
           <div
-            className="relative w-full max-w-3xl rounded-2xl border border-slate-200/80 bg-white/95 p-6 shadow-2xl dark:border-white/15 dark:bg-slate-950/95"
+            className="welcome-modal-enter relative w-full max-w-2xl mx-4 sm:mx-0 glass-elevated rounded-2xl border border-slate-200/80 dark:border-white/15 p-4 sm:p-6 shadow-2xl bg-white/90 dark:bg-slate-950/95"
             onClick={(event) => event.stopPropagation()}
           >
-            <div className="mb-5 flex items-center justify-between">
+            {/* Wizard header with step indicator */}
+            <div className="mb-4 flex items-center justify-between">
               <div>
                 <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Deploy New Application</h2>
-                <p className="readout mt-1 text-slate-500 dark:text-gray-500">CONFIGURE DEPLOYMENT TARGET</p>
+                <div className="mt-2 flex items-center gap-1.5">
+                  {([
+                    { step: 1 as const, label: "BASICS" },
+                    { step: 2 as const, label: "CONFIG" },
+                    { step: 3 as const, label: "DEPLOY" },
+                  ]).map((s, i) => (
+                    <div key={s.step} className="flex items-center gap-1.5">
+                      {i > 0 && <div className={`h-px w-4 sm:w-6 ${wizardStep >= s.step ? "bg-cyan-500/50" : "bg-slate-300/30 dark:bg-white/10"}`} />}
+                      <button
+                        type="button"
+                        onClick={() => setWizardStep(s.step)}
+                        className={`flex items-center gap-1 rounded-md px-2 py-0.5 readout transition-colors ${
+                          wizardStep === s.step
+                            ? "bg-cyan-500/15 text-cyan-700 dark:text-cyan-300 border border-cyan-500/25"
+                            : wizardStep > s.step
+                              ? "text-emerald-600 dark:text-emerald-400"
+                              : "text-slate-400 dark:text-gray-600"
+                        }`}
+                      >
+                        {wizardStep > s.step && <Check className="h-3 w-3" />}
+                        {s.label}
+                      </button>
+                    </div>
+                  ))}
+                </div>
               </div>
-
               <button
                 type="button"
                 disabled={isCreating}
-                onClick={() => setShowCreateForm(false)}
-                className="rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-white/[0.08]"
+                onClick={() => { setShowCreateForm(false); setWizardStep(1) }}
+                className="rounded-lg p-1.5 text-slate-400 dark:text-gray-400 hover:bg-slate-100 dark:hover:bg-white/10 transition-colors"
               >
                 <X className="h-5 w-5" />
               </button>
             </div>
+
+            <div className="bridge-divider mb-4" />
 
             <form onSubmit={handleCreate} className="space-y-4">
               {ships.length === 0 && (
@@ -1364,348 +1472,389 @@ export default function ApplicationsPage() {
                 </div>
               )}
 
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <div>
-                  <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">APPLICATION NAME</label>
-                  <input
-                    type="text"
-                    value={formData.name}
-                    onChange={(event) => setFormData({ ...formData, name: event.target.value })}
-                    required
-                    className={inputCls}
-                    placeholder="my-app"
-                  />
-                </div>
+              {/* Step 1: Basics */}
+              {wizardStep === 1 && (
+                <div className="animate-slide-in grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <div>
+                    <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">APPLICATION NAME</label>
+                    <input
+                      type="text"
+                      value={formData.name}
+                      onChange={(event) => setFormData({ ...formData, name: event.target.value })}
+                      required
+                      className={inputCls}
+                      placeholder="my-app"
+                    />
+                  </div>
 
-                <div className="sm:col-span-2">
-                  <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">APPS GRID</label>
-                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                    {DEPLOY_APP_TYPE_ORDER.map((type) => {
-                      const config = appTypeConfig[type]
-                      const Icon = config.icon
-                      const active = formData.applicationType === type
+                  <div className="sm:col-span-2">
+                    <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">APPLICATION TYPE</label>
+                    <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                      {DEPLOY_APP_TYPE_ORDER.map((type) => {
+                        const config = appTypeConfig[type]
+                        const Icon = config.icon
+                        const active = formData.applicationType === type
 
-                      return (
-                        <button
-                          key={type}
-                          type="button"
-                          onClick={() => selectDeployApplicationType(type)}
-                          className={`rounded-xl border px-3 py-2 text-left transition-all ${
-                            active
-                              ? "border-cyan-500/45 bg-cyan-500/12 shadow-sm"
-                              : "border-slate-300/70 bg-white/70 hover:border-cyan-300/40 dark:border-white/15 dark:bg-white/[0.04]"
-                          }`}
-                        >
-                          <div className="flex items-center gap-2">
-                            <span className={`rounded-lg border p-1 ${config.bg}`}>
-                              <Icon className={`h-3.5 w-3.5 ${config.color}`} />
-                            </span>
-                            <span className="text-xs font-semibold text-slate-800 dark:text-slate-100">
-                              {config.label}
-                            </span>
-                          </div>
-                          <p className="mt-1 text-[11px] text-slate-600 dark:text-slate-300">
-                            {config.description}
-                          </p>
-                        </button>
-                      )
-                    })}
+                        return (
+                          <button
+                            key={type}
+                            type="button"
+                            onClick={() => selectDeployApplicationType(type)}
+                            className={`rounded-xl border px-3 py-2 text-left transition-all ${
+                              active
+                                ? "border-cyan-500/45 bg-cyan-500/12 shadow-sm"
+                                : "border-slate-300/70 bg-white/70 hover:border-cyan-300/40 dark:border-white/15 dark:bg-white/[0.04]"
+                            }`}
+                          >
+                            <div className="flex items-center gap-2">
+                              <span className={`rounded-lg border p-1 ${config.bg}`}>
+                                <Icon className={`h-3.5 w-3.5 ${config.color}`} />
+                              </span>
+                              <span className="text-xs font-semibold text-slate-800 dark:text-slate-100">
+                                {config.label}
+                              </span>
+                            </div>
+                            <p className="mt-1 text-[11px] text-slate-600 dark:text-slate-300">
+                              {config.description}
+                            </p>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="sm:col-span-2">
+                    <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">TARGET SHIP</label>
+                    <select
+                      value={formData.shipDeploymentId}
+                      onChange={(event) => handleShipSelect(event.target.value)}
+                      required
+                      disabled={ships.length === 0}
+                      className={`${selectCls} w-full disabled:opacity-60`}
+                    >
+                      {ships.length === 0 ? (
+                        <option value="">No ships available</option>
+                      ) : (
+                        ships.map((ship) => (
+                          <option key={ship.id} value={ship.id}>
+                            {ship.name} ({ship.status})
+                          </option>
+                        ))
+                      )}
+                    </select>
+                    {selectedShip && (
+                      <p className="mt-1 text-xs text-cyan-700 dark:text-cyan-300">
+                        Deploying to {selectedShip.nodeType} node `{selectedShip.nodeId}` via{" "}
+                        {deploymentProfileLabels[selectedShip.deploymentProfile]}.
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="sm:col-span-2">
+                    <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">DESCRIPTION</label>
+                    <textarea
+                      value={formData.description}
+                      onChange={(event) => setFormData({ ...formData, description: event.target.value })}
+                      rows={3}
+                      className={inputCls}
+                      placeholder="Application description..."
+                    />
                   </div>
                 </div>
+              )}
 
-                <div className="sm:col-span-2">
-                  <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">TARGET SHIP</label>
-                  <select
-                    value={formData.shipDeploymentId}
-                    onChange={(event) => handleShipSelect(event.target.value)}
-                    required
-                    disabled={ships.length === 0}
-                    className={`${selectCls} w-full disabled:opacity-60`}
-                  >
-                    {ships.length === 0 ? (
-                      <option value="">No ships available</option>
-                    ) : (
-                      ships.map((ship) => (
-                        <option key={ship.id} value={ship.id}>
-                          {ship.name} ({ship.status})
-                        </option>
-                      ))
+              {/* Step 2: Config */}
+              {wizardStep === 2 && (
+                <div className="animate-slide-in grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  {formData.applicationType === "docker" && (
+                    <div className="sm:col-span-2 rounded-xl border border-blue-400/30 bg-blue-500/8 p-3">
+                      <p className="readout mb-2 text-blue-700 dark:text-blue-300">DOCKER CONFIG</p>
+                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                        <div className="sm:col-span-2">
+                          <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">DOCKER IMAGE</label>
+                          <input
+                            type="text"
+                            value={formData.image}
+                            onChange={(event) => setFormData({ ...formData, image: event.target.value })}
+                            className={inputCls}
+                            placeholder="nginx:latest or myregistry/myapp:v1.0"
+                          />
+                        </div>
+                        <div>
+                          <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">PORT</label>
+                          <input
+                            type="number"
+                            value={formData.port}
+                            onChange={(event) =>
+                              setFormData({ ...formData, port: parseInt(event.target.value, 10) || 3000 })
+                            }
+                            className={inputCls}
+                            placeholder="3000"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {(formData.applicationType === "nodejs" ||
+                    formData.applicationType === "python" ||
+                    formData.applicationType === "static") && (
+                    <div className="sm:col-span-2 rounded-xl border border-emerald-400/30 bg-emerald-500/8 p-3">
+                      <p className="readout mb-2 text-emerald-700 dark:text-emerald-300">REPOSITORY CONFIG</p>
+                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                        <div className="sm:col-span-2">
+                          <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">REPOSITORY URL</label>
+                          <input
+                            type="url"
+                            value={formData.repository}
+                            onChange={(event) => setFormData({ ...formData, repository: event.target.value })}
+                            className={inputCls}
+                            placeholder="https://github.com/user/repo"
+                          />
+                        </div>
+                        <div>
+                          <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">BRANCH</label>
+                          <input
+                            type="text"
+                            value={formData.branch}
+                            onChange={(event) => setFormData({ ...formData, branch: event.target.value })}
+                            className={inputCls}
+                            placeholder="main"
+                          />
+                        </div>
+                        <div>
+                          <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">PORT</label>
+                          <input
+                            type="number"
+                            value={formData.port}
+                            onChange={(event) =>
+                              setFormData({ ...formData, port: parseInt(event.target.value, 10) || 3000 })
+                            }
+                            className={inputCls}
+                            placeholder="3000"
+                          />
+                        </div>
+                        <div className="sm:col-span-2">
+                          <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">BUILD COMMAND (OPTIONAL)</label>
+                          <input
+                            type="text"
+                            value={formData.buildCommand}
+                            onChange={(event) => setFormData({ ...formData, buildCommand: event.target.value })}
+                            className={inputCls}
+                            placeholder="npm install && npm run build"
+                          />
+                        </div>
+                        <div className="sm:col-span-2">
+                          <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">START COMMAND</label>
+                          <input
+                            type="text"
+                            value={formData.startCommand}
+                            onChange={(event) => setFormData({ ...formData, startCommand: event.target.value })}
+                            className={inputCls}
+                            placeholder="npm start or python app.py"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {formData.applicationType === "n8n" && (
+                    <div className="sm:col-span-2 rounded-xl border border-cyan-400/30 bg-cyan-500/8 p-3">
+                      <p className="readout mb-2 text-cyan-700 dark:text-cyan-300">N8N CONFIG</p>
+                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                        <div className="sm:col-span-2">
+                          <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">N8N IMAGE</label>
+                          <input
+                            type="text"
+                            value={formData.image}
+                            onChange={(event) => setFormData({ ...formData, image: event.target.value })}
+                            className={inputCls}
+                            placeholder="docker.n8n.io/n8nio/n8n:latest"
+                          />
+                        </div>
+                        <div>
+                          <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">N8N PORT</label>
+                          <input
+                            type="number"
+                            value={formData.port}
+                            onChange={(event) =>
+                              setFormData({ ...formData, port: parseInt(event.target.value, 10) || 5678 })
+                            }
+                            className={inputCls}
+                            placeholder="5678"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {formData.applicationType === "custom" && (
+                    <div className="sm:col-span-2 rounded-xl border border-slate-400/30 bg-slate-500/8 p-3">
+                      <p className="readout mb-2 text-slate-700 dark:text-slate-300">CUSTOM CONFIG</p>
+                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                        <div className="sm:col-span-2">
+                          <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">IMAGE (OPTIONAL)</label>
+                          <input
+                            type="text"
+                            value={formData.image}
+                            onChange={(event) => setFormData({ ...formData, image: event.target.value })}
+                            className={inputCls}
+                            placeholder="myregistry/my-custom-app:latest"
+                          />
+                        </div>
+                        <div className="sm:col-span-2">
+                          <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">REPOSITORY URL (OPTIONAL)</label>
+                          <input
+                            type="url"
+                            value={formData.repository}
+                            onChange={(event) => setFormData({ ...formData, repository: event.target.value })}
+                            className={inputCls}
+                            placeholder="https://github.com/user/repo"
+                          />
+                        </div>
+                        <div>
+                          <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">PORT (OPTIONAL)</label>
+                          <input
+                            type="number"
+                            value={formData.port}
+                            onChange={(event) =>
+                              setFormData({ ...formData, port: parseInt(event.target.value, 10) || 3000 })
+                            }
+                            className={inputCls}
+                            placeholder="3000"
+                          />
+                        </div>
+                        <div>
+                          <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">START COMMAND (OPTIONAL)</label>
+                          <input
+                            type="text"
+                            value={formData.startCommand}
+                            onChange={(event) => setFormData({ ...formData, startCommand: event.target.value })}
+                            className={inputCls}
+                            placeholder="./run.sh"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  <div>
+                    <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">VERSION (OPTIONAL)</label>
+                    <input
+                      type="text"
+                      value={formData.version}
+                      onChange={(event) => setFormData({ ...formData, version: event.target.value })}
+                      className={inputCls}
+                      placeholder="v1.0.0"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* Step 3: Deploy */}
+              {wizardStep === 3 && (
+                <div className="animate-slide-in space-y-4">
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    <div>
+                      <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">NODE ID</label>
+                      <input
+                        type="text"
+                        value={formData.nodeId}
+                        readOnly
+                        disabled
+                        className={`${inputCls} disabled:opacity-70`}
+                      />
+                    </div>
+
+                    <div>
+                      <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">DERIVED NODE TYPE</label>
+                      <div className="rounded-lg border border-slate-300/70 bg-white/60 px-3 py-2 text-sm text-slate-700 dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-200">
+                        {deploymentProfileLabels[formData.deploymentProfile]} &rarr; {nodeTypeConfig[derivedNodeType].label}
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">PROVISIONING MODE</label>
+                      <div className="rounded-lg border border-slate-300/70 bg-white/60 px-3 py-2 text-sm text-slate-700 dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-200">
+                        {provisioningModeLabels[formData.provisioningMode]}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-slate-300/70 bg-white/70 p-3 dark:border-white/15 dark:bg-white/[0.03]">
+                    <button
+                      type="button"
+                      onClick={() => setShowAdvancedDeployConfig((open) => !open)}
+                      className="inline-flex items-center gap-1.5 text-sm font-medium text-slate-700 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white"
+                    >
+                      {showAdvancedDeployConfig ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                      Advanced deployment config (read-only defaults)
+                    </button>
+
+                    {showAdvancedDeployConfig && (
+                      <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                        <div className="rounded border border-slate-300/70 bg-white/70 px-3 py-2 text-xs text-slate-600 dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-300">
+                          Kind: {infrastructureKindLabels[formData.infrastructure.kind]}
+                        </div>
+                        <div className="rounded border border-slate-300/70 bg-white/70 px-3 py-2 text-xs text-slate-600 dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-300">
+                          Kube Context: {formData.infrastructure.kubeContext}
+                        </div>
+                        <div className="rounded border border-slate-300/70 bg-white/70 px-3 py-2 text-xs text-slate-600 dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-300">
+                          Namespace: {formData.infrastructure.namespace}
+                        </div>
+                        <div className="rounded border border-slate-300/70 bg-white/70 px-3 py-2 text-xs text-slate-600 dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-300">
+                          Terraform Workspace: {formData.infrastructure.terraformWorkspace}
+                        </div>
+                      </div>
                     )}
-                  </select>
-                  {selectedShip && (
-                    <p className="mt-1 text-xs text-cyan-700 dark:text-cyan-300">
-                      Deploying to {selectedShip.nodeType} node `{selectedShip.nodeId}` via{" "}
-                      {deploymentProfileLabels[selectedShip.deploymentProfile]}.
-                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* Wizard footer */}
+              <div className="bridge-divider" />
+              <div className="flex justify-between gap-3 pt-1">
+                <div>
+                  {wizardStep > 1 && (
+                    <button
+                      type="button"
+                      onClick={() => setWizardStep((wizardStep - 1) as 1 | 2 | 3)}
+                      className="glass rounded-lg px-4 py-2 text-sm text-slate-600 dark:text-gray-300 hover:brightness-105 transition-all"
+                    >
+                      Back
+                    </button>
                   )}
                 </div>
-
-                <div>
-                  <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">NODE ID</label>
-                  <input
-                    type="text"
-                    value={formData.nodeId}
-                    readOnly
-                    disabled
-                    className={`${inputCls} disabled:opacity-70`}
-                  />
+                <div className="flex gap-3">
+                  <button
+                    type="button"
+                    disabled={isCreating}
+                    onClick={() => { setShowCreateForm(false); setWizardStep(1) }}
+                    className="glass rounded-lg px-4 py-2 text-sm text-slate-600 dark:text-gray-300 hover:brightness-105 transition-all"
+                  >
+                    Cancel
+                  </button>
+                  {wizardStep < 3 ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (wizardStep === 1 && !formData.name.trim()) return
+                        setWizardStep((wizardStep + 1) as 1 | 2 | 3)
+                      }}
+                      className="rounded-lg bg-gradient-to-r from-blue-600 to-cyan-600 px-5 py-2 text-sm font-medium text-white transition-all hover:brightness-110"
+                    >
+                      Next
+                    </button>
+                  ) : (
+                    <button
+                      type="submit"
+                      disabled={isCreating || ships.length === 0 || !formData.shipDeploymentId}
+                      className="rounded-lg bg-gradient-to-r from-blue-600 to-cyan-600 px-5 py-2 text-sm font-medium text-white transition-all hover:brightness-110 disabled:opacity-50 active:scale-[0.98]"
+                    >
+                      {isCreating ? "Deploying..." : "Deploy"}
+                    </button>
+                  )}
                 </div>
-
-                <div>
-                  <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">DERIVED NODE TYPE</label>
-                  <div className="rounded-lg border border-slate-300/70 bg-white/60 px-3 py-2 text-sm text-slate-700 dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-200">
-                    {deploymentProfileLabels[formData.deploymentProfile]} &rarr; {nodeTypeConfig[derivedNodeType].label}
-                  </div>
-                </div>
-
-                {formData.applicationType === "docker" && (
-                  <div className="sm:col-span-2 rounded-xl border border-blue-400/30 bg-blue-500/8 p-3">
-                    <p className="readout mb-2 text-blue-700 dark:text-blue-300">DOCKER CONFIG CARD</p>
-                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                      <div className="sm:col-span-2">
-                        <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">DOCKER IMAGE</label>
-                        <input
-                          type="text"
-                          value={formData.image}
-                          onChange={(event) => setFormData({ ...formData, image: event.target.value })}
-                          className={inputCls}
-                          placeholder="nginx:latest or myregistry/myapp:v1.0"
-                        />
-                      </div>
-                      <div>
-                        <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">PORT</label>
-                        <input
-                          type="number"
-                          value={formData.port}
-                          onChange={(event) =>
-                            setFormData({ ...formData, port: parseInt(event.target.value, 10) || 3000 })
-                          }
-                          className={inputCls}
-                          placeholder="3000"
-                        />
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {(formData.applicationType === "nodejs" ||
-                  formData.applicationType === "python" ||
-                  formData.applicationType === "static") && (
-                  <div className="sm:col-span-2 rounded-xl border border-emerald-400/30 bg-emerald-500/8 p-3">
-                    <p className="readout mb-2 text-emerald-700 dark:text-emerald-300">
-                      REPOSITORY CONFIG CARD
-                    </p>
-                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                      <div className="sm:col-span-2">
-                        <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">REPOSITORY URL</label>
-                        <input
-                          type="url"
-                          value={formData.repository}
-                          onChange={(event) => setFormData({ ...formData, repository: event.target.value })}
-                          className={inputCls}
-                          placeholder="https://github.com/user/repo"
-                        />
-                      </div>
-                      <div>
-                        <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">BRANCH</label>
-                        <input
-                          type="text"
-                          value={formData.branch}
-                          onChange={(event) => setFormData({ ...formData, branch: event.target.value })}
-                          className={inputCls}
-                          placeholder="main"
-                        />
-                      </div>
-                      <div>
-                        <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">PORT</label>
-                        <input
-                          type="number"
-                          value={formData.port}
-                          onChange={(event) =>
-                            setFormData({ ...formData, port: parseInt(event.target.value, 10) || 3000 })
-                          }
-                          className={inputCls}
-                          placeholder="3000"
-                        />
-                      </div>
-                      <div className="sm:col-span-2">
-                        <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">BUILD COMMAND (OPTIONAL)</label>
-                        <input
-                          type="text"
-                          value={formData.buildCommand}
-                          onChange={(event) => setFormData({ ...formData, buildCommand: event.target.value })}
-                          className={inputCls}
-                          placeholder="npm install && npm run build"
-                        />
-                      </div>
-                      <div className="sm:col-span-2">
-                        <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">START COMMAND</label>
-                        <input
-                          type="text"
-                          value={formData.startCommand}
-                          onChange={(event) => setFormData({ ...formData, startCommand: event.target.value })}
-                          className={inputCls}
-                          placeholder="npm start or python app.py"
-                        />
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {formData.applicationType === "n8n" && (
-                  <div className="sm:col-span-2 rounded-xl border border-cyan-400/30 bg-cyan-500/8 p-3">
-                    <p className="readout mb-2 text-cyan-700 dark:text-cyan-300">N8N CONFIG CARD</p>
-                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                      <div className="sm:col-span-2">
-                        <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">N8N IMAGE</label>
-                        <input
-                          type="text"
-                          value={formData.image}
-                          onChange={(event) => setFormData({ ...formData, image: event.target.value })}
-                          className={inputCls}
-                          placeholder="docker.n8n.io/n8nio/n8n:latest"
-                        />
-                      </div>
-                      <div>
-                        <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">N8N PORT</label>
-                        <input
-                          type="number"
-                          value={formData.port}
-                          onChange={(event) =>
-                            setFormData({ ...formData, port: parseInt(event.target.value, 10) || 5678 })
-                          }
-                          className={inputCls}
-                          placeholder="5678"
-                        />
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {formData.applicationType === "custom" && (
-                  <div className="sm:col-span-2 rounded-xl border border-slate-400/30 bg-slate-500/8 p-3">
-                    <p className="readout mb-2 text-slate-700 dark:text-slate-300">CUSTOM CONFIG CARD</p>
-                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                      <div className="sm:col-span-2">
-                        <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">IMAGE (OPTIONAL)</label>
-                        <input
-                          type="text"
-                          value={formData.image}
-                          onChange={(event) => setFormData({ ...formData, image: event.target.value })}
-                          className={inputCls}
-                          placeholder="myregistry/my-custom-app:latest"
-                        />
-                      </div>
-                      <div className="sm:col-span-2">
-                        <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">REPOSITORY URL (OPTIONAL)</label>
-                        <input
-                          type="url"
-                          value={formData.repository}
-                          onChange={(event) => setFormData({ ...formData, repository: event.target.value })}
-                          className={inputCls}
-                          placeholder="https://github.com/user/repo"
-                        />
-                      </div>
-                      <div>
-                        <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">PORT (OPTIONAL)</label>
-                        <input
-                          type="number"
-                          value={formData.port}
-                          onChange={(event) =>
-                            setFormData({ ...formData, port: parseInt(event.target.value, 10) || 3000 })
-                          }
-                          className={inputCls}
-                          placeholder="3000"
-                        />
-                      </div>
-                      <div>
-                        <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">START COMMAND (OPTIONAL)</label>
-                        <input
-                          type="text"
-                          value={formData.startCommand}
-                          onChange={(event) => setFormData({ ...formData, startCommand: event.target.value })}
-                          className={inputCls}
-                          placeholder="./run.sh"
-                        />
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                <div>
-                  <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">VERSION (OPTIONAL)</label>
-                  <input
-                    type="text"
-                    value={formData.version}
-                    onChange={(event) => setFormData({ ...formData, version: event.target.value })}
-                    className={inputCls}
-                    placeholder="v1.0.0"
-                  />
-                </div>
-
-                <div>
-                  <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">PROVISIONING MODE</label>
-                  <div className="rounded-lg border border-slate-300/70 bg-white/60 px-3 py-2 text-sm text-slate-700 dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-200">
-                    {provisioningModeLabels[formData.provisioningMode]}
-                  </div>
-                </div>
-
-                <div className="sm:col-span-2">
-                  <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">DESCRIPTION</label>
-                  <textarea
-                    value={formData.description}
-                    onChange={(event) => setFormData({ ...formData, description: event.target.value })}
-                    rows={3}
-                    className={inputCls}
-                    placeholder="Application description..."
-                  />
-                </div>
-              </div>
-
-              <div className="rounded-lg border border-slate-300/70 bg-white/70 p-3 dark:border-white/15 dark:bg-white/[0.03]">
-                <button
-                  type="button"
-                  onClick={() => setShowAdvancedDeployConfig((open) => !open)}
-                  className="inline-flex items-center gap-1.5 text-sm font-medium text-slate-700 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white"
-                >
-                  {showAdvancedDeployConfig ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-                  Advanced deployment config (read-only defaults)
-                </button>
-
-                {showAdvancedDeployConfig && (
-                  <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
-                    <div className="rounded border border-slate-300/70 bg-white/70 px-3 py-2 text-xs text-slate-600 dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-300">
-                      Kind: {infrastructureKindLabels[formData.infrastructure.kind]}
-                    </div>
-                    <div className="rounded border border-slate-300/70 bg-white/70 px-3 py-2 text-xs text-slate-600 dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-300">
-                      Kube Context: {formData.infrastructure.kubeContext}
-                    </div>
-                    <div className="rounded border border-slate-300/70 bg-white/70 px-3 py-2 text-xs text-slate-600 dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-300">
-                      Namespace: {formData.infrastructure.namespace}
-                    </div>
-                    <div className="rounded border border-slate-300/70 bg-white/70 px-3 py-2 text-xs text-slate-600 dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-300">
-                      Terraform Workspace: {formData.infrastructure.terraformWorkspace}
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              <div className="flex justify-end gap-3">
-                <button
-                  type="button"
-                  disabled={isCreating}
-                  onClick={() => setShowCreateForm(false)}
-                  className="rounded-lg border border-slate-300/70 px-4 py-2 text-sm text-slate-700 transition-colors hover:bg-slate-100 dark:border-white/15 dark:text-slate-300 dark:hover:bg-white/[0.1]"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={isCreating || ships.length === 0 || !formData.shipDeploymentId}
-                  className="rounded-lg bg-gradient-to-r from-blue-600 to-cyan-600 px-5 py-2 text-sm font-medium text-white transition-all hover:brightness-110 disabled:opacity-60"
-                >
-                  {isCreating ? "Deploying..." : "Deploy"}
-                </button>
               </div>
             </form>
           </div>

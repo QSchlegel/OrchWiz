@@ -179,3 +179,13 @@ output "extra_ingress_urls" {
     )
   }
 }
+
+output "spacebot_enabled" {
+  value       = var.enable_spacebot
+  description = "Whether Spacebot runtime connector service is enabled"
+}
+
+output "spacebot_service_name" {
+  value       = var.enable_spacebot ? kubernetes_service_v1.spacebot[0].metadata[0].name : null
+  description = "Kubernetes service name for Spacebot"
+}

@@ -28,6 +28,10 @@ import {
 import { RuntimeProviderError } from "@/lib/runtime/errors"
 import { buildExocompCapabilityInstructionBlock } from "@/lib/subagents/capabilities"
 import { getShipToolRuntimeContext } from "@/lib/tools/requests"
+import {
+  buildToolchainDescriptorInstructionBlock,
+  resolveToolchainDescriptors,
+} from "@/lib/toolchains/registry"
 import { resolveHarnessPodContext } from "@/lib/runtime/harness"
 import {
   recordRuntimePerformanceSample,
@@ -41,6 +45,7 @@ import {
   type MotionRuntimePromptPrecheckResult,
 } from "@/lib/supervision/motion"
 import { isSecurityLockdownEnabled } from "@/lib/security/lockdown"
+import type { RuntimeProviderFailureDetail } from "@/lib/runtime/providers/types"
 
 function asRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object") {
@@ -459,6 +464,80 @@ async function emitRuntimeTraceSafe(input: TraceEmitInput): Promise<void> {
   }
 }
 
+export interface QuartermasterFallbackDiagnostics {
+  active: true
+  provider: string
+  reason: string
+  providerErrors: RuntimeProviderFailureDetail[]
+}
+
+function parseRuntimeFailureDetails(value: unknown): RuntimeProviderFailureDetail[] {
+  if (!Array.isArray(value)) {
+    return []
+  }
+
+  return value
+    .map((entry) => {
+      if (!entry || typeof entry !== "object") {
+        return null
+      }
+      const record = entry as Record<string, unknown>
+      const provider = nonEmptyString(record.provider)
+      const code = nonEmptyString(record.code)
+      const message = nonEmptyString(record.message)
+      if (!provider || !code || !message) {
+        return null
+      }
+      return { provider, code, message }
+    })
+    .filter((entry): entry is RuntimeProviderFailureDetail => Boolean(entry))
+}
+
+function quartermasterFallbackDiagnostics(metadata: Record<string, unknown> | undefined): QuartermasterFallbackDiagnostics {
+  const metadataRecord = asRecord(metadata)
+  const fallback = asRecord(metadataRecord.fallback)
+  const reason = nonEmptyString(fallback.reason)
+    || nonEmptyString(metadataRecord.reason)
+    || "Provider chain did not return a result."
+  const providerErrors = parseRuntimeFailureDetails(
+    fallback.providerErrors || metadataRecord.providerErrors,
+  )
+
+  return {
+    active: true,
+    provider: "local-fallback",
+    reason,
+    providerErrors,
+  }
+}
+
+export function quartermasterRuntimeFallbackMessage(): string {
+  return "Quartermaster could not complete this request because runtime providers were unavailable.\n\nRetry and review diagnostics if the issue persists."
+}
+
+export function finalizeQuartermasterRuntimeOutput(args: {
+  runtimeResult: RuntimeResult
+  metadataForRuntime: Record<string, unknown>
+}): {
+  output: string
+  fallback: QuartermasterFallbackDiagnostics | null
+} {
+  if (args.runtimeResult.provider === "local-fallback" && args.runtimeResult.fallbackUsed) {
+    return {
+      output: quartermasterRuntimeFallbackMessage(),
+      fallback: quartermasterFallbackDiagnostics(args.runtimeResult.metadata),
+    }
+  }
+
+  return {
+    output: enforceQuartermasterCitationFooter(
+      args.runtimeResult.output,
+      quartermasterCitationSources(args.metadataForRuntime),
+    ),
+    fallback: null,
+  }
+}
+
 async function resolveBridgeShipDeploymentId(args: {
   userId: string
   bridgeMetadata: Record<string, unknown>
@@ -578,10 +657,40 @@ export async function executeSessionPrompt(args: ExecuteSessionPromptArgs): Prom
     }
   }
 
+  const resolvedToolchains = await resolveToolchainDescriptors({
+    ownerUserId: args.userId,
+    metadata: metadataForRuntime,
+  })
+  if (resolvedToolchains.length > 0) {
+    const runtimeMetadataWithToolchains = asRecord(metadataForRuntime.runtime)
+    metadataForRuntime = {
+      ...metadataForRuntime,
+      runtime: {
+        ...runtimeMetadataWithToolchains,
+        toolchains: resolvedToolchains.map((descriptor) => ({
+          catalogEntryId: descriptor.catalogEntryId,
+          slug: descriptor.slug,
+          name: descriptor.name,
+          protocol: descriptor.protocol,
+          endpoint: descriptor.endpoint,
+          authRef: descriptor.authRef,
+          capabilities: descriptor.capabilities,
+        })),
+      },
+    }
+  }
+
+  const runtimePromptWithToolchains = (() => {
+    const block = buildToolchainDescriptorInstructionBlock(resolvedToolchains)
+    if (!block) {
+      return promptResolution.runtimePrompt
+    }
+    return `${promptResolution.runtimePrompt}\n\n${block}`
+  })()
   const runtimePromptWithCapabilities = await appendExocompCapabilityInstructions({
     userId: args.userId,
     metadata: metadataForRuntime,
-    runtimePrompt: promptResolution.runtimePrompt,
+    runtimePrompt: runtimePromptWithToolchains,
   })
   const runtimePrompt = await appendShipToolInstructions({
     userId: args.userId,
@@ -953,9 +1062,16 @@ export async function executeSessionPrompt(args: ExecuteSessionPromptArgs): Prom
     throw error
   }
 
-  const finalOutput = isQuartermasterChannel
-    ? enforceQuartermasterCitationFooter(runtimeResult.output, quartermasterCitationSources(metadataForRuntime))
-    : runtimeResult.output
+  const bridgeMetadata = asRecord(metadataForRuntime.bridge)
+  const quartermasterMetadata = asRecord(metadataForRuntime.quartermaster)
+  const isQuartermasterChannel = quartermasterMetadata.channel === "ship-quartermaster"
+  const quartermasterOutput = isQuartermasterChannel
+    ? finalizeQuartermasterRuntimeOutput({
+        runtimeResult,
+        metadataForRuntime,
+      })
+    : null
+  const finalOutput = quartermasterOutput ? quartermasterOutput.output : runtimeResult.output
 
   const shouldRequireSignature = isBridgeAgentChannel && requireBridgeSignatures()
   let signatureMetadata: BridgeMessageSignatureMetadata | undefined
@@ -1053,6 +1169,7 @@ export async function executeSessionPrompt(args: ExecuteSessionPromptArgs): Prom
     provider: runtimeResult.provider,
     fallbackUsed: runtimeResult.fallbackUsed,
     ...(runtimeResult.metadata || {}),
+    ...(quartermasterOutput?.fallback ? { fallback: quartermasterOutput.fallback } : {}),
     ...(harnessWarnings.length > 0 ? { warnings: harnessWarnings } : {}),
     ...(promptResolution.bridgeResponseMetadata || {}),
     ...(signatureMetadata ? { signature: signatureMetadata } : {}),

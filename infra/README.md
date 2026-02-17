@@ -5,6 +5,8 @@ This folder contains Terraform + Ansible scaffolding for two deployment profiles
 - `Local Starship Build`: local Kubernetes stack with in-cluster PostgreSQL (`kind` default, `minikube` optional).
 - `Cloud Shipyard`: Provider-agnostic deployment to an existing Kubernetes cluster.
 
+Both profiles now support an optional internal Spacebot runtime service for `spacebot-webhook` adapter rollout.
+
 ## Layout
 
 - `terraform/modules/starship-minikube`: local module (app + PostgreSQL + service).
@@ -13,6 +15,15 @@ This folder contains Terraform + Ansible scaffolding for two deployment profiles
 - `terraform/environments/shipyard-cloud`: wiring for existing cloud cluster context.
 - `ansible/playbooks/starship_local.yml`: local deploy workflow.
 - `ansible/playbooks/shipyard_cloud.yml`: cloud deploy workflow.
+
+Spacebot controls are available in both module stacks via:
+
+- `enable_spacebot`
+- `spacebot_image`
+- `spacebot_app_port` (default `19898`)
+- `spacebot_webhook_port` (default `18789`)
+- `spacebot_storage_size`
+- `spacebot_env`
 
 ## Vendor Dependencies
 
@@ -67,6 +78,17 @@ Debug loop helper:
    - `terraform -chdir=infra/terraform/environments/shipyard-cloud apply`
 4. Or run the Ansible wrapper:
    - `ansible-playbook -i infra/ansible/inventory/cloud.ini.example infra/ansible/playbooks/shipyard_cloud.yml`
+
+## Spacebot Runtime Service (Internal-Only Defaults)
+
+- Spacebot deployment is optional and disabled by default (`enable_spacebot = false`).
+- When enabled, Terraform provisions:
+  - `Secret` for env wiring
+  - `PersistentVolumeClaim`
+  - `Deployment`
+  - `ClusterIP` service (no ingress by default)
+- App env is wired with `SPACEBOT_WEBHOOK_BASE_URL` to internal service DNS.
+- Public exposure requires explicit ingress opt-in outside default templates.
 
 ## KubeView
 

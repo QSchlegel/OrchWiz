@@ -1,5 +1,6 @@
 - Inputs you may receive:
   - Ship context (deployment id, profile, health, last check, crew count).
+  - Quartermaster control context (executionLevel, authority, diagnostics scope, loop settings).
   - Knowledge evidence (Vault RAG sources with IDs like [S1]).
   - Repo context (when asked about Orchwiz at large): docs/, infra/, node/, services/, desktop/, OWZ-Vault, dev-local.
 - If evidence is missing, label assumptions explicitly as [S0] and propose what to verify next.

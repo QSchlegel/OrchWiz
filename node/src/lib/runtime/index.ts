@@ -1,22 +1,13 @@
 import type { RuntimeProvider, RuntimeRequest, RuntimeResult } from "@/lib/types/runtime"
 import { RuntimeProviderError, createRecoverableRuntimeError } from "@/lib/runtime/errors"
 import { resolveRuntimeProfileConfig } from "@/lib/runtime/profiles"
+import { resolveRuntimeExecutionPlan } from "@/lib/runtime/registry"
 import {
   applyRuntimeIntelligencePolicy,
   finalizeRuntimeIntelligencePolicy,
 } from "@/lib/runtime/intelligence"
-import { codexCliRuntimeProvider } from "@/lib/runtime/providers/codex-cli"
 import { localFallbackRuntimeProvider } from "@/lib/runtime/providers/local-fallback"
-import { openAiFallbackRuntimeProvider } from "@/lib/runtime/providers/openai-fallback"
-import { openClawRuntimeProvider } from "@/lib/runtime/providers/openclaw"
-import type { RuntimeProviderContext, RuntimeProviderDefinition } from "@/lib/runtime/providers/types"
-
-const PROVIDERS_BY_ID: Record<RuntimeProvider, RuntimeProviderDefinition> = {
-  openclaw: openClawRuntimeProvider,
-  "openai-fallback": openAiFallbackRuntimeProvider,
-  "local-fallback": localFallbackRuntimeProvider,
-  "codex-cli": codexCliRuntimeProvider,
-}
+import type { RuntimeProviderContext, RuntimeProviderFailureDetail } from "@/lib/runtime/providers/types"
 
 function providerLabel(error: RuntimeProviderError): string {
   return `${error.provider}:${error.code}`
@@ -36,16 +27,23 @@ function normalizeProviderError(providerId: RuntimeProvider, error: unknown): Ru
 
 export async function runSessionRuntime(request: RuntimeRequest): Promise<RuntimeResult> {
   const profileConfig = resolveRuntimeProfileConfig(request)
+  const executionPlan = await resolveRuntimeExecutionPlan({
+    request,
+    profile: profileConfig.profile,
+    legacyProviderOrder: profileConfig.providerOrder,
+  })
   const policy = await applyRuntimeIntelligencePolicy({
     request,
-    providerOrder: profileConfig.providerOrder,
+    providerOrder: executionPlan.providerOrder,
     profile: profileConfig.profile,
+    catalogByAdapterId: executionPlan.catalogByAdapterId,
   })
   const runtimeStartedAt = Date.now()
   const providerErrors: string[] = []
+  const providerErrorDetails: RuntimeProviderFailureDetail[] = []
 
   for (const providerId of policy.providerOrder) {
-    const provider = PROVIDERS_BY_ID[providerId]
+    const provider = executionPlan.providersById[providerId]
     if (!provider) {
       console.warn("Skipping unknown runtime provider", { providerId, profile: profileConfig.profile })
       continue
@@ -54,6 +52,7 @@ export async function runSessionRuntime(request: RuntimeRequest): Promise<Runtim
     const context: RuntimeProviderContext = {
       profile: profileConfig.profile,
       previousErrors: [...providerErrors],
+      previousErrorDetails: [...providerErrorDetails],
     }
 
     try {
@@ -99,6 +98,11 @@ export async function runSessionRuntime(request: RuntimeRequest): Promise<Runtim
       }
 
       providerErrors.push(`${providerLabel(normalizedError)}:${normalizedError.message}`)
+      providerErrorDetails.push({
+        provider: normalizedError.provider,
+        code: normalizedError.code,
+        message: normalizedError.message,
+      })
       continue
     }
   }
@@ -106,6 +110,7 @@ export async function runSessionRuntime(request: RuntimeRequest): Promise<Runtim
   const fallbackResult = await localFallbackRuntimeProvider.run(policy.request, {
     profile: profileConfig.profile,
     previousErrors: providerErrors,
+    previousErrorDetails: providerErrorDetails,
   })
   const finalized = await finalizeRuntimeIntelligencePolicy({
     request: policy.request,

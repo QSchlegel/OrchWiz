@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ElementType } f
 import {
   AppWindow,
   AlertTriangle,
+  Bot,
   ChevronDown,
   ChevronUp,
   CheckCircle2,
@@ -14,13 +15,16 @@ import {
   Filter,
   KeyRound,
   Loader2,
+  Play,
   RefreshCw,
   Rocket,
+  RotateCcw,
   Search,
   Server,
   Settings2,
   Ship,
   Shield,
+  Square,
   Trash2,
   Users,
 } from "lucide-react"
@@ -241,6 +245,25 @@ interface RuntimeSnapshot {
     available: boolean
     clusters: RuntimeSnapshotKindCluster[]
     error?: string
+  }
+}
+
+type SpacebotStack = "dev-local" | "cloudflare-local"
+type SpacebotAction = "start" | "stop" | "restart"
+
+interface SpacebotConnectorSnapshot {
+  stack: SpacebotStack
+  baseUrl: string
+  connectorEnabled: boolean
+  localCommandExecutionEnabled: boolean
+  composeFile: string
+  composeFileExists: boolean
+  dockerAvailable: boolean
+  running: boolean
+  health: {
+    ok: boolean
+    status: number | null
+    error: string | null
   }
 }
 
@@ -627,6 +650,76 @@ function extractApiErrorMessage(payload: unknown): string | null {
   }
   const errorValue = (payload as { error?: unknown }).error
   return typeof errorValue === "string" && errorValue.trim().length > 0 ? errorValue : null
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {}
+  }
+  return value as Record<string, unknown>
+}
+
+function asString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value : null
+}
+
+function asBoolean(value: unknown): boolean | null {
+  if (typeof value === "boolean") {
+    return value
+  }
+  return null
+}
+
+function parseSpacebotStack(value: unknown): SpacebotStack | null {
+  if (value === "dev-local" || value === "cloudflare-local") {
+    return value
+  }
+  return null
+}
+
+function parseSpacebotConnectorSnapshot(value: unknown): SpacebotConnectorSnapshot | null {
+  const record = asRecord(value)
+  const stack = parseSpacebotStack(record.stack)
+  const baseUrl = asString(record.baseUrl)
+  const connectorEnabled = asBoolean(record.connectorEnabled)
+  const localCommandExecutionEnabled = asBoolean(record.localCommandExecutionEnabled)
+  const composeFile = asString(record.composeFile)
+  const composeFileExists = asBoolean(record.composeFileExists)
+  const dockerAvailable = asBoolean(record.dockerAvailable)
+  const running = asBoolean(record.running)
+  const health = asRecord(record.health)
+  const healthOk = asBoolean(health.ok)
+  const healthStatus = typeof health.status === "number" && Number.isFinite(health.status) ? health.status : null
+
+  if (
+    !stack
+    || !baseUrl
+    || connectorEnabled === null
+    || localCommandExecutionEnabled === null
+    || !composeFile
+    || composeFileExists === null
+    || dockerAvailable === null
+    || running === null
+    || healthOk === null
+  ) {
+    return null
+  }
+
+  return {
+    stack,
+    baseUrl,
+    connectorEnabled,
+    localCommandExecutionEnabled,
+    composeFile,
+    composeFileExists,
+    dockerAvailable,
+    running,
+    health: {
+      ok: healthOk,
+      status: healthStatus,
+      error: asString(health.error),
+    },
+  }
 }
 
 function hasNonEmptySecretValue(value: unknown): value is string {
@@ -1065,6 +1158,11 @@ export default function ShipYardPage() {
   const [isLoadingShips, setIsLoadingShips] = useState(true)
   const [runtimeSnapshot, setRuntimeSnapshot] = useState<RuntimeSnapshot | null>(null)
   const [isLoadingRuntime, setIsLoadingRuntime] = useState(false)
+  const [spacebotStack, setSpacebotStack] = useState<SpacebotStack>("cloudflare-local")
+  const [spacebotConnector, setSpacebotConnector] = useState<SpacebotConnectorSnapshot | null>(null)
+  const [isSpacebotLoading, setIsSpacebotLoading] = useState(false)
+  const [isSpacebotUpdating, setIsSpacebotUpdating] = useState(false)
+  const [spacebotNotice, setSpacebotNotice] = useState<LaunchMessage | null>(null)
   const [bridgeCrew, setBridgeCrew] = useState<BridgeCrewRecord[]>([])
   const [isLoadingCrew, setIsLoadingCrew] = useState(false)
   const [isLoadingConnectionSummary, setIsLoadingConnectionSummary] = useState(false)
@@ -1509,6 +1607,88 @@ export default function ShipYardPage() {
       setIsLoadingRuntime(false)
     }
   }, [])
+
+  const fetchSpacebotConnector = useCallback(async (options?: { silent?: boolean }) => {
+    const silent = options?.silent === true
+    if (!silent) {
+      setIsSpacebotLoading(true)
+      setSpacebotNotice(null)
+    }
+
+    try {
+      const response = await fetch(
+        `/api/runtime/spacebot/connector?stack=${encodeURIComponent(spacebotStack)}`,
+        { cache: "no-store" },
+      )
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        throw new Error(extractApiErrorMessage(payload) || `Unable to load Spacebot status (HTTP ${response.status})`)
+      }
+
+      const snapshot = parseSpacebotConnectorSnapshot(payload)
+      if (!snapshot) {
+        throw new Error("Received invalid Spacebot status payload.")
+      }
+
+      setSpacebotConnector(snapshot)
+      return snapshot
+    } catch (error) {
+      console.error("Failed to load Spacebot connector status:", error)
+      setSpacebotConnector(null)
+      if (!silent) {
+        setSpacebotNotice({
+          type: "error",
+          text: error instanceof Error ? error.message : "Unable to load Spacebot connector status.",
+        })
+      }
+      return null
+    } finally {
+      if (!silent) {
+        setIsSpacebotLoading(false)
+      }
+    }
+  }, [spacebotStack])
+
+  const runSpacebotAction = useCallback(async (action: SpacebotAction) => {
+    setIsSpacebotUpdating(true)
+    setSpacebotNotice(null)
+    try {
+      const response = await fetch("/api/runtime/spacebot/connector", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          action,
+          stack: spacebotStack,
+        }),
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        throw new Error(extractApiErrorMessage(payload) || `Unable to ${action} Spacebot (HTTP ${response.status})`)
+      }
+
+      const snapshot = parseSpacebotConnectorSnapshot((payload as { snapshot?: unknown }).snapshot)
+      if (snapshot) {
+        setSpacebotConnector(snapshot)
+      } else {
+        await fetchSpacebotConnector({ silent: true })
+      }
+
+      setSpacebotNotice({
+        type: "success",
+        text: `Spacebot ${action} action completed for ${spacebotStack}.`,
+      })
+    } catch (error) {
+      console.error(`Failed to ${action} Spacebot:`, error)
+      setSpacebotNotice({
+        type: "error",
+        text: error instanceof Error ? error.message : `Unable to ${action} Spacebot.`,
+      })
+    } finally {
+      setIsSpacebotUpdating(false)
+    }
+  }, [fetchSpacebotConnector, spacebotStack])
 
   const fetchBridgeCrew = useCallback(async () => {
     if (!selectedShipDeploymentId) {
@@ -2360,6 +2540,13 @@ export default function ShipYardPage() {
   useEffect(() => {
     void fetchConnectionSummary()
   }, [fetchConnectionSummary])
+
+  useEffect(() => {
+    if (mainTab !== "ops") {
+      return
+    }
+    void fetchSpacebotConnector()
+  }, [fetchSpacebotConnector, mainTab])
 
   useEffect(() => {
     if (!selectedShipDeploymentId) {
@@ -5323,6 +5510,163 @@ export default function ShipYardPage() {
                 </div>
               </div>
             )}
+
+            <div className="mb-4 rounded-xl border border-indigo-400/35 bg-indigo-500/8 p-3 dark:border-indigo-300/35">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <Bot className="h-4 w-4 text-indigo-700 dark:text-indigo-200" />
+                    <p className="text-[11px] uppercase tracking-wide text-indigo-700 dark:text-indigo-300">
+                      Spacebot Runtime Launcher
+                    </p>
+                  </div>
+                  <p className="mt-1 text-sm text-slate-800 dark:text-slate-100">
+                    Launch and health-check Spacebot directly from Ship Yard ops.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <label className="text-xs text-slate-600 dark:text-slate-300" htmlFor="shipyard-spacebot-stack">
+                    Stack
+                  </label>
+                  <select
+                    id="shipyard-spacebot-stack"
+                    value={spacebotStack}
+                    onChange={(event) => setSpacebotStack(event.target.value as SpacebotStack)}
+                    disabled={isSpacebotLoading || isSpacebotUpdating}
+                    className="rounded-md border border-slate-300/70 bg-white px-2 py-1 text-xs text-slate-700 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-200"
+                  >
+                    <option value="cloudflare-local">cloudflare-local</option>
+                    <option value="dev-local">dev-local</option>
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => void fetchSpacebotConnector()}
+                    disabled={isSpacebotLoading || isSpacebotUpdating}
+                    className="inline-flex items-center gap-1.5 rounded-md border border-indigo-500/45 bg-indigo-500/12 px-2.5 py-1 text-xs font-medium text-indigo-700 disabled:opacity-50 dark:border-indigo-300/45 dark:text-indigo-200"
+                  >
+                    {isSpacebotLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                    Refresh
+                  </button>
+                </div>
+              </div>
+
+              {spacebotNotice && (
+                <p
+                  className={`mt-2 text-xs ${
+                    spacebotNotice.type === "error"
+                      ? "text-rose-700 dark:text-rose-300"
+                      : spacebotNotice.type === "success"
+                        ? "text-emerald-700 dark:text-emerald-300"
+                        : "text-slate-600 dark:text-slate-300"
+                  }`}
+                >
+                  {spacebotNotice.text}
+                </p>
+              )}
+
+              {spacebotConnector ? (
+                <>
+                  <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                    <span
+                      className={`rounded-md border px-2 py-1 ${
+                        spacebotConnector.running
+                          ? "border-emerald-400/45 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200"
+                          : "border-amber-400/45 bg-amber-500/10 text-amber-700 dark:text-amber-200"
+                      }`}
+                    >
+                      {spacebotConnector.running ? "Container Running" : "Container Stopped"}
+                    </span>
+                    <span
+                      className={`rounded-md border px-2 py-1 ${
+                        spacebotConnector.health.ok
+                          ? "border-cyan-400/45 bg-cyan-500/10 text-cyan-700 dark:text-cyan-200"
+                          : "border-rose-400/45 bg-rose-500/10 text-rose-700 dark:text-rose-200"
+                      }`}
+                    >
+                      {spacebotConnector.health.ok
+                        ? `Webhook Healthy${spacebotConnector.health.status ? ` (${spacebotConnector.health.status})` : ""}`
+                        : "Webhook Unreachable"}
+                    </span>
+                    <span
+                      className={`rounded-md border px-2 py-1 ${
+                        spacebotConnector.connectorEnabled
+                          ? "border-emerald-400/45 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200"
+                          : "border-amber-400/45 bg-amber-500/10 text-amber-700 dark:text-amber-200"
+                      }`}
+                    >
+                      Connector {spacebotConnector.connectorEnabled ? "Enabled" : "Disabled"}
+                    </span>
+                  </div>
+
+                  <p className="mt-2 text-xs text-slate-600 dark:text-slate-300">
+                    Webhook URL <code>{spacebotConnector.baseUrl}</code>
+                  </p>
+                  <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
+                    Compose file <code>{spacebotConnector.composeFile}</code>
+                  </p>
+
+                  {!spacebotConnector.localCommandExecutionEnabled && (
+                    <p className="mt-1 text-xs text-amber-700 dark:text-amber-200">
+                      Set <code>ENABLE_LOCAL_COMMAND_EXECUTION=true</code> to enable launch controls.
+                    </p>
+                  )}
+                  {!spacebotConnector.dockerAvailable && (
+                    <p className="mt-1 text-xs text-rose-700 dark:text-rose-200">
+                      Docker CLI is not available for this runtime.
+                    </p>
+                  )}
+                  {!spacebotConnector.composeFileExists && (
+                    <p className="mt-1 text-xs text-rose-700 dark:text-rose-200">
+                      Compose file for <code>{spacebotConnector.stack}</code> was not found.
+                    </p>
+                  )}
+                  {spacebotConnector.health.error && (
+                    <p className="mt-1 text-xs text-rose-700 dark:text-rose-200">
+                      Health error: {spacebotConnector.health.error}
+                    </p>
+                  )}
+
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void runSpacebotAction("start")}
+                      disabled={isSpacebotUpdating || !spacebotConnector.localCommandExecutionEnabled}
+                      className="inline-flex items-center gap-1.5 rounded-md border border-emerald-500/45 bg-emerald-500/12 px-2.5 py-1 text-xs font-medium text-emerald-700 disabled:opacity-50 dark:border-emerald-300/45 dark:text-emerald-200"
+                    >
+                      {isSpacebotUpdating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
+                      Start
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void runSpacebotAction("restart")}
+                      disabled={isSpacebotUpdating || !spacebotConnector.localCommandExecutionEnabled}
+                      className="inline-flex items-center gap-1.5 rounded-md border border-indigo-500/45 bg-indigo-500/12 px-2.5 py-1 text-xs font-medium text-indigo-700 disabled:opacity-50 dark:border-indigo-300/45 dark:text-indigo-200"
+                    >
+                      {isSpacebotUpdating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
+                      Restart
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void runSpacebotAction("stop")}
+                      disabled={isSpacebotUpdating || !spacebotConnector.localCommandExecutionEnabled}
+                      className="inline-flex items-center gap-1.5 rounded-md border border-rose-500/45 bg-rose-500/12 px-2.5 py-1 text-xs font-medium text-rose-700 disabled:opacity-50 dark:border-rose-300/45 dark:text-rose-200"
+                    >
+                      {isSpacebotUpdating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Square className="h-3.5 w-3.5" />}
+                      Stop
+                    </button>
+                  </div>
+                </>
+              ) : isSpacebotLoading ? (
+                <div className="mt-2 inline-flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  Loading Spacebot status...
+                </div>
+              ) : (
+                <p className="mt-2 text-xs text-slate-600 dark:text-slate-300">
+                  Spacebot status unavailable.
+                </p>
+              )}
+            </div>
 
             <div className="mb-4 rounded-xl border border-slate-300/70 bg-white/75 p-3 dark:border-white/12 dark:bg-white/[0.04]">
               <div className="flex items-center justify-between gap-3">

@@ -1,4 +1,8 @@
 import type { BridgeStationKey } from "@/lib/bridge/stations"
+import {
+  parseQuartermasterExecutionLevel,
+  type QuartermasterExecutionLevel,
+} from "@/lib/quartermaster/constants"
 
 export interface BridgePromptStation {
   stationKey: BridgeStationKey
@@ -37,6 +41,7 @@ export interface QuartermasterPromptMetadata {
   callsign?: string
   shipDeploymentId?: string
   subagentId?: string
+  executionLevel?: QuartermasterExecutionLevel
   knowledge?: QuartermasterKnowledgeMetadata
 }
 
@@ -317,11 +322,18 @@ function buildQuartermasterRuntimePrompt(args: {
     : "QTM-LGR"
   const shipContextSummary = summarizeQuartermasterShipContext(args.shipContext)
   const knowledgeSummary = summarizeQuartermasterKnowledge(args.quartermaster.knowledge)
+  const executionLevel = parseQuartermasterExecutionLevel(args.quartermaster.executionLevel)
+  const constraint =
+    executionLevel === "danger_full_access"
+      ? "Constraint: executive mode enabled (danger_full_access). You may run full-access debug/remediation, but call out risk and require explicit confirmation before destructive actions."
+      : executionLevel === "workspace_write"
+        ? "Constraint: executive mode enabled (workspace_write). Prefer read-only diagnostics first, then apply minimal reversible workspace fixes when warranted."
+        : "Constraint: read-only mode enabled. Focus on diagnostics/planning and avoid direct destructive execution."
 
   return [
     `You are ${callsign}, Quartermaster for this ship inside the OrchWiz control surface.`,
     "Scope: setup guidance, maintenance planning, readiness checks, and diagnostics triage for ships; and general Orchwiz maintenance (docs, compliance, infra, control plane, dependencies, dev environment) when the operator asks.",
-    "Constraint: treat all actions as read-only diagnostics/planning. Do not assume destructive execution.",
+    constraint,
     "Tone: warm, concise, and collaborative; no blame; no lecturing.",
     "If key context is missing, ask up to 3 targeted questions under Situation Summary.",
     "Evidence rule: every factual claim must cite one or more knowledge source markers like [S1].",

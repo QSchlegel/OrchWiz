@@ -45,6 +45,7 @@ export async function createGovernanceGrantEvent(args: {
   createdByUserId: string
   eventType: GovernanceEventType
   toolCatalogEntryId?: string | null
+  runtimeAdapterCatalogEntryId?: string | null
   skillCatalogEntryId?: string | null
   shipDeploymentId?: string | null
   bridgeCrewId?: string | null
@@ -63,6 +64,7 @@ export async function createGovernanceGrantEvent(args: {
       createdByUserId: args.createdByUserId,
       eventType: args.eventType,
       toolCatalogEntryId: args.toolCatalogEntryId || null,
+      runtimeAdapterCatalogEntryId: args.runtimeAdapterCatalogEntryId || null,
       skillCatalogEntryId: args.skillCatalogEntryId || null,
       shipDeploymentId: args.shipDeploymentId || null,
       bridgeCrewId: args.bridgeCrewId || null,
@@ -124,6 +126,13 @@ export async function listRecentGovernanceGrantEvents(args: {
         select: {
           id: true,
           slug: true,
+          name: true,
+        },
+      },
+      runtimeAdapterCatalogEntry: {
+        select: {
+          id: true,
+          adapterId: true,
           name: true,
         },
       },

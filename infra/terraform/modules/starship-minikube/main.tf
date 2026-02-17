@@ -11,6 +11,7 @@ locals {
     { for station in local.openclaw_station_keys : station => "${var.openclaw_gateway_token}-${station}" },
     { for station, token in var.openclaw_gateway_tokens : station => token if contains(local.openclaw_station_keys, station) },
   )
+  spacebot_name            = "${var.app_name}-spacebot"
   provider_proxy_name     = "${var.app_name}-provider-proxy"
   provider_proxy_base_url = "http://${local.provider_proxy_name}:${var.provider_proxy_port}"
   kubeview_ingress_annotations = merge(
@@ -46,6 +47,10 @@ locals {
       OPENCLAW_GATEWAY_TOKENS      = jsonencode(local.openclaw_gateway_tokens)
       CODEX_PROVIDER_PROXY_URL     = local.provider_proxy_base_url
       CODEX_PROVIDER_PROXY_API_KEY = var.provider_proxy_api_key
+      RUNTIME_ADAPTER_REGISTRY_ENABLED = "false"
+      BRIDGE_DISPATCH_REGISTRY_ENABLED = "false"
+      TOOLCHAIN_PROTOCOL_REGISTRY_ENABLED = "false"
+      SPACEBOT_CONNECTOR_ENABLED = "false"
       NODE_ENV                     = "production"
       ENABLE_FORWARDING_INGEST     = "true"
       ENABLE_SSE_EVENTS            = "true"
@@ -57,6 +62,9 @@ locals {
       LANGFUSE_BASE_URL   = "http://langfuse.${var.monitoring_namespace}.svc.cluster.local:3000"
       LANGFUSE_PUBLIC_KEY = var.langfuse_public_key
       LANGFUSE_SECRET_KEY = var.langfuse_secret_key
+    } : {},
+    var.enable_spacebot ? {
+      SPACEBOT_WEBHOOK_BASE_URL = "http://${local.spacebot_name}:${var.spacebot_webhook_port}"
     } : {},
     var.app_env,
   )
@@ -314,6 +322,184 @@ resource "kubernetes_service_v1" "provider_proxy" {
 
     type = "ClusterIP"
   }
+}
+
+resource "kubernetes_secret_v1" "spacebot_env" {
+  count = var.enable_spacebot ? 1 : 0
+
+  metadata {
+    name      = "${local.spacebot_name}-env"
+    namespace = kubernetes_namespace_v1.starship.metadata[0].name
+    labels = {
+      "app.kubernetes.io/name"    = "spacebot"
+      "app.kubernetes.io/part-of" = "orchwiz"
+      "orchwiz/profile"           = "local_starship_build"
+    }
+  }
+
+  type = "Opaque"
+  data = merge(
+    {
+      WEBHOOK_ENABLED = "true"
+    },
+    var.spacebot_env,
+  )
+}
+
+resource "kubernetes_persistent_volume_claim_v1" "spacebot_data" {
+  count = var.enable_spacebot ? 1 : 0
+
+  wait_until_bound = false
+
+  metadata {
+    name      = "${local.spacebot_name}-data"
+    namespace = kubernetes_namespace_v1.starship.metadata[0].name
+    labels = {
+      "app.kubernetes.io/name"    = "spacebot"
+      "app.kubernetes.io/part-of" = "orchwiz"
+      "orchwiz/profile"           = "local_starship_build"
+    }
+  }
+
+  spec {
+    access_modes = ["ReadWriteOnce"]
+
+    resources {
+      requests = {
+        storage = var.spacebot_storage_size
+      }
+    }
+  }
+}
+
+resource "kubernetes_deployment_v1" "spacebot" {
+  count = var.enable_spacebot ? 1 : 0
+
+  wait_for_rollout = false
+
+  metadata {
+    name      = local.spacebot_name
+    namespace = kubernetes_namespace_v1.starship.metadata[0].name
+    labels = {
+      "app.kubernetes.io/name"    = "spacebot"
+      "app.kubernetes.io/part-of" = "orchwiz"
+      "orchwiz/profile"           = "local_starship_build"
+    }
+  }
+
+  spec {
+    replicas = 1
+
+    selector {
+      match_labels = {
+        app = local.spacebot_name
+      }
+    }
+
+    template {
+      metadata {
+        labels = {
+          app                      = local.spacebot_name
+          "orchwiz/profile"        = "local_starship_build"
+          "app.kubernetes.io/name" = "spacebot"
+        }
+      }
+
+      spec {
+        container {
+          name              = "spacebot"
+          image             = var.spacebot_image
+          image_pull_policy = "IfNotPresent"
+
+          port {
+            container_port = var.spacebot_api_port
+          }
+
+          port {
+            container_port = var.spacebot_webhook_port
+          }
+
+          env_from {
+            secret_ref {
+              name = kubernetes_secret_v1.spacebot_env[0].metadata[0].name
+            }
+          }
+
+          volume_mount {
+            name       = "spacebot-data"
+            mount_path = "/data"
+          }
+
+          readiness_probe {
+            http_get {
+              path = "/health"
+              port = var.spacebot_webhook_port
+            }
+            initial_delay_seconds = 20
+            period_seconds        = 10
+            timeout_seconds       = 2
+            failure_threshold     = 12
+          }
+
+          liveness_probe {
+            http_get {
+              path = "/api/health"
+              port = var.spacebot_api_port
+            }
+            initial_delay_seconds = 30
+            period_seconds        = 20
+            timeout_seconds       = 2
+            failure_threshold     = 6
+          }
+        }
+
+        volume {
+          name = "spacebot-data"
+          persistent_volume_claim {
+            claim_name = kubernetes_persistent_volume_claim_v1.spacebot_data[0].metadata[0].name
+          }
+        }
+      }
+    }
+  }
+
+  depends_on = [kubernetes_secret_v1.spacebot_env]
+}
+
+resource "kubernetes_service_v1" "spacebot" {
+  count = var.enable_spacebot ? 1 : 0
+
+  metadata {
+    name      = local.spacebot_name
+    namespace = kubernetes_namespace_v1.starship.metadata[0].name
+    labels = {
+      "app.kubernetes.io/name" = "spacebot"
+    }
+  }
+
+  spec {
+    selector = {
+      app = local.spacebot_name
+    }
+
+    port {
+      name        = "api"
+      port        = var.spacebot_api_port
+      target_port = var.spacebot_api_port
+      protocol    = "TCP"
+    }
+
+    port {
+      name        = "webhook"
+      port        = var.spacebot_webhook_port
+      target_port = var.spacebot_webhook_port
+      protocol    = "TCP"
+    }
+
+    type = "ClusterIP"
+  }
+
+  depends_on = [kubernetes_deployment_v1.spacebot]
 }
 
 resource "kubernetes_deployment_v1" "openclaw" {

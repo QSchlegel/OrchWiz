@@ -4,6 +4,7 @@ import {
   loadShipQuartermasterStateWithInteractions,
   QuartermasterApiResponseError,
 } from "@/lib/quartermaster/api"
+import { isQuartermasterExecutionLevel } from "@/lib/quartermaster/constants"
 import { parseRagBackend } from "@/lib/memory/rag-backend"
 import { AccessControlError } from "@/lib/security/access-control"
 import {
@@ -96,12 +97,24 @@ export async function handlePostDevShipQuartermaster(
       return NextResponse.json({ error: "prompt required" }, { status: 400 })
     }
 
+    const executionLevelRaw = body.executionLevel
+    if (
+      executionLevelRaw !== undefined
+      && !isQuartermasterExecutionLevel(executionLevelRaw)
+    ) {
+      return NextResponse.json(
+        { error: "executionLevel must be one of: read_only, workspace_write, danger_full_access" },
+        { status: 400 },
+      )
+    }
+
     const payload = await deps.runPrompt({
       userId: actor.userId,
       shipDeploymentId: args.shipDeploymentId,
       prompt,
       requestedBackend: parseRagBackend(asString(body.backend)),
       autoProvisionIfMissing: true,
+      executionLevel: isQuartermasterExecutionLevel(executionLevelRaw) ? executionLevelRaw : undefined,
       routePath: "/api/dev/ships/[id]/quartermaster",
     })
 
@@ -134,4 +147,3 @@ export async function POST(
   const { id } = await params
   return handlePostDevShipQuartermaster(request, { shipDeploymentId: id })
 }
-

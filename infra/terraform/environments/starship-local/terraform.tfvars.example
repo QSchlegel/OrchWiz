@@ -17,6 +17,15 @@ openclaw_gateway_token = "orchwiz-openclaw-dev-token"
 #   cou = "orchwiz-openclaw-dev-token-cou"
 # }
 
+enable_spacebot       = false
+spacebot_image        = "ghcr.io/qschlegel/orchwiz-spacebot:latest"
+spacebot_api_port     = 19898
+spacebot_webhook_port = 18789
+spacebot_storage_size = "2Gi"
+spacebot_env = {
+  WEBHOOK_ENABLED = "true"
+}
+
 provider_proxy_image         = "ghcr.io/qschlegel/orchwiz-provider-proxy:latest"
 provider_proxy_port          = 4000
 provider_proxy_api_key       = "orchwiz-provider-proxy-dev-key"

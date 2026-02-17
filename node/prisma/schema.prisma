@@ -51,6 +51,9 @@ model User {
   toolCatalogEntries    ToolCatalogEntry[]
   toolImportRuns        ToolImportRun[]
   activatedToolCatalogEntries ToolCatalogEntry[] @relation("ToolCatalogEntryActivatedByUser")
+  runtimeAdapterCatalogEntriesCreated RuntimeAdapterCatalogEntry[] @relation("RuntimeAdapterCatalogEntryCreatedByUser")
+  activatedRuntimeAdapterCatalogEntries RuntimeAdapterCatalogEntry[] @relation("RuntimeAdapterCatalogEntryActivatedByUser")
+  runtimeAdapterBindingsCreated RuntimeAdapterBinding[] @relation("RuntimeAdapterBindingCreatedByUser")
   shipToolGrants        ShipToolGrant[]       @relation("ToolGrantOwner")
   grantedShipToolGrants ShipToolGrant[]       @relation("ToolGrantGrantedBy")
   shipToolAccessRequestsOwned ShipToolAccessRequest[] @relation("ToolAccessRequestOwner")
@@ -1141,6 +1144,23 @@ enum ToolCatalogSource {
   system
 }
 
+enum RuntimeAdapterProtocol {
+  internal
+  webhook
+  openai_compat
+  mcp_sse
+  mcp_stdio
+  cli_exec
+}
+
+enum RuntimeAdapterBindingScope {
+  global
+  profile
+  user
+  deployment
+  subagent
+}
+
 enum ToolImportStatus {
   running
   succeeded
@@ -1176,6 +1196,8 @@ enum GovernanceEventType {
   subagent_tool_revoked
   tool_activation_approved
   tool_activation_denied
+  runtime_activation_approved
+  runtime_activation_denied
   skill_activation_approved
   skill_activation_denied
 }
@@ -1292,6 +1314,58 @@ model ToolCatalogEntry {
   @@index([ownerUserId, slug])
   @@index([ownerUserId, updatedAt])
   @@index([ownerUserId, activationStatus])
+}
+
+model RuntimeAdapterCatalogEntry {
+  id            String            @id @default(cuid())
+  adapterId      String            @unique
+  name           String
+  description    String?
+  protocol       RuntimeAdapterProtocol
+  endpoint       String?
+  authRef        String?
+  capabilities   Json?
+  metadata       Json?
+  isSystem       Boolean           @default(false)
+  activationStatus CatalogActivationStatus @default(pending)
+  activationRationale String?
+  activatedAt    DateTime?
+  activatedByUserId String?
+  activatedByBridgeCrewId String?
+  activationSecurityReportId String?
+  createdByUserId String?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  activatedByUser User?            @relation("RuntimeAdapterCatalogEntryActivatedByUser", fields: [activatedByUserId], references: [id], onDelete: SetNull)
+  activatedByBridgeCrew BridgeCrew? @relation("RuntimeAdapterCatalogEntryActivatedByBridgeCrew", fields: [activatedByBridgeCrewId], references: [id], onDelete: SetNull)
+  activationSecurityReport GovernanceSecurityReport? @relation("RuntimeAdapterCatalogEntryActivationSecurityReport", fields: [activationSecurityReportId], references: [id], onDelete: SetNull)
+  createdByUser   User?            @relation("RuntimeAdapterCatalogEntryCreatedByUser", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  bindings        RuntimeAdapterBinding[]
+  governanceGrantEvents GovernanceGrantEvent[] @relation("GovernanceGrantEventRuntimeAdapterCatalogEntry")
+
+  @@index([activationStatus])
+  @@index([isSystem])
+}
+
+model RuntimeAdapterBinding {
+  id               String                     @id @default(cuid())
+  runtimeAdapterId String
+  scope            RuntimeAdapterBindingScope
+  scopeKey         String
+  priority         Int                        @default(100)
+  enabled          Boolean                    @default(true)
+  metadata         Json?
+  createdByUserId  String?
+  createdAt        DateTime                   @default(now())
+  updatedAt        DateTime                   @updatedAt
+
+  runtimeAdapter   RuntimeAdapterCatalogEntry @relation(fields: [runtimeAdapterId], references: [id], onDelete: Cascade)
+  createdByUser    User?                      @relation("RuntimeAdapterBindingCreatedByUser", fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([runtimeAdapterId, scope, scopeKey])
+  @@index([scope, scopeKey, enabled, priority])
+  @@index([runtimeAdapterId, enabled])
 }
 
 model SubagentToolBinding {
@@ -1435,6 +1509,7 @@ model GovernanceSecurityReport {
   createdByBridgeCrew   BridgeCrew?         @relation("GovernanceSecurityReportCreatedByBridgeCrew", fields: [createdByBridgeCrewId], references: [id], onDelete: SetNull)
   governanceGrantEvents GovernanceGrantEvent[] @relation("GovernanceGrantEventSecurityReport")
   toolCatalogActivations ToolCatalogEntry[] @relation("ToolCatalogEntryActivationSecurityReport")
+  runtimeAdapterCatalogActivations RuntimeAdapterCatalogEntry[] @relation("RuntimeAdapterCatalogEntryActivationSecurityReport")
   skillCatalogActivations SkillCatalogEntry[] @relation("SkillCatalogEntryActivationSecurityReport")
 
   @@index([ownerUserId, createdAt(sort: Desc)])
@@ -1447,6 +1522,7 @@ model GovernanceGrantEvent {
   ownerUserId       String
   eventType         GovernanceEventType
   toolCatalogEntryId String?
+  runtimeAdapterCatalogEntryId String?
   skillCatalogEntryId String?
   shipDeploymentId  String?
   bridgeCrewId      String?
@@ -1462,6 +1538,7 @@ model GovernanceGrantEvent {
   owner             User                @relation("GovernanceGrantEventOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
   createdByUser     User                @relation("GovernanceGrantEventCreatedByUser", fields: [createdByUserId], references: [id], onDelete: Cascade)
   toolCatalogEntry  ToolCatalogEntry?   @relation("GovernanceGrantEventToolCatalogEntry", fields: [toolCatalogEntryId], references: [id], onDelete: SetNull)
+  runtimeAdapterCatalogEntry RuntimeAdapterCatalogEntry? @relation("GovernanceGrantEventRuntimeAdapterCatalogEntry", fields: [runtimeAdapterCatalogEntryId], references: [id], onDelete: SetNull)
   skillCatalogEntry SkillCatalogEntry?  @relation("GovernanceGrantEventSkillCatalogEntry", fields: [skillCatalogEntryId], references: [id], onDelete: SetNull)
   shipDeployment    AgentDeployment?    @relation("GovernanceGrantEventShipDeployment", fields: [shipDeploymentId], references: [id], onDelete: SetNull)
   bridgeCrew        BridgeCrew?         @relation("GovernanceGrantEventBridgeCrew", fields: [bridgeCrewId], references: [id], onDelete: SetNull)
@@ -1472,6 +1549,7 @@ model GovernanceGrantEvent {
   @@index([ownerUserId, createdAt(sort: Desc)])
   @@index([eventType, createdAt(sort: Desc)])
   @@index([toolCatalogEntryId])
+  @@index([runtimeAdapterCatalogEntryId])
   @@index([skillCatalogEntryId])
   @@index([shipDeploymentId])
   @@index([bridgeCrewId])
@@ -2094,6 +2172,7 @@ model BridgeCrew {
   governanceGrantEventsAsTarget GovernanceGrantEvent[] @relation("GovernanceGrantEventBridgeCrew")
   governanceGrantEventsAsActor GovernanceGrantEvent[] @relation("GovernanceGrantEventActorBridgeCrew")
   activatedToolCatalogEntries ToolCatalogEntry[] @relation("ToolCatalogEntryActivatedByBridgeCrew")
+  activatedRuntimeAdapterCatalogEntries RuntimeAdapterCatalogEntry[] @relation("RuntimeAdapterCatalogEntryActivatedByBridgeCrew")
   activatedSkillCatalogEntries SkillCatalogEntry[] @relation("SkillCatalogEntryActivatedByBridgeCrew")
 
   @@unique([deploymentId, role])

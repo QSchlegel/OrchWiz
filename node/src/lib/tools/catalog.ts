@@ -367,6 +367,46 @@ function defaultActivationStatusForSource(source: ToolCatalogSource): CatalogAct
   }
 }
 
+function normalizeToolchainProtocol(value: unknown): "mcp_sse" | "mcp_stdio" | "openai_compat" | "webhook" | null {
+  if (value === "mcp_sse" || value === "mcp_stdio" || value === "openai_compat" || value === "webhook") {
+    return value
+  }
+
+  return null
+}
+
+function buildToolchainMetadata(value: {
+  protocol?: unknown
+  endpoint?: unknown
+  authRef?: unknown
+  capabilities?: unknown
+}): Record<string, unknown> | null {
+  const protocol = normalizeToolchainProtocol(value.protocol)
+  if (!protocol) {
+    return null
+  }
+
+  const metadata: Record<string, unknown> = {
+    protocol,
+  }
+
+  const endpoint = typeof value.endpoint === "string" ? value.endpoint.trim() : ""
+  if (endpoint) {
+    metadata.endpoint = endpoint
+  }
+
+  const authRef = typeof value.authRef === "string" ? value.authRef.trim() : ""
+  if (authRef) {
+    metadata.authRef = authRef
+  }
+
+  if (value.capabilities && typeof value.capabilities === "object" && !Array.isArray(value.capabilities)) {
+    metadata.capabilities = value.capabilities as Record<string, unknown>
+  }
+
+  return metadata
+}
+
 function toEntryDto(entry: ToolCatalogEntry): ToolCatalogEntryDto {
   return {
     id: entry.id,
@@ -594,6 +634,12 @@ async function syncToolCatalogForUser(args: {
 
     const localTool = localBySlug.get(slug)
     const existing = existingBySourceKey.get(sourceKey)
+    const curatedToolchain = buildToolchainMetadata({
+      protocol: curatedTool.protocol,
+      endpoint: curatedTool.endpoint,
+      authRef: curatedTool.authRef,
+      capabilities: curatedTool.capabilities,
+    })
 
     await upsertCatalogEntry({
       ownerUserId: args.ownerUserId,
@@ -613,6 +659,11 @@ async function syncToolCatalogForUser(args: {
         source: "curated_manifest",
         available: curatedTool.available,
         unavailableReason: curatedTool.unavailableReason,
+        ...(curatedToolchain
+          ? {
+              toolchain: curatedToolchain,
+            }
+          : {}),
       },
       lastSyncedAt: refreshedAt,
     })
@@ -882,6 +933,12 @@ export async function importCuratedToolForUser(args: {
       sourceRef: curated.sourceRef || "main",
       sourceUrl: curated.sourceUrl || null,
     })
+    const curatedToolchain = buildToolchainMetadata({
+      protocol: curated.protocol,
+      endpoint: curated.endpoint,
+      authRef: curated.authRef,
+      capabilities: curated.capabilities,
+    })
 
     const entry = await upsertCatalogEntry({
       ownerUserId: args.ownerUserId,
@@ -901,6 +958,11 @@ export async function importCuratedToolForUser(args: {
         source: "curated_import",
         available: curated.available,
         unavailableReason: curated.unavailableReason,
+        ...(curatedToolchain
+          ? {
+              toolchain: curatedToolchain,
+            }
+          : {}),
       },
       lastSyncedAt: new Date(),
     })

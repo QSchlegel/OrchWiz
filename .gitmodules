@@ -1,3 +1,7 @@
 [submodule "infra/vendor/kubeview"]
 	path = infra/vendor/kubeview
 	url = https://github.com/benc-uk/kubeview.git
+[submodule "services/spacebot"]
+	path = services/spacebot
+	url = https://github.com/spacedriveapp/spacebot.git
+	branch = main

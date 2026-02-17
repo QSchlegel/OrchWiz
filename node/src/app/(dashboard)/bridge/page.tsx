@@ -5,11 +5,6 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } fro
 import { useSession } from "@/lib/auth-client"
 import { useEventStream } from "@/lib/realtime/useEventStream"
 import type { BridgeStationKey } from "@/lib/bridge/stations"
-import {
-  BRIDGE_DISPATCH_DEFAULT_RUNTIME,
-  listBridgeDispatchRuntimeDescriptors,
-  type BridgeDispatchRuntimeId,
-} from "@/lib/bridge/connections/dispatch-runtime"
 import { BridgeDeckScene3D } from "@/components/bridge/BridgeDeckScene3D"
 import { useShipSelection } from "@/lib/shipyard/useShipSelection"
 import { mintRuntimeJwtCookie } from "@/lib/runtime-jwt-client"
@@ -159,6 +154,25 @@ interface BridgeConnectionOption {
   autoRelay: boolean
   purpose: "bridge_group" | "xo_direct" | "custom"
 }
+
+type BridgeDispatchRuntimeId = string
+
+interface BridgeDispatchRuntimeDescriptor {
+  id: BridgeDispatchRuntimeId
+  label: string
+  description: string
+  status: "active" | "planned"
+}
+
+const BRIDGE_DISPATCH_DEFAULT_RUNTIME: BridgeDispatchRuntimeId = "openclaw"
+const BRIDGE_DISPATCH_FALLBACK_RUNTIME_DESCRIPTORS: BridgeDispatchRuntimeDescriptor[] = [
+  {
+    id: "openclaw",
+    label: "OpenClaw Gateway",
+    description: "Primary dispatch rail for bridge connector outbound delivery.",
+    status: "active",
+  },
+]
 
 const STATION_KEYS = new Set<BridgeStationKey>(["xo", "ops", "eng", "sec", "med", "cou"])
 const BRIDGE_3D_STORAGE_KEY = "orchwiz:bridge:3d-enabled"
@@ -350,6 +364,9 @@ export default function BridgePage() {
   const [selectedRuntimeId, setSelectedRuntimeId] = useState<BridgeDispatchRuntimeId>(
     BRIDGE_DISPATCH_DEFAULT_RUNTIME,
   )
+  const [runtimeDescriptors, setRuntimeDescriptors] = useState<BridgeDispatchRuntimeDescriptor[]>(
+    BRIDGE_DISPATCH_FALLBACK_RUNTIME_DESCRIPTORS,
+  )
   const [showRuntimeIframe, setShowRuntimeIframe] = useState(false)
   const [connectionOptions, setConnectionOptions] = useState<BridgeConnectionOption[]>([])
   const [selectedConnectionIds, setSelectedConnectionIds] = useState<string[]>([])
@@ -361,7 +378,6 @@ export default function BridgePage() {
 
   const stardate = formatStardate(new Date())
   const operatorLabel = session?.user?.email || "Operator"
-  const runtimeDescriptors = useMemo(() => listBridgeDispatchRuntimeDescriptors(), [])
   const selectedRuntimeDescriptor = useMemo(
     () =>
       runtimeDescriptors.find((runtime) => runtime.id === selectedRuntimeId)
@@ -829,6 +845,67 @@ export default function BridgePage() {
     }
   }, [selectedShipDeploymentId, selectedStation?.stationKey])
 
+  const loadRuntimeDescriptors = useCallback(async () => {
+    try {
+      const response = await fetch("/api/runtime/adapters", {
+        cache: "no-store",
+      })
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`)
+      }
+
+      const payload = await response.json().catch(() => ({}))
+      const adapters = Array.isArray(payload?.adapters) ? payload.adapters : []
+      const next = adapters
+        .map((adapter: Record<string, unknown>): BridgeDispatchRuntimeDescriptor | null => {
+          const capabilities = asRecord(adapter.capabilities)
+          if (capabilities.bridgeDispatch !== true) {
+            return null
+          }
+
+          if (adapter.activationStatus !== "approved") {
+            return null
+          }
+
+          const id = typeof adapter.adapterId === "string" ? adapter.adapterId : null
+          const label = typeof adapter.name === "string" ? adapter.name : null
+          if (!id || !label) {
+            return null
+          }
+
+          return {
+            id,
+            label,
+            description:
+              typeof adapter.description === "string" && adapter.description.trim().length > 0
+                ? adapter.description
+                : "Registry-managed bridge dispatch runtime adapter.",
+            status: "active",
+          }
+        })
+        .filter((descriptor: BridgeDispatchRuntimeDescriptor | null): descriptor is BridgeDispatchRuntimeDescriptor =>
+          descriptor !== null)
+
+      const resolved = next.length > 0 ? next : BRIDGE_DISPATCH_FALLBACK_RUNTIME_DESCRIPTORS
+      setRuntimeDescriptors(resolved)
+      setSelectedRuntimeId((current) => {
+        if (resolved.some((descriptor) => descriptor.id === current)) {
+          return current
+        }
+        return resolved[0]?.id || BRIDGE_DISPATCH_DEFAULT_RUNTIME
+      })
+    } catch (error) {
+      console.error("Runtime descriptor load failed:", error)
+      setRuntimeDescriptors(BRIDGE_DISPATCH_FALLBACK_RUNTIME_DESCRIPTORS)
+      setSelectedRuntimeId((current) => {
+        if (BRIDGE_DISPATCH_FALLBACK_RUNTIME_DESCRIPTORS.some((descriptor) => descriptor.id === current)) {
+          return current
+        }
+        return BRIDGE_DISPATCH_DEFAULT_RUNTIME
+      })
+    }
+  }, [])
+
   const loadBridgeSessions = useCallback(async () => {
     try {
       const response = await fetch("/api/sessions?bridgeChannel=agent")
@@ -1181,8 +1258,9 @@ export default function BridgePage() {
     void loadBridgeState()
     void loadBridgeSessions()
     void loadBridgeConnections()
+    void loadRuntimeDescriptors()
     void loadCharacterModels()
-  }, [session, loadBridgeConnections, loadBridgeSessions, loadBridgeState, loadCharacterModels])
+  }, [session, loadBridgeConnections, loadBridgeSessions, loadBridgeState, loadCharacterModels, loadRuntimeDescriptors])
 
   useEffect(() => {
     if (!selectedStation?.stationKey) {

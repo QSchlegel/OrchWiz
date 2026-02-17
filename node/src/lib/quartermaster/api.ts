@@ -9,6 +9,10 @@ import {
   QUARTERMASTER_CALLSIGN,
   QUARTERMASTER_CHANNEL,
   QUARTERMASTER_RUNTIME_PROFILE,
+  quartermasterAuthorityForExecutionLevel,
+  quartermasterDiagnosticsScopeForExecutionLevel,
+  parseQuartermasterExecutionLevel,
+  type QuartermasterExecutionLevel,
 } from "@/lib/quartermaster/constants"
 import { upgradeQuartermasterSubagentContext } from "@/lib/quartermaster/context-upgrade"
 import {
@@ -66,6 +70,13 @@ export interface ExecuteShipQuartermasterPromptArgs {
   prompt: string
   requestedBackend: RagBackend
   autoProvisionIfMissing: boolean
+  executionLevel?: QuartermasterExecutionLevel
+  runtimeExecutionKind?: "human_chat" | "autonomous_task"
+  loopContext?: {
+    runId: string
+    iteration: number
+    fullAuto?: boolean
+  }
   routePath?: string
 }
 
@@ -434,17 +445,34 @@ export async function executeShipQuartermasterPrompt(
     }
   }
 
+  const executionLevel = parseQuartermasterExecutionLevel(
+    args.executionLevel,
+    state.quartermaster.executionLevel,
+  )
+
   const runtimeMetadata = {
     runtime: {
       profile: QUARTERMASTER_RUNTIME_PROFILE,
-      executionKind: "human_chat",
+      executionKind: args.runtimeExecutionKind || "human_chat",
     },
     quartermaster: {
       channel: QUARTERMASTER_CHANNEL,
       callsign: QUARTERMASTER_CALLSIGN,
       subagentId: state.subagent.id,
       shipDeploymentId: args.shipDeploymentId,
+      executionLevel,
+      authority: quartermasterAuthorityForExecutionLevel(executionLevel),
+      diagnosticsScope: quartermasterDiagnosticsScopeForExecutionLevel(executionLevel),
       knowledge: knowledgeBlock,
+      ...(args.loopContext
+        ? {
+            loop: {
+              runId: args.loopContext.runId,
+              iteration: args.loopContext.iteration,
+              fullAuto: args.loopContext.fullAuto === true,
+            },
+          }
+        : {}),
     },
     shipContext: buildShipContext(state, crewCount),
   }

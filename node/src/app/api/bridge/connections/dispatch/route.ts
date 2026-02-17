@@ -23,7 +23,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
 
-    const parsedBody = parseBridgeDispatchRequestBody(await request.json().catch(() => ({})))
+    const parsedBody = await parseBridgeDispatchRequestBody(await request.json().catch(() => ({})))
 
     const deployment = await prisma.agentDeployment.findFirst({
       where: {

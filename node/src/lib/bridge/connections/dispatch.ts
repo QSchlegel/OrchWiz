@@ -251,7 +251,7 @@ async function runBridgeDispatchDelivery(
   })
 
   const payload = asRecord(delivery.payload)
-  const runtimeId = resolveBridgeDispatchRuntime(asRecord(payload.runtime).id)
+  const runtimeId = await resolveBridgeDispatchRuntime(asRecord(payload.runtime).id)
   const bridgeContext = asRecord(payload.bridgeContext)
 
   const dispatchResult = await dispatchBridgeConnectionViaRuntime({

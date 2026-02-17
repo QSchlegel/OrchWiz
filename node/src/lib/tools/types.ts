@@ -2,6 +2,14 @@ export type ToolCatalogSourceValue = "curated" | "custom_github" | "local" | "sy
 export type ToolImportStatusValue = "running" | "succeeded" | "failed"
 export type ToolCatalogRefreshMode = "auto" | "force" | "none"
 export type CatalogActivationStatusValue = "pending" | "approved" | "denied"
+export type ToolchainProtocol = "mcp_sse" | "mcp_stdio" | "openai_compat" | "webhook"
+
+export interface ToolchainMetadata {
+  protocol: ToolchainProtocol
+  endpoint?: string
+  authRef?: string
+  capabilities?: Record<string, unknown>
+}
 
 export type ShipToolGrantScopeValue = "ship" | "bridge_crew"
 export type ShipToolAccessRequestStatusValue = "pending" | "approved" | "denied"

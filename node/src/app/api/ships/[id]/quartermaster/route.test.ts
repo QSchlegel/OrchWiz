@@ -27,7 +27,7 @@ function createDeps(overrides: Partial<ShipQuartermasterRouteDeps> = {}): ShipQu
           id: "ship-1",
         },
         interactions: [],
-      }) as Awaited<ReturnType<ShipQuartermasterRouteDeps["loadState"]>>,
+      }) as unknown as Awaited<ReturnType<ShipQuartermasterRouteDeps["loadState"]>>,
     runPrompt: async () => ({
       interaction: {
         id: "i-1",
@@ -179,4 +179,76 @@ test("ship quartermaster POST enables auto-provision for missing quartermaster s
 
   assert.equal(response.status, 200)
   assert.equal(autoProvisionIfMissing, true)
+})
+
+test("ship quartermaster POST validates executionLevel", async () => {
+  const response = await handlePostShipQuartermaster(
+    requestFor({ prompt: "status", executionLevel: "invalid" }),
+    { shipDeploymentId: "ship-1" },
+    createDeps(),
+  )
+
+  assert.equal(response.status, 400)
+})
+
+test("ship quartermaster POST forwards executionLevel override", async () => {
+  let seenExecutionLevel: string | undefined
+
+  const response = await handlePostShipQuartermaster(
+    requestFor({ prompt: "status", executionLevel: "workspace_write" }),
+    { shipDeploymentId: "ship-1" },
+    createDeps({
+      runPrompt: async (args) => {
+        seenExecutionLevel = args.executionLevel
+        return {
+          interaction: {
+            id: "i-1",
+            sessionId: "session-1",
+            type: "user_input",
+            content: "hello",
+            metadata: null,
+            timestamp: new Date("2026-02-12T00:00:00.000Z"),
+          },
+          responseInteraction: {
+            id: "i-2",
+            sessionId: "session-1",
+            type: "ai_response",
+            content: "world",
+            metadata: null,
+            timestamp: new Date("2026-02-12T00:00:00.000Z"),
+          },
+          provider: "codex-cli",
+          fallbackUsed: false,
+          sessionId: "session-1",
+          interactions: [],
+          knowledge: {
+            query: "hello",
+            mode: "hybrid",
+            fallbackUsed: false,
+            requestedBackend: "auto",
+            effectiveBackend: "vault-local",
+            performance: {
+              durationMs: 1,
+              resultCount: 0,
+              fallbackUsed: false,
+              status: "success",
+            },
+            sources: [],
+          },
+          requestedBackend: "auto",
+          effectiveBackend: "vault-local",
+          performance: {
+            durationMs: 1,
+            resultCount: 0,
+            fallbackUsed: false,
+            status: "success",
+          },
+          autoProvisioned: false,
+        }
+      },
+    }),
+  )
+
+  assert.equal(response.status, 200)
+  assert.equal(seenExecutionLevel, "workspace_write")
 })

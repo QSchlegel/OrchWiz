@@ -1,5 +1,5 @@
 import "dotenv/config"
-import { PrismaClient } from "@prisma/client"
+import { Prisma, PrismaClient } from "@prisma/client"
 import { PrismaPg } from "@prisma/adapter-pg"
 import crypto from "node:crypto"
 
@@ -128,6 +128,118 @@ const OPENCLAW_DEFAULT_COMMANDS: Array<{
   },
 ]
 
+const RUNTIME_ADAPTER_SEEDS: Array<{
+  adapterId: string
+  name: string
+  description: string
+  protocol: "internal" | "webhook" | "openai_compat" | "mcp_sse" | "mcp_stdio" | "cli_exec"
+  endpoint?: string | null
+  authRef?: string | null
+  capabilities: Record<string, unknown>
+  metadata: Record<string, unknown>
+}> = [
+  {
+    adapterId: "openclaw",
+    name: "OpenClaw Gateway",
+    description: "Primary OpenClaw runtime connector.",
+    protocol: "internal",
+    capabilities: {
+      bridgeDispatch: true,
+      controllable: false,
+      internalOnly: true,
+    },
+    metadata: {
+      source: "builtin",
+      rollout: "stable",
+    },
+  },
+  {
+    adapterId: "openai-fallback",
+    name: "OpenAI Fallback",
+    description: "Fallback runtime routed to OpenAI Responses API.",
+    protocol: "openai_compat",
+    endpoint: "https://api.openai.com",
+    authRef: "env:OPENAI_API_KEY",
+    capabilities: {
+      bridgeDispatch: false,
+      controllable: true,
+    },
+    metadata: {
+      source: "builtin",
+      rollout: "stable",
+    },
+  },
+  {
+    adapterId: "local-fallback",
+    name: "Local Fallback",
+    description: "Local fail-open runtime fallback for resiliency.",
+    protocol: "internal",
+    capabilities: {
+      bridgeDispatch: false,
+      controllable: true,
+      mandatoryFallback: true,
+    },
+    metadata: {
+      source: "builtin",
+      rollout: "stable",
+    },
+  },
+  {
+    adapterId: "codex-cli",
+    name: "Codex CLI",
+    description: "Codex CLI out-of-process runtime adapter.",
+    protocol: "cli_exec",
+    capabilities: {
+      bridgeDispatch: false,
+      controllable: true,
+      internalOnly: true,
+    },
+    metadata: {
+      source: "builtin",
+      rollout: "stable",
+    },
+  },
+  {
+    adapterId: "spacebot-webhook",
+    name: "Spacebot Webhook",
+    description: "Reference external runtime adapter powered by Spacebot webhook transport.",
+    protocol: "webhook",
+    endpoint: "env:SPACEBOT_WEBHOOK_BASE_URL",
+    authRef: "env:SPACEBOT_WEBHOOK_AUTH_TOKEN",
+    capabilities: {
+      bridgeDispatch: false,
+      controllable: true,
+      internalOnly: true,
+      requiresFlag: "SPACEBOT_CONNECTOR_ENABLED",
+    },
+    metadata: {
+      source: "builtin",
+      rollout: "phase-1",
+    },
+  },
+]
+
+const DEFAULT_RUNTIME_BINDINGS: Array<{
+  adapterId: string
+  scope: "profile"
+  scopeKey: "default" | "quartermaster"
+  priority: number
+  enabled: boolean
+}> = [
+  { adapterId: "openclaw", scope: "profile", scopeKey: "default", priority: 10, enabled: true },
+  { adapterId: "openai-fallback", scope: "profile", scopeKey: "default", priority: 20, enabled: true },
+  { adapterId: "local-fallback", scope: "profile", scopeKey: "default", priority: 30, enabled: true },
+  { adapterId: "spacebot-webhook", scope: "profile", scopeKey: "default", priority: 15, enabled: false },
+  { adapterId: "codex-cli", scope: "profile", scopeKey: "quartermaster", priority: 10, enabled: true },
+  { adapterId: "openclaw", scope: "profile", scopeKey: "quartermaster", priority: 20, enabled: true },
+  { adapterId: "openai-fallback", scope: "profile", scopeKey: "quartermaster", priority: 30, enabled: true },
+  { adapterId: "local-fallback", scope: "profile", scopeKey: "quartermaster", priority: 40, enabled: true },
+]
+
+function asInputJson(value: Record<string, unknown>): Prisma.InputJsonValue {
+  return value as unknown as Prisma.InputJsonValue
+}
+
 async function main() {
   const defaultForwardingApiKey = process.env.DEFAULT_FORWARDING_API_KEY || "orchwiz-dev-forwarding-key"
   const defaultSourceNodeId = process.env.DEFAULT_SOURCE_NODE_ID || "local-node"
@@ -196,6 +308,88 @@ async function main() {
   }
 
   console.log(`Seeded ${createdCommands} OpenClaw default commands`)
+
+  let seededRuntimeAdapters = 0
+  for (const adapter of RUNTIME_ADAPTER_SEEDS) {
+    await prisma.runtimeAdapterCatalogEntry.upsert({
+      where: {
+        adapterId: adapter.adapterId,
+      },
+      create: {
+        adapterId: adapter.adapterId,
+        name: adapter.name,
+        description: adapter.description,
+        protocol: adapter.protocol,
+        endpoint: adapter.endpoint || null,
+        authRef: adapter.authRef || null,
+        capabilities: asInputJson(adapter.capabilities),
+        metadata: asInputJson(adapter.metadata),
+        isSystem: true,
+        activationStatus: "approved",
+        activationRationale: "Built-in runtime adapter",
+      },
+      update: {
+        name: adapter.name,
+        description: adapter.description,
+        protocol: adapter.protocol,
+        endpoint: adapter.endpoint || null,
+        authRef: adapter.authRef || null,
+        capabilities: asInputJson(adapter.capabilities),
+        metadata: asInputJson(adapter.metadata),
+        isSystem: true,
+      },
+    })
+    seededRuntimeAdapters += 1
+  }
+
+  const catalogEntries = await prisma.runtimeAdapterCatalogEntry.findMany({
+    where: {
+      adapterId: {
+        in: DEFAULT_RUNTIME_BINDINGS.map((binding) => binding.adapterId),
+      },
+    },
+    select: {
+      id: true,
+      adapterId: true,
+    },
+  })
+  const catalogByAdapterId = new Map(catalogEntries.map((entry) => [entry.adapterId, entry.id]))
+
+  let seededRuntimeBindings = 0
+  for (const binding of DEFAULT_RUNTIME_BINDINGS) {
+    const runtimeAdapterId = catalogByAdapterId.get(binding.adapterId)
+    if (!runtimeAdapterId) {
+      continue
+    }
+
+    await prisma.runtimeAdapterBinding.upsert({
+      where: {
+        runtimeAdapterId_scope_scopeKey: {
+          runtimeAdapterId,
+          scope: binding.scope,
+          scopeKey: binding.scopeKey,
+        },
+      },
+      create: {
+        runtimeAdapterId,
+        scope: binding.scope,
+        scopeKey: binding.scopeKey,
+        priority: binding.priority,
+        enabled: binding.enabled,
+        metadata: asInputJson({
+          source: "seed",
+        }),
+      },
+      update: {
+        priority: binding.priority,
+        enabled: binding.enabled,
+      },
+    })
+    seededRuntimeBindings += 1
+  }
+
+  console.log(`Seeded ${seededRuntimeAdapters} runtime adapters`)
+  console.log(`Seeded ${seededRuntimeBindings} runtime adapter bindings`)
   console.log("Done.")
 }
 

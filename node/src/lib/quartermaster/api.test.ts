@@ -45,6 +45,13 @@ function makeState(): ShipQuartermasterState {
       authority: "scoped_operator",
       runtimeProfile: "quartermaster",
       diagnosticsScope: "read_only",
+      executionLevel: "read_only",
+      loopDefaults: {
+        intervalSeconds: 60,
+        maxDurationSeconds: 1800,
+        maxIterations: 30,
+        autoStopOnHealthyActive: true,
+      },
       channel: "ship-quartermaster",
       policySlug: "quartermaster-readonly",
       subagentId: "subagent-1",

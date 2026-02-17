@@ -55,7 +55,7 @@ function createDeps(overrides: Partial<DevShipQuartermasterRouteDeps> = {}): Dev
           id: "ship-1",
         },
         interactions: [],
-      }) as Record<string, unknown> as Awaited<ReturnType<DevShipQuartermasterRouteDeps["loadState"]>>,
+      }) as unknown as Awaited<ReturnType<DevShipQuartermasterRouteDeps["loadState"]>>,
     runPrompt: async () =>
       ({
         interaction: {
@@ -162,7 +162,7 @@ test("dev quartermaster GET scopes lookup to authenticated actor userId", async 
           return {
             ship: { id: "ship-1" },
             interactions: [],
-          } as Record<string, unknown> as Awaited<ReturnType<DevShipQuartermasterRouteDeps["loadState"]>>
+          } as unknown as Awaited<ReturnType<DevShipQuartermasterRouteDeps["loadState"]>>
         },
       }),
     )
@@ -247,3 +247,49 @@ test("dev quartermaster POST returns autoProvisioned=false when already provisio
   }
 })
 
+test("dev quartermaster POST validates executionLevel", async () => {
+  const restoreEnv = withEnv("NODE_ENV", "development")
+  try {
+    const response = await handlePostDevShipQuartermaster(
+      requestFor({ prompt: "hello", executionLevel: "invalid" }),
+      { shipDeploymentId: "ship-1" },
+      createDeps(),
+    )
+
+    assert.equal(response.status, 400)
+  } finally {
+    restoreEnv()
+  }
+})
+
+test("dev quartermaster POST forwards executionLevel override", async () => {
+  const restoreEnv = withEnv("NODE_ENV", "development")
+  let seenExecutionLevel: string | undefined
+  try {
+    const response = await handlePostDevShipQuartermaster(
+      requestFor({ prompt: "hello", executionLevel: "workspace_write" }),
+      { shipDeploymentId: "ship-1" },
+      createDeps({
+        runPrompt: async (args) => {
+          seenExecutionLevel = args.executionLevel
+          return {
+            ...(await createDeps().runPrompt({
+              userId: "user-1",
+              shipDeploymentId: "ship-1",
+              prompt: "hello",
+              requestedBackend: "auto",
+              autoProvisionIfMissing: true,
+              routePath: "/api/dev/ships/[id]/quartermaster",
+            })),
+            autoProvisioned: false,
+          }
+        },
+      }),
+    )
+
+    assert.equal(response.status, 200)
+    assert.equal(seenExecutionLevel, "workspace_write")
+  } finally {
+    restoreEnv()
+  }
+})

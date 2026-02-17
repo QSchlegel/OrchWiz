@@ -26,7 +26,7 @@ This is the shortest local path for a clean setup.
 ```bash
 git clone git@github.com:QSchlegel/OrchWiz.git
 cd OrchWiz
-git submodule update --init --recursive infra/vendor/kubeview
+git submodule update --init --recursive
 
 cd dev-local
 docker compose up -d
@@ -46,6 +46,50 @@ For the full setup (required env values, wallet-enclave modes, troubleshooting),
 [Getting Started](docs/GETTING_STARTED.md).
 
 Ship clusters include bundled KubeView support (local + cloud profiles) for topology visualization.
+
+## Runtime Adapter Platform (Feature-Flagged)
+
+OrchWiz now includes a registry-driven runtime + toolchain plugin platform with backward-compatible defaults.
+
+- Default behavior remains legacy-compatible until flags are enabled.
+- Built-in runtime adapters are seeded automatically:
+  - `openclaw`
+  - `openai-fallback`
+  - `local-fallback`
+  - `codex-cli`
+  - `spacebot-webhook` (approved catalog entry, disabled by default binding)
+- Runtime profile env overrides still take precedence:
+  - `RUNTIME_PROFILE_DEFAULT`
+  - `RUNTIME_PROFILE_QUARTERMASTER`
+
+Feature flags:
+
+```dotenv
+RUNTIME_ADAPTER_REGISTRY_ENABLED=false
+BRIDGE_DISPATCH_REGISTRY_ENABLED=false
+TOOLCHAIN_PROTOCOL_REGISTRY_ENABLED=false
+SPACEBOT_CONNECTOR_ENABLED=false
+```
+
+Toolchain protocol descriptors support:
+
+- `mcp_sse`
+- `mcp_stdio`
+- `openai_compat`
+- `webhook`
+
+Internal management APIs:
+
+- `GET/POST /api/runtime/adapters`
+- `POST /api/runtime/adapters/:id/activate`
+- `GET/PUT /api/runtime/bindings`
+- `GET /api/toolchains/descriptors`
+
+Spacebot reference runtime:
+
+- Source is vendored at `services/spacebot` (submodule, `main` branch).
+- Runtime provider uses webhook transport (`/send` + `/poll/{conversationId}`).
+- Intended for internal-only rollout by default (no public ingress enabled by default infra templates).
 
 ## Agent VPC Boundary Diagram
 

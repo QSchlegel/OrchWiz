@@ -7,23 +7,10 @@ import {
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
-  type PointerEvent as ReactPointerEvent,
 } from "react"
-import Link from "next/link"
 import {
-  BookOpen,
-  FilePlus2,
-  GripHorizontal,
-  KeyRound,
   Loader2,
   PackagePlus,
-  RefreshCw,
-  Save,
-  Search,
-  Settings2,
-  ShieldCheck,
-  Trash2,
-  Wrench,
   X,
 } from "lucide-react"
 import { useNotifications } from "@/components/notifications"
@@ -32,6 +19,10 @@ import { formatUnreadBadgeCount } from "@/lib/notifications/store"
 import { useEventStream } from "@/lib/realtime/useEventStream"
 import { isShipNotFoundApiError } from "@/lib/ships/errors"
 import type { ShipToolsStateDto } from "@/lib/tools/types"
+import { QuartermasterChatPane } from "@/components/quartermaster/panel/QuartermasterChatPane"
+import { QuartermasterControlRail } from "@/components/quartermaster/panel/QuartermasterControlRail"
+import { QuartermasterHeader } from "@/components/quartermaster/panel/QuartermasterHeader"
+import { QuartermasterKnowledgePane } from "@/components/quartermaster/panel/QuartermasterKnowledgePane"
 
 interface QuartermasterInteraction {
   id: string
@@ -60,6 +51,8 @@ interface QuartermasterStatePayload {
     authority: string
     runtimeProfile: string
     diagnosticsScope: string
+    executionLevel: QuartermasterExecutionLevel
+    loopDefaults: QuartermasterLoopDefaults
     channel: string
     policySlug: string
     subagentId: string | null
@@ -79,6 +72,37 @@ interface QuartermasterStatePayload {
     createdAt: string
   } | null
   interactions: QuartermasterInteraction[]
+}
+
+type QuartermasterExecutionLevel = "read_only" | "workspace_write" | "danger_full_access"
+
+interface QuartermasterLoopDefaults {
+  intervalSeconds: number
+  maxDurationSeconds: number
+  maxIterations: number
+  autoStopOnHealthyActive: boolean
+}
+
+interface QuartermasterLoopRunSummary {
+  taskId: string
+  shipDeploymentId: string
+  status: "pending" | "running" | "thinking" | "completed" | "failed" | "cancelled"
+  startedAt: string
+  completedAt: string | null
+  prompt: string
+  executionLevel: QuartermasterExecutionLevel
+  loopDefaults: QuartermasterLoopDefaults
+  iterationCount: number
+  failureCount: number
+  stopRequested: boolean
+  stopReason: string | null
+  lastIterationAt: string | null
+  lastError: string | null
+}
+
+interface QuartermasterLoopStatusPayload {
+  activeRun: QuartermasterLoopRunSummary | null
+  recentRuns: QuartermasterLoopRunSummary[]
 }
 
 interface ShipQuartermasterPanelProps {
@@ -137,7 +161,7 @@ interface CodexCliConnectorState {
   setupHints: string[]
 }
 
-type QuartermasterTab = "chat" | "knowledge"
+type QuartermasterTab = "chat" | "knowledge" | "controls"
 type KnowledgeScope = "ship" | "fleet" | "all"
 type KnowledgeMode = "hybrid" | "lexical"
 type KnowledgeBackend = "auto" | "vault-local" | "data-core-merged"
@@ -166,13 +190,6 @@ function providerFromInteraction(interaction: QuartermasterInteraction | null): 
   return { provider, fallbackUsed }
 }
 
-function interactionLabel(type: QuartermasterInteraction["type"]): string {
-  if (type === "user_input") return "Operator"
-  if (type === "ai_response") return "Quartermaster"
-  if (type === "tool_use") return "Tool"
-  return "Error"
-}
-
 function flattenKnowledgeFilePaths(nodes: KnowledgeTreeNode[]): string[] {
   const paths: string[] = []
 
@@ -199,12 +216,6 @@ function formatSyncSummary(summary: KnowledgeSyncSummary | null): string {
   return `${status} · ${summary.documentsUpserted} upserted · ${summary.documentsRemoved} removed`
 }
 
-function scopeBadge(scopeType: KnowledgeCitation["scopeType"]): string {
-  if (scopeType === "ship") return "Ship"
-  if (scopeType === "fleet") return "Fleet"
-  return "Global"
-}
-
 function codexAccountProviderLabel(provider: CodexCliAccountProvider): string {
   if (provider === "chatgpt") return "ChatGPT"
   if (provider === "api_key") return "API Key"
@@ -223,52 +234,110 @@ function asErrorMessage(payload: unknown, fallback: string): string {
   return fallback
 }
 
+const DEFAULT_LOOP_DEFAULTS: QuartermasterLoopDefaults = {
+  intervalSeconds: 60,
+  maxDurationSeconds: 30 * 60,
+  maxIterations: 30,
+  autoStopOnHealthyActive: true,
+}
+
+const LOOP_DEFAULT_PRESETS: {
+  key: "balanced" | "fast" | "conservative"
+  label: string
+  defaults: QuartermasterLoopDefaults
+}[] = [
+  {
+    key: "balanced",
+    label: "Balanced",
+    defaults: {
+      intervalSeconds: 60,
+      maxDurationSeconds: 30 * 60,
+      maxIterations: 30,
+      autoStopOnHealthyActive: true,
+    },
+  },
+  {
+    key: "fast",
+    label: "Fast Recovery",
+    defaults: {
+      intervalSeconds: 30,
+      maxDurationSeconds: 20 * 60,
+      maxIterations: 40,
+      autoStopOnHealthyActive: true,
+    },
+  },
+  {
+    key: "conservative",
+    label: "Conservative",
+    defaults: {
+      intervalSeconds: 90,
+      maxDurationSeconds: 30 * 60,
+      maxIterations: 20,
+      autoStopOnHealthyActive: true,
+    },
+  },
+]
+
+function normalizeLoopDefaults(value: unknown): QuartermasterLoopDefaults {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return DEFAULT_LOOP_DEFAULTS
+  }
+
+  const record = value as Record<string, unknown>
+  const intervalSecondsRaw = typeof record.intervalSeconds === "number" ? record.intervalSeconds : DEFAULT_LOOP_DEFAULTS.intervalSeconds
+  const maxDurationSecondsRaw = typeof record.maxDurationSeconds === "number" ? record.maxDurationSeconds : DEFAULT_LOOP_DEFAULTS.maxDurationSeconds
+  const maxIterationsRaw = typeof record.maxIterations === "number" ? record.maxIterations : DEFAULT_LOOP_DEFAULTS.maxIterations
+  const autoStopOnHealthyActiveRaw = typeof record.autoStopOnHealthyActive === "boolean"
+    ? record.autoStopOnHealthyActive
+    : DEFAULT_LOOP_DEFAULTS.autoStopOnHealthyActive
+
+  return {
+    intervalSeconds: clamp(Math.trunc(intervalSecondsRaw), 10, 3600),
+    maxDurationSeconds: clamp(Math.trunc(maxDurationSecondsRaw), 60, 86400),
+    maxIterations: clamp(Math.trunc(maxIterationsRaw), 1, 1000),
+    autoStopOnHealthyActive: autoStopOnHealthyActiveRaw,
+  }
+}
+
+function loopDefaultsEqual(left: QuartermasterLoopDefaults, right: QuartermasterLoopDefaults): boolean {
+  return (
+    left.intervalSeconds === right.intervalSeconds
+    && left.maxDurationSeconds === right.maxDurationSeconds
+    && left.maxIterations === right.maxIterations
+    && left.autoStopOnHealthyActive === right.autoStopOnHealthyActive
+  )
+}
+
+function executionLevelLabel(level: QuartermasterExecutionLevel): string {
+  if (level === "danger_full_access") return "Danger Full Access"
+  if (level === "workspace_write") return "Workspace Write"
+  return "Read Only"
+}
+
+function loopStopReasonLabel(reason: string | null): string {
+  if (!reason) return "Not set"
+  return reason.replaceAll("_", " ")
+}
+
+function formatDurationSeconds(totalSeconds: number): string {
+  const seconds = Math.max(0, Math.floor(totalSeconds))
+  const hours = Math.floor(seconds / 3600)
+  const minutes = Math.floor((seconds % 3600) / 60)
+  const remainder = seconds % 60
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`
+  }
+  if (minutes > 0) {
+    return `${minutes}m ${remainder}s`
+  }
+  return `${remainder}s`
+}
+
 function createApiResponseError(payload: unknown, status: number, fallback: string): ApiResponseError {
   const error = new Error(asErrorMessage(payload, fallback)) as ApiResponseError
   error.status = status
   error.payload = payload
   return error
-}
-
-function KnowledgeTreeList(props: {
-  nodes: KnowledgeTreeNode[]
-  selectedPath: string | null
-  onSelectPath: (path: string) => void
-}) {
-  const { nodes, selectedPath, onSelectPath } = props
-
-  const renderNodes = (items: KnowledgeTreeNode[], depth: number) =>
-    items.map((node) => {
-      if (node.nodeType === "folder") {
-        return (
-          <div key={node.id}>
-            <p className="truncate px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400" style={{ paddingLeft: `${depth * 12 + 8}px` }}>
-              {node.name}
-            </p>
-            {node.children?.length ? renderNodes(node.children, depth + 1) : null}
-          </div>
-        )
-      }
-
-      const selected = selectedPath === node.path
-      return (
-        <button
-          key={node.id}
-          type="button"
-          onClick={() => onSelectPath(node.path)}
-          className={`block w-full truncate rounded-md px-2 py-1.5 text-left text-xs ${
-            selected
-              ? "bg-cyan-500/15 text-cyan-800 dark:text-cyan-100"
-              : "text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-white/[0.08]"
-          }`}
-          style={{ paddingLeft: `${depth * 12 + 8}px` }}
-        >
-          {node.name}
-        </button>
-      )
-    })
-
-  return <div className="space-y-0.5">{renderNodes(nodes, 0)}</div>
 }
 
 export function ShipQuartermasterPanel({
@@ -283,13 +352,31 @@ export function ShipQuartermasterPanel({
   const { getUnread, registerActiveChannels } = useNotifications()
   const [tab, setTab] = useState<QuartermasterTab>("chat")
   const [state, setState] = useState<QuartermasterStatePayload | null>(null)
+  const [quartermasterConfig, setQuartermasterConfig] = useState<QuartermasterStatePayload["quartermaster"] | null>(null)
+  const [executionLevelDraft, setExecutionLevelDraft] = useState<QuartermasterExecutionLevel>("read_only")
+  const [loopDefaultsDraft, setLoopDefaultsDraft] = useState<QuartermasterLoopDefaults>(DEFAULT_LOOP_DEFAULTS)
+  const [isConfigLoading, setIsConfigLoading] = useState(false)
+  const [isConfigSaving, setIsConfigSaving] = useState(false)
+  const [dangerModeConfirmed, setDangerModeConfirmed] = useState(false)
+  const [showExecutiveControls, setShowExecutiveControls] = useState(!compact)
+  const [showLoopControls, setShowLoopControls] = useState(!compact)
   const [isLoading, setIsLoading] = useState(false)
   const [isProvisioning, setIsProvisioning] = useState(false)
   const [isSending, setIsSending] = useState(false)
-  const [isResizingChat, setIsResizingChat] = useState(false)
+  const [loopPrompt, setLoopPrompt] = useState("")
+  const [loopStatus, setLoopStatus] = useState<QuartermasterLoopStatusPayload | null>(null)
+  const [isLoopStatusLoading, setIsLoopStatusLoading] = useState(false)
+  const [isLoopStarting, setIsLoopStarting] = useState(false)
+  const [isLoopStopping, setIsLoopStopping] = useState(false)
+  const [loopNowMs, setLoopNowMs] = useState<number>(Date.now())
   const [prompt, setPrompt] = useState("")
   const [pendingChatInteraction, setPendingChatInteraction] = useState<QuartermasterInteraction | null>(null)
-  const [isAdvancedOpen, setIsAdvancedOpen] = useState(false)
+  const [isNarrowLayout, setIsNarrowLayout] = useState(() => {
+    if (typeof window === "undefined") {
+      return compact
+    }
+    return window.matchMedia("(max-width: 1023px)").matches
+  })
   const [error, setError] = useState<string | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
 
@@ -325,8 +412,6 @@ export function ShipQuartermasterPanel({
   const [codexConnectorApiKey, setCodexConnectorApiKey] = useState("")
   const [codexConnectorNotice, setCodexConnectorNotice] = useState<string | null>(null)
   const [shipNotFoundNotice, setShipNotFoundNotice] = useState<string | null>(null)
-  const [chatWindowHeightPx, setChatWindowHeightPx] = useState(compact ? 260 : 320)
-  const [chatWindowWidthPx, setChatWindowWidthPx] = useState(compact ? 560 : 680)
   const chatLogRef = useRef<HTMLDivElement | null>(null)
   const promptRef = useRef<HTMLTextAreaElement | null>(null)
   const pendingPromptFocusRef = useRef(false)
@@ -417,6 +502,7 @@ export function ShipQuartermasterPanel({
   const fetchState = useCallback(async () => {
     if (!shipDeploymentId) {
       setState(null)
+      setQuartermasterConfig(null)
       setError(null)
       setShipNotFoundNotice(null)
       return
@@ -430,7 +516,11 @@ export function ShipQuartermasterPanel({
         throw createApiResponseError(payload, response.status, `Failed to load quartermaster state (${response.status})`)
       }
 
-      setState(payload as QuartermasterStatePayload)
+      const nextState = payload as QuartermasterStatePayload
+      setState(nextState)
+      if (nextState.quartermaster) {
+        setQuartermasterConfig((current) => current || nextState.quartermaster)
+      }
       setError(null)
       setShipNotFoundNotice(null)
     } catch (loadError) {
@@ -444,6 +534,91 @@ export function ShipQuartermasterPanel({
       setError(loadError instanceof Error ? loadError.message : "Failed to load quartermaster state")
     } finally {
       setIsLoading(false)
+    }
+  }, [handleShipNotFound, shipDeploymentId])
+
+  const fetchQuartermasterConfig = useCallback(async () => {
+    if (!shipDeploymentId) {
+      setQuartermasterConfig(null)
+      setExecutionLevelDraft("read_only")
+      setLoopDefaultsDraft(DEFAULT_LOOP_DEFAULTS)
+      setDangerModeConfirmed(false)
+      return
+    }
+
+    setIsConfigLoading(true)
+    try {
+      const response = await fetch(`/api/ships/${shipDeploymentId}/quartermaster/config`, {
+        cache: "no-store",
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        throw createApiResponseError(payload, response.status, `Failed to load quartermaster controls (${response.status})`)
+      }
+
+      const quartermaster = (payload as { quartermaster?: QuartermasterStatePayload["quartermaster"] }).quartermaster
+      if (quartermaster) {
+        setQuartermasterConfig(quartermaster)
+        setExecutionLevelDraft(quartermaster.executionLevel || "read_only")
+        setLoopDefaultsDraft(normalizeLoopDefaults(quartermaster.loopDefaults))
+      }
+      setDangerModeConfirmed(false)
+      setError(null)
+      setShipNotFoundNotice(null)
+    } catch (configError) {
+      if (await handleShipNotFound(configError)) {
+        setQuartermasterConfig(null)
+        setExecutionLevelDraft("read_only")
+        setLoopDefaultsDraft(DEFAULT_LOOP_DEFAULTS)
+        return
+      }
+
+      console.error("Failed to load quartermaster controls:", configError)
+      setQuartermasterConfig(null)
+      setExecutionLevelDraft("read_only")
+      setLoopDefaultsDraft(DEFAULT_LOOP_DEFAULTS)
+      setError(configError instanceof Error ? configError.message : "Failed to load quartermaster controls")
+    } finally {
+      setIsConfigLoading(false)
+    }
+  }, [handleShipNotFound, shipDeploymentId])
+
+  const fetchLoopStatus = useCallback(async (options?: { silent?: boolean }) => {
+    if (!shipDeploymentId) {
+      setLoopStatus(null)
+      return
+    }
+
+    if (!options?.silent) {
+      setIsLoopStatusLoading(true)
+    }
+    try {
+      const response = await fetch(`/api/ships/${shipDeploymentId}/quartermaster/loop`, {
+        cache: "no-store",
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        throw createApiResponseError(payload, response.status, `Failed to load quartermaster loop status (${response.status})`)
+      }
+
+      setLoopStatus(payload as QuartermasterLoopStatusPayload)
+      setError(null)
+      setShipNotFoundNotice(null)
+    } catch (loopError) {
+      if (await handleShipNotFound(loopError)) {
+        setLoopStatus(null)
+        return
+      }
+
+      console.error("Failed to load quartermaster loop status:", loopError)
+      if (!options?.silent) {
+        setError(loopError instanceof Error ? loopError.message : "Failed to load quartermaster loop status")
+      }
+      setLoopStatus(null)
+    } finally {
+      if (!options?.silent) {
+        setIsLoopStatusLoading(false)
+      }
     }
   }, [handleShipNotFound, shipDeploymentId])
 
@@ -585,7 +760,22 @@ export function ShipQuartermasterPanel({
   }, [fetchState])
 
   useEffect(() => {
+    void fetchQuartermasterConfig()
+  }, [fetchQuartermasterConfig])
+
+  useEffect(() => {
+    void fetchLoopStatus()
+  }, [fetchLoopStatus])
+
+  useEffect(() => {
     if (!shipDeploymentId) {
+      setQuartermasterConfig(null)
+      setExecutionLevelDraft("read_only")
+      setLoopDefaultsDraft(DEFAULT_LOOP_DEFAULTS)
+      setDangerModeConfirmed(false)
+      setLoopPrompt("")
+      setLoopStatus(null)
+      setLoopNowMs(Date.now())
       setCodexConnector(null)
       setCodexConnectorApiKey("")
       setCodexConnectorNotice(null)
@@ -611,8 +801,10 @@ export function ShipQuartermasterPanel({
       setIsToolRequestModalOpen(false)
       setCodexConnectorApiKey("")
       setPendingChatInteraction(null)
-      setIsAdvancedOpen(false)
       setShipNotFoundNotice(null)
+      setLoopStatus(null)
+      setLoopPrompt("")
+      setDangerModeConfirmed(false)
       return
     }
 
@@ -628,9 +820,26 @@ export function ShipQuartermasterPanel({
   }, [loadKnowledgeNote, selectedKnowledgePath])
 
   useEffect(() => {
-    setChatWindowHeightPx(compact ? 260 : 320)
-    setChatWindowWidthPx(compact ? 560 : 680)
-  }, [compact])
+    if (typeof window === "undefined") {
+      return
+    }
+
+    const media = window.matchMedia("(max-width: 1023px)")
+    const apply = () => {
+      setIsNarrowLayout(media.matches)
+    }
+    apply()
+    media.addEventListener("change", apply)
+    return () => {
+      media.removeEventListener("change", apply)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!isNarrowLayout && tab === "controls") {
+      setTab("chat")
+    }
+  }, [isNarrowLayout, tab])
 
   useEventStream({
     enabled: Boolean(state?.session?.id),
@@ -639,12 +848,27 @@ export function ShipQuartermasterPanel({
       const payload = event.payload as { sessionId?: string }
       if (payload?.sessionId && payload.sessionId === state?.session?.id) {
         void fetchState()
+        void fetchLoopStatus({ silent: true })
       }
     },
   })
 
   useEffect(() => {
-    return registerActiveChannels([QUARTERMASTER_TAB_NOTIFICATION_CHANNEL[tab]])
+    if (!successMessage) {
+      return
+    }
+
+    const timer = window.setTimeout(() => {
+      setSuccessMessage(null)
+    }, 4500)
+    return () => {
+      window.clearTimeout(timer)
+    }
+  }, [successMessage])
+
+  useEffect(() => {
+    const activeTab = tab === "knowledge" ? "knowledge" : "chat"
+    return registerActiveChannels([QUARTERMASTER_TAB_NOTIFICATION_CHANNEL[activeTab]])
   }, [registerActiveChannels, tab])
 
   const latestAiInteraction = useMemo(() => {
@@ -670,6 +894,28 @@ export function ShipQuartermasterPanel({
     return [...baseInteractions, pendingChatInteraction]
   }, [pendingChatInteraction, state?.interactions])
   const showCodexConnectorSetup = isCodexConnectorLoading || codexConnector?.accountConnected !== true
+  const effectiveQuartermaster = quartermasterConfig || state?.quartermaster || null
+  const persistedExecutionLevel = effectiveQuartermaster?.executionLevel || "read_only"
+  const persistedLoopDefaults = normalizeLoopDefaults(effectiveQuartermaster?.loopDefaults)
+  const isControlDraftDirty = (
+    executionLevelDraft !== persistedExecutionLevel
+    || !loopDefaultsEqual(loopDefaultsDraft, persistedLoopDefaults)
+  )
+  const activeLoopRun = loopStatus?.activeRun || null
+  const latestLoopRun = loopStatus?.recentRuns?.[0] || null
+  const activeLoopElapsedSeconds = (() => {
+    if (!activeLoopRun) {
+      return 0
+    }
+    const startedAtMs = Date.parse(activeLoopRun.startedAt)
+    if (!Number.isFinite(startedAtMs)) {
+      return 0
+    }
+    return Math.max(0, Math.floor((loopNowMs - startedAtMs) / 1000))
+  })()
+  const activeLoopDurationPercent = activeLoopRun
+    ? clamp(Math.round((activeLoopElapsedSeconds / Math.max(1, activeLoopRun.loopDefaults.maxDurationSeconds)) * 100), 0, 100)
+    : 0
 
   const toolRequestableEntries = useMemo(() => {
     if (!toolRequestState) {
@@ -708,56 +954,33 @@ export function ShipQuartermasterPanel({
   }, [displayedInteractions.length, isSending, pendingChatInteraction?.id, tab])
 
   useEffect(() => {
-    if (!isResizingChat) {
+    if (!shipDeploymentId) {
       return
     }
 
-    const minHeightPx = compact ? 180 : 220
-    const maxHeightPx = compact ? 760 : 920
-    const minWidthPx = compact ? 320 : 420
-    const handlePointerMove = (event: PointerEvent) => {
-      const start = chatResizeStartRef.current
-      if (!start) {
-        return
-      }
+    const pollInterval = window.setInterval(() => {
+      void fetchLoopStatus({ silent: true })
+    }, 5000)
 
-      const maxWidthPx = Math.max(minWidthPx, window.innerWidth - (compact ? 56 : 104))
-      const deltaX = start.startX - event.clientX
-      const deltaY = start.startY - event.clientY
-      setChatWindowWidthPx(clamp(start.startWidthPx + deltaX, minWidthPx, maxWidthPx))
-      setChatWindowHeightPx(clamp(start.startHeightPx + deltaY, minHeightPx, maxHeightPx))
-    }
-
-    const stopResizing = () => {
-      chatResizeStartRef.current = null
-      setIsResizingChat(false)
-    }
-
-    window.addEventListener("pointermove", handlePointerMove)
-    window.addEventListener("pointerup", stopResizing)
-    window.addEventListener("pointercancel", stopResizing)
     return () => {
-      window.removeEventListener("pointermove", handlePointerMove)
-      window.removeEventListener("pointerup", stopResizing)
-      window.removeEventListener("pointercancel", stopResizing)
+      window.clearInterval(pollInterval)
     }
-  }, [compact, isResizingChat])
+  }, [fetchLoopStatus, shipDeploymentId])
 
-  const handleChatResizeStart = (event: ReactPointerEvent<HTMLButtonElement>) => {
-    if (tab !== "chat") {
+  useEffect(() => {
+    if (!loopStatus?.activeRun) {
       return
     }
 
-    event.preventDefault()
-    event.currentTarget.setPointerCapture(event.pointerId)
-    chatResizeStartRef.current = {
-      startX: event.clientX,
-      startY: event.clientY,
-      startWidthPx: chatWindowWidthPx,
-      startHeightPx: chatWindowHeightPx,
+    setLoopNowMs(Date.now())
+    const ticker = window.setInterval(() => {
+      setLoopNowMs(Date.now())
+    }, 1000)
+
+    return () => {
+      window.clearInterval(ticker)
     }
-    setIsResizingChat(true)
-  }
+  }, [loopStatus?.activeRun?.taskId])
 
   const openToolRequestModal = async () => {
     if (!shipDeploymentId) {
@@ -836,6 +1059,8 @@ export function ShipQuartermasterPanel({
       }
 
       await fetchState()
+      await fetchQuartermasterConfig()
+      await fetchLoopStatus()
       setError(null)
       setShipNotFoundNotice(null)
     } catch (provisionError) {
@@ -850,11 +1075,182 @@ export function ShipQuartermasterPanel({
     }
   }
 
-  const handleSend = async () => {
-    const outgoingPrompt = prompt.trim()
+  const saveQuartermasterConfig = async () => {
+    if (!shipDeploymentId || isConfigSaving) {
+      return
+    }
+    if (!isControlDraftDirty) {
+      setSuccessMessage("Quartermaster controls already match saved state.")
+      return
+    }
+
+    if (executionLevelDraft === "danger_full_access" && !dangerModeConfirmed) {
+      setError("Danger mode requires explicit confirmation before applying controls.")
+      return
+    }
+
+    setIsConfigSaving(true)
+    try {
+      const response = await fetch(`/api/ships/${shipDeploymentId}/quartermaster/config`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          executionLevel: executionLevelDraft,
+          loopDefaults: loopDefaultsDraft,
+          ...(executionLevelDraft === "danger_full_access"
+            ? { confirmDangerous: true }
+            : {}),
+        }),
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        throw createApiResponseError(payload, response.status, `Failed to update quartermaster controls (${response.status})`)
+      }
+
+      const updatedQuartermaster = (payload as { quartermaster?: QuartermasterStatePayload["quartermaster"] }).quartermaster
+      if (updatedQuartermaster) {
+        setQuartermasterConfig(updatedQuartermaster)
+        setExecutionLevelDraft(updatedQuartermaster.executionLevel || "read_only")
+        setLoopDefaultsDraft(normalizeLoopDefaults(updatedQuartermaster.loopDefaults))
+        setState((current) => {
+          if (!current) {
+            return current
+          }
+          return {
+            ...current,
+            quartermaster: updatedQuartermaster,
+          }
+        })
+      }
+
+      setDangerModeConfirmed(false)
+      setError(null)
+      setShipNotFoundNotice(null)
+      setSuccessMessage("Quartermaster controls updated.")
+    } catch (configError) {
+      if (await handleShipNotFound(configError)) {
+        return
+      }
+
+      console.error("Failed to update quartermaster controls:", configError)
+      setError(configError instanceof Error ? configError.message : "Failed to update quartermaster controls")
+    } finally {
+      setIsConfigSaving(false)
+    }
+  }
+
+  const updateLoopDefaultsDraft = (patch: Partial<QuartermasterLoopDefaults>) => {
+    setLoopDefaultsDraft((current) => normalizeLoopDefaults({
+      ...current,
+      ...patch,
+    }))
+  }
+
+  const applyLoopDefaultsPreset = (presetKey: "balanced" | "fast" | "conservative") => {
+    const preset = LOOP_DEFAULT_PRESETS.find((entry) => entry.key === presetKey)
+    if (!preset) {
+      return
+    }
+    setLoopDefaultsDraft(normalizeLoopDefaults(preset.defaults))
+  }
+
+  const resetControlDraftToSaved = () => {
+    setExecutionLevelDraft(persistedExecutionLevel)
+    setLoopDefaultsDraft(persistedLoopDefaults)
+    setDangerModeConfirmed(false)
+    setError(null)
+  }
+
+  const startQuartermasterLoopRun = async (options?: { promptOverride?: string }) => {
+    if (!shipDeploymentId || isLoopStarting) {
+      return
+    }
+
+    const effectivePrompt = options?.promptOverride?.trim() || loopPrompt.trim() || prompt.trim()
+    if (!effectivePrompt) {
+      setError("Loop prompt required. Add a loop objective before starting.")
+      return
+    }
+
+    setIsLoopStarting(true)
+    try {
+      const response = await fetch(`/api/ships/${shipDeploymentId}/quartermaster/loop`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          prompt: effectivePrompt,
+          executionLevel: executionLevelDraft,
+          loopDefaults: loopDefaultsDraft,
+        }),
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        throw createApiResponseError(payload, response.status, `Failed to start quartermaster loop (${response.status})`)
+      }
+
+      setLoopStatus(payload as QuartermasterLoopStatusPayload)
+      setLoopPrompt(effectivePrompt)
+      setError(null)
+      setShipNotFoundNotice(null)
+      setSuccessMessage("Quartermaster self-prompt loop started.")
+    } catch (loopError) {
+      if (await handleShipNotFound(loopError)) {
+        return
+      }
+
+      console.error("Failed to start quartermaster loop:", loopError)
+      setError(loopError instanceof Error ? loopError.message : "Failed to start quartermaster loop")
+    } finally {
+      setIsLoopStarting(false)
+    }
+  }
+
+  const stopQuartermasterLoopRun = async () => {
+    if (!shipDeploymentId || isLoopStopping) {
+      return
+    }
+
+    setIsLoopStopping(true)
+    try {
+      const response = await fetch(`/api/ships/${shipDeploymentId}/quartermaster/loop`, {
+        method: "DELETE",
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        throw createApiResponseError(payload, response.status, `Failed to stop quartermaster loop (${response.status})`)
+      }
+
+      setLoopStatus(payload as QuartermasterLoopStatusPayload)
+      setError(null)
+      setShipNotFoundNotice(null)
+      setSuccessMessage("Quartermaster self-prompt loop stopped.")
+    } catch (loopError) {
+      if (await handleShipNotFound(loopError)) {
+        return
+      }
+
+      console.error("Failed to stop quartermaster loop:", loopError)
+      setError(loopError instanceof Error ? loopError.message : "Failed to stop quartermaster loop")
+    } finally {
+      setIsLoopStopping(false)
+    }
+  }
+
+  const submitPrompt = async (outgoingPrompt: string) => {
     if (!shipDeploymentId || !outgoingPrompt || isSending) {
       return
     }
+
+    const persistedExecutionLevel = quartermasterConfig?.executionLevel
+      || state?.quartermaster.executionLevel
+      || "read_only"
+    const executionLevelOverride = executionLevelDraft !== persistedExecutionLevel
+      ? executionLevelDraft
+      : undefined
 
     const optimisticInteraction: QuartermasterInteraction = {
       id: `pending:${Date.now()}`,
@@ -875,6 +1271,7 @@ export function ShipQuartermasterPanel({
         body: JSON.stringify({
           prompt: outgoingPrompt,
           backend: knowledgeBackend,
+          ...(executionLevelOverride ? { executionLevel: executionLevelOverride } : {}),
         }),
       })
 
@@ -911,13 +1308,50 @@ export function ShipQuartermasterPanel({
     }
   }
 
+  const handleSend = async () => {
+    const outgoingPrompt = prompt.trim()
+    await submitPrompt(outgoingPrompt)
+  }
+
+  const retryLastPrompt = () => {
+    const sourceInteractions = state?.interactions || []
+    for (let i = sourceInteractions.length - 1; i >= 0; i -= 1) {
+      if (sourceInteractions[i].type === "user_input") {
+        void submitPrompt(sourceInteractions[i].content.trim())
+        return
+      }
+    }
+
+    setError("No prior operator prompt is available to retry.")
+  }
+
   const handlePromptKeyDown = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) {
+    if (event.nativeEvent.isComposing) {
+      return
+    }
+    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault()
+      void startQuartermasterLoopRun({
+        promptOverride: prompt.trim(),
+      })
+      return
+    }
+    if (event.key !== "Enter" || event.shiftKey) {
       return
     }
 
     event.preventDefault()
     void handleSend()
+  }
+
+  const handleLoopPromptKeyDown = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.nativeEvent.isComposing) {
+      return
+    }
+    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault()
+      void startQuartermasterLoopRun()
+    }
   }
 
   const connectCodexAccountWithApiKey = async () => {
@@ -972,7 +1406,7 @@ export function ShipQuartermasterPanel({
         scope: knowledgeScope,
         mode: knowledgeMode,
         backend: knowledgeBackend,
-        k: compact ? "6" : "12",
+        k: isNarrowLayout ? "6" : "12",
       })
       const response = await fetch(`/api/ships/${shipDeploymentId}/knowledge?${params.toString()}`)
       const payload = await response.json().catch(() => ({}))
@@ -1138,256 +1572,27 @@ export function ShipQuartermasterPanel({
     )
   }
 
+  const tabBadgeLabel = (item: QuartermasterTab): string | null => {
+    if (item === "controls") {
+      return null
+    }
+    const unread = getUnread([QUARTERMASTER_TAB_NOTIFICATION_CHANNEL[item]])
+    return formatUnreadBadgeCount(unread)
+  }
+
   return (
-    <div
-      className={`rounded-xl border border-slate-300/70 bg-white/75 p-4 dark:border-white/12 dark:bg-white/[0.04] ${className || ""}`.trim()}
-      style={{ width: `${chatWindowWidthPx}px`, maxWidth: "100%" }}
-    >
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <div className="flex items-center gap-2">
-            {tab === "chat" && (
-              <button
-                type="button"
-                onPointerDown={handleChatResizeStart}
-                className={`inline-flex h-6 w-6 cursor-nwse-resize select-none touch-none items-center justify-center rounded-md border border-slate-300/70 text-slate-600 dark:border-white/12 dark:text-slate-300 ${
-                  isResizingChat ? "bg-cyan-500/14 text-cyan-700 dark:text-cyan-200" : "bg-white/80 dark:bg-slate-900/70"
-                }`}
-                aria-label="Resize ShipQuartermasterPanel horizontally and vertically"
-                title="Drag diagonally to resize ShipQuartermasterPanel"
-              >
-                <GripHorizontal className="h-3 w-3 -rotate-45" />
-              </button>
-            )}
-            <p className="text-[11px] uppercase tracking-wide text-slate-500 dark:text-slate-400">Fleet Quartermaster</p>
-          </div>
-          <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-            {state?.quartermaster.callsign || "QTM-LGR"} · Fleet
-          </h3>
-          <p className="mt-0.5 text-xs text-slate-600 dark:text-slate-300">
-            Ship context: {shipName || state?.ship.name || "Ship"}
-          </p>
-        </div>
-        <div className="flex items-center gap-2 text-xs">
-          <span className={`rounded-md border px-2 py-1 ${state?.quartermaster.enabled ? "border-emerald-400/45 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200" : "border-amber-400/45 bg-amber-500/10 text-amber-700 dark:text-amber-200"}`}>
-            {state?.quartermaster.enabled ? "Enabled" : "Manual Enable"}
-          </span>
-          {!compact && providerState.provider && (
-            <span className="rounded-md border border-cyan-400/45 bg-cyan-500/10 px-2 py-1 text-cyan-700 dark:text-cyan-200">
-              Provider: {providerState.provider}
-            </span>
-          )}
-          {!compact && providerState.fallbackUsed === true && (
-            <span className="rounded-md border border-orange-400/45 bg-orange-500/10 px-2 py-1 text-orange-700 dark:text-orange-200">
-              Fallback
-            </span>
-          )}
-          {!compact && (
-            <button
-              type="button"
-              onClick={() => void openToolRequestModal()}
-              disabled={isToolRequestOptionsLoading}
-              className="inline-flex items-center gap-1 rounded-md border border-cyan-500/45 bg-cyan-500/10 px-2 py-1 text-cyan-700 disabled:opacity-50 dark:border-cyan-300/45 dark:text-cyan-200"
-            >
-              {isToolRequestOptionsLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <PackagePlus className="h-3.5 w-3.5" />}
-              File Tool Request
-            </button>
-          )}
-        </div>
-      </div>
-
-      {compact ? (
-        <div className="mt-2">
-          <button
-            type="button"
-            onClick={() => setIsAdvancedOpen((current) => !current)}
-            className="rounded-md border border-slate-300 px-2 py-1 text-[11px] text-slate-700 dark:border-white/15 dark:text-slate-300"
-          >
-            {isAdvancedOpen ? "Hide Advanced" : "Show Advanced"}
-          </button>
-          {isAdvancedOpen && (
-            <div className="mt-2 rounded-lg border border-slate-300/70 bg-white/70 p-2.5 dark:border-white/12 dark:bg-white/[0.03]">
-              <div className="flex flex-wrap items-center gap-2 text-xs">
-                {providerState.provider && (
-                  <span className="rounded-md border border-cyan-400/45 bg-cyan-500/10 px-2 py-1 text-cyan-700 dark:text-cyan-200">
-                    Provider: {providerState.provider}
-                  </span>
-                )}
-                {providerState.fallbackUsed === true && (
-                  <span className="rounded-md border border-orange-400/45 bg-orange-500/10 px-2 py-1 text-orange-700 dark:text-orange-200">
-                    Fallback
-                  </span>
-                )}
-                <button
-                  type="button"
-                  onClick={() => void openToolRequestModal()}
-                  disabled={isToolRequestOptionsLoading}
-                  className="inline-flex items-center gap-1 rounded-md border border-cyan-500/45 bg-cyan-500/10 px-2 py-1 text-cyan-700 disabled:opacity-50 dark:border-cyan-300/45 dark:text-cyan-200"
-                >
-                  {isToolRequestOptionsLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <PackagePlus className="h-3.5 w-3.5" />}
-                  File Tool Request
-                </button>
-              </div>
-              <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-600 dark:text-slate-300">
-                <span className="inline-flex items-center gap-1 rounded-md border border-slate-300/70 px-2 py-1 dark:border-white/12">
-                  <ShieldCheck className="h-3 w-3" />
-                  {state?.quartermaster.authority || "scoped_operator"}
-                </span>
-                <span className="inline-flex items-center gap-1 rounded-md border border-slate-300/70 px-2 py-1 dark:border-white/12">
-                  <Wrench className="h-3 w-3" />
-                  {state?.quartermaster.diagnosticsScope || "read_only"}
-                </span>
-              </div>
-            </div>
-          )}
-        </div>
-      ) : (
-        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-600 dark:text-slate-300">
-          <span className="inline-flex items-center gap-1 rounded-md border border-slate-300/70 px-2 py-1 dark:border-white/12">
-            <ShieldCheck className="h-3 w-3" />
-            {state?.quartermaster.authority || "scoped_operator"}
-          </span>
-          <span className="inline-flex items-center gap-1 rounded-md border border-slate-300/70 px-2 py-1 dark:border-white/12">
-            <Wrench className="h-3 w-3" />
-            {state?.quartermaster.diagnosticsScope || "read_only"}
-          </span>
-        </div>
-      )}
-
-      {showCodexConnectorSetup && (
-        <div className="mt-3 rounded-lg border border-slate-300/70 bg-white/80 p-3 dark:border-white/12 dark:bg-white/[0.03]">
-          <div className="flex flex-wrap items-start justify-between gap-2">
-            <div>
-              <p className="text-[11px] uppercase tracking-wide text-slate-500 dark:text-slate-400">Codex CLI Connector</p>
-              <p className="text-xs text-slate-600 dark:text-slate-300">
-                Quick setup for the local Codex CLI account used by Quartermaster runtime.
-              </p>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <Link
-                href="/settings"
-                className="inline-flex items-center gap-1 rounded-md border border-slate-300 px-2 py-1 text-[11px] text-slate-700 hover:bg-slate-100 dark:border-white/15 dark:text-slate-300 dark:hover:bg-white/[0.08]"
-              >
-                <Settings2 className="h-3 w-3" />
-                Open Settings
-              </Link>
-              <button
-                type="button"
-                onClick={() => void loadCodexConnector()}
-                disabled={isCodexConnectorLoading || isCodexConnectorUpdating}
-                className="inline-flex items-center gap-1 rounded-md border border-slate-300 px-2 py-1 text-[11px] text-slate-700 disabled:opacity-50 dark:border-white/15 dark:text-slate-300"
-              >
-                {isCodexConnectorLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
-                Refresh
-              </button>
-            </div>
-          </div>
-
-          {isCodexConnectorLoading ? (
-            <div className="mt-2 inline-flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300">
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              Inspecting Codex CLI connector...
-            </div>
-          ) : codexConnector ? (
-            <>
-              <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-slate-600 dark:text-slate-300">
-                <span className={`rounded-md border px-2 py-1 ${codexConnector.binaryAvailable ? "border-emerald-400/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200" : "border-rose-400/40 bg-rose-500/10 text-rose-700 dark:text-rose-200"}`}>
-                  {codexConnector.binaryAvailable ? "CLI Ready" : "CLI Missing"}
-                </span>
-                <span className="rounded-md border border-amber-400/40 bg-amber-500/10 px-2 py-1 text-amber-700 dark:text-amber-200">
-                  Account: {codexAccountProviderLabel(codexConnector.accountProvider)}
-                </span>
-                {codexConnector.version && (
-                  <span className="rounded-md border border-slate-300/70 px-2 py-1 dark:border-white/15">
-                    {codexConnector.version}
-                  </span>
-                )}
-              </div>
-
-              <p className="mt-2 text-[11px] text-slate-500 dark:text-slate-400">
-                Binary: <code>{codexConnector.executable}</code>
-              </p>
-              {codexConnector.statusMessage && (
-                <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">{codexConnector.statusMessage}</p>
-              )}
-              {codexConnector.setupHints.length > 0 && (
-                <div className="mt-2 space-y-1 text-[11px] text-slate-600 dark:text-slate-300">
-                  {codexConnector.setupHints.map((hint, index) => (
-                    <p key={`${hint}:${index}`}>{index + 1}. {hint}</p>
-                  ))}
-                </div>
-              )}
-
-              {codexConnector.binaryAvailable && (
-                <div className="mt-3 rounded-md border border-cyan-400/30 bg-cyan-500/10 p-2.5">
-                  <label className="text-[11px] uppercase tracking-wide text-cyan-700 dark:text-cyan-200">
-                    API Key Setup
-                  </label>
-                  <div className="mt-1.5 flex flex-wrap items-center gap-2">
-                    <input
-                      type="password"
-                      value={codexConnectorApiKey}
-                      onChange={(event) => setCodexConnectorApiKey(event.target.value)}
-                      placeholder="sk-..."
-                      className="min-w-[220px] flex-1 rounded-md border border-cyan-500/35 bg-white px-2 py-1.5 text-xs text-slate-900 dark:border-cyan-300/35 dark:bg-white/[0.06] dark:text-slate-100"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => void connectCodexAccountWithApiKey()}
-                      disabled={isCodexConnectorUpdating || !codexConnectorApiKey.trim()}
-                      className="inline-flex items-center gap-1 rounded-md border border-cyan-500/45 bg-cyan-500/12 px-2 py-1 text-xs font-medium text-cyan-700 disabled:opacity-50 dark:border-cyan-300/45 dark:text-cyan-200"
-                    >
-                      {isCodexConnectorUpdating ? <Loader2 className="h-3 w-3 animate-spin" /> : <KeyRound className="h-3 w-3" />}
-                      Connect
-                    </button>
-                  </div>
-                  <p className="mt-1 text-[11px] text-cyan-700/80 dark:text-cyan-200/80">
-                    Uses <code>codex login --with-api-key</code> on this machine. The key is not stored by this panel.
-                  </p>
-                </div>
-              )}
-            </>
-          ) : (
-            <p className="mt-2 text-xs text-slate-600 dark:text-slate-300">
-              Connector status unavailable.
-            </p>
-          )}
-
-          {codexConnectorNotice && (
-            <div className="mt-2 rounded-md border border-slate-300/70 bg-white/70 px-2 py-1.5 text-[11px] text-slate-700 dark:border-white/12 dark:bg-white/[0.04] dark:text-slate-200">
-              {codexConnectorNotice}
-            </div>
-          )}
-        </div>
-      )}
-
-      <div className="mt-3 inline-flex w-full rounded-lg border border-slate-300/70 bg-white/70 p-1 dark:border-white/12 dark:bg-white/[0.03]">
-        {(["chat", "knowledge"] as QuartermasterTab[]).map((item) => (
-          <button
-            key={item}
-            type="button"
-            onClick={() => setTab(item)}
-            className={`flex-1 inline-flex items-center justify-center rounded-md px-2 py-1.5 text-xs font-medium uppercase tracking-wide ${
-              tab === item
-                ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900"
-                : compact && item === "knowledge"
-                  ? "text-slate-500 dark:text-slate-400"
-                  : "text-slate-600 dark:text-slate-300"
-            }`}
-          >
-            <span>{item === "chat" ? "Chat" : "Knowledge Base"}</span>
-            {(() => {
-              const badgeLabel = formatUnreadBadgeCount(getUnread([QUARTERMASTER_TAB_NOTIFICATION_CHANNEL[item]]))
-              if (!badgeLabel) return null
-              return (
-                <span className="ml-2 inline-flex min-w-5 items-center justify-center rounded-full bg-rose-500 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white">
-                  {badgeLabel}
-                </span>
-              )
-            })()}
-          </button>
-        ))}
-      </div>
+    <div className={`flex h-[min(80vh,56rem)] min-h-[480px] max-h-[calc(100vh-var(--theme-footer-height)-env(safe-area-inset-bottom)-0.75rem)] flex-col overflow-hidden rounded-xl border border-slate-300/70 bg-white/75 p-4 dark:border-white/12 dark:bg-white/[0.04] ${className || ""}`.trim()}>
+      <QuartermasterHeader
+        callsign={effectiveQuartermaster?.callsign || "QTM-LGR"}
+        shipName={shipName || state?.ship.name || "Ship"}
+        enabled={state?.quartermaster.enabled === true}
+        authority={effectiveQuartermaster?.authority || "scoped_operator"}
+        diagnosticsScope={effectiveQuartermaster?.diagnosticsScope || "read_only"}
+        providerState={providerState}
+        onOpenToolRequest={() => void openToolRequestModal()}
+        isToolRequestOptionsLoading={isToolRequestOptionsLoading}
+        showToolRequestAction
+      />
 
       {isLoading ? (
         <div className="mt-3 inline-flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300">
@@ -1410,298 +1615,299 @@ export function ShipQuartermasterPanel({
           </button>
         </div>
       ) : state ? (
-        <>
-          {tab === "chat" ? (
-            <>
-              <div className="mt-3 max-w-full">
-                <div
-                  ref={chatLogRef}
-                  className="overflow-y-auto rounded-lg border border-slate-300/70 bg-white/80 p-3 dark:border-white/12 dark:bg-white/[0.03]"
-                  style={{ height: `${chatWindowHeightPx}px` }}
-                >
-                  {displayedInteractions.length === 0 && !isSending ? (
-                    <p className="text-sm text-slate-600 dark:text-slate-300">No Quartermaster interactions yet.</p>
-                  ) : (
-                    <div className="space-y-2">
-                      {displayedInteractions.map((interaction) => (
-                        <div key={interaction.id} className="rounded-md border border-slate-200/80 bg-white/90 p-2 dark:border-white/10 dark:bg-white/[0.04]">
-                          <div className="flex items-center justify-between gap-2 text-[11px] text-slate-500 dark:text-slate-400">
-                            <span>{interactionLabel(interaction.type)}</span>
-                            <span>{new Date(interaction.timestamp).toLocaleString()}</span>
-                          </div>
-                          <p className="mt-1 whitespace-pre-wrap text-sm text-slate-800 dark:text-slate-100">
-                            {interaction.content}
-                          </p>
-                        </div>
-                      ))}
-                      {isSending && (
-                        <div className="inline-flex items-center gap-2 rounded-md border border-slate-200/80 bg-white/90 px-2 py-1.5 text-[11px] text-slate-500 dark:border-white/10 dark:bg-white/[0.04] dark:text-slate-300">
-                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                          Quartermaster is responding...
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-
-                <div className="mt-3">
-                  <textarea
-                    ref={promptRef}
-                    value={prompt}
-                    onChange={(event) => setPrompt(event.target.value)}
-                    onKeyDown={handlePromptKeyDown}
-                    rows={compact ? 2 : 3}
-                    placeholder="Ask Quartermaster about setup or ship maintenance diagnostics..."
-                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
-                  />
-                  <div className="mt-2 flex items-center justify-between gap-2">
-                    <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                      Enter sends · Shift+Enter adds a new line
-                    </p>
+        <div className="mt-3 min-h-0 flex-1">
+          {isNarrowLayout ? (
+            <div className="flex h-full min-h-0 flex-col">
+              <div className="inline-flex w-full rounded-lg border border-slate-300/70 bg-white/70 p-1 dark:border-white/12 dark:bg-white/[0.03]">
+                {(["chat", "controls", "knowledge"] as QuartermasterTab[]).map((item) => {
+                  const badgeLabel = tabBadgeLabel(item)
+                  return (
                     <button
+                      key={item}
                       type="button"
-                      onClick={handleSend}
-                      disabled={!prompt.trim() || isSending}
-                      className="inline-flex items-center gap-2 rounded-md border border-cyan-500/45 bg-cyan-500/12 px-3 py-1.5 text-xs font-medium text-cyan-700 disabled:opacity-50 dark:border-cyan-300/45 dark:text-cyan-200"
+                      onClick={() => setTab(item)}
+                      className={`flex-1 inline-flex items-center justify-center rounded-md px-2 py-1.5 text-xs font-medium uppercase tracking-wide ${
+                        tab === item
+                          ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900"
+                          : "text-slate-600 dark:text-slate-300"
+                      }`}
                     >
-                      {isSending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                      Ask Quartermaster
+                      <span>{item === "chat" ? "Chat" : item === "controls" ? "Controls" : "Knowledge"}</span>
+                      {badgeLabel && (
+                        <span className="ml-2 inline-flex min-w-5 items-center justify-center rounded-full bg-rose-500 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white">
+                          {badgeLabel}
+                        </span>
+                      )}
                     </button>
-                  </div>
-                </div>
+                  )
+                })}
               </div>
-            </>
-          ) : (
-            <div className="mt-3 space-y-3">
-              <div className="rounded-lg border border-slate-300/70 bg-white/80 p-3 dark:border-white/12 dark:bg-white/[0.03]">
-                <div className="flex flex-wrap items-center gap-2">
-                  <select
-                    value={knowledgeScope}
-                    onChange={(event) => setKnowledgeScope(event.target.value as KnowledgeScope)}
-                    className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-800 dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-100"
-                  >
-                    <option value="ship">Ship</option>
-                    <option value="fleet">Fleet</option>
-                    <option value="all">All</option>
-                  </select>
-                  <select
-                    value={knowledgeMode}
-                    onChange={(event) => setKnowledgeMode(event.target.value as KnowledgeMode)}
-                    className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-800 dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-100"
-                  >
-                    <option value="hybrid">Hybrid</option>
-                    <option value="lexical">Lexical</option>
-                  </select>
-                  <select
-                    value={knowledgeBackend}
-                    onChange={(event) => {
-                      const next = event.target.value
-                      if (next === "vault-local" || next === "data-core-merged") {
-                        setKnowledgeBackend(next)
-                        return
-                      }
-                      setKnowledgeBackend("auto")
-                    }}
-                    className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-800 dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-100"
-                  >
-                    <option value="auto">Backend: Auto</option>
-                    <option value="vault-local">Backend: Vault Local</option>
-                    <option value="data-core-merged">Backend: Data Core Merged</option>
-                  </select>
-                  <div className="relative min-w-[180px] flex-1">
-                    <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
-                    <input
-                      type="text"
-                      value={knowledgeQuery}
-                      onChange={(event) => setKnowledgeQuery(event.target.value)}
-                      placeholder="Search ship/fleet knowledge..."
-                      className="w-full rounded-md border border-slate-300 bg-white py-1 pl-7 pr-2 text-xs text-slate-900 dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-100"
+
+              <div className="mt-3 min-h-0 flex-1">
+                {tab === "chat" && (
+                  <QuartermasterChatPane
+                    interactions={displayedInteractions}
+                    isSending={isSending}
+                    prompt={prompt}
+                    onPromptChange={setPrompt}
+                    onPromptKeyDown={handlePromptKeyDown}
+                    onSend={() => void handleSend()}
+                    sendDisabled={!prompt.trim() || isSending}
+                    chatLogRef={chatLogRef}
+                    compact={isNarrowLayout}
+                    activeLoopRun={activeLoopRun}
+                    activeLoopElapsedSeconds={activeLoopElapsedSeconds}
+                    formatDurationSeconds={formatDurationSeconds}
+                    onRetryLastPrompt={retryLastPrompt}
+                    onRefreshConnector={() => void loadCodexConnector()}
+                    isConnectorRefreshing={isCodexConnectorLoading}
+                  />
+                )}
+                {tab === "controls" && (
+                  <div className="h-full overflow-y-auto pr-1">
+                    <QuartermasterControlRail
+                      showExecutiveControls={showExecutiveControls}
+                      onToggleExecutiveControls={() => setShowExecutiveControls((current) => !current)}
+                      isControlDraftDirty={isControlDraftDirty}
+                      isConfigLoading={isConfigLoading}
+                      executionLevelDraft={executionLevelDraft}
+                      onExecutionLevelDraftChange={(nextLevel) => {
+                        setExecutionLevelDraft(nextLevel)
+                        if (nextLevel !== "danger_full_access") {
+                          setDangerModeConfirmed(false)
+                        }
+                      }}
+                      loopPresets={LOOP_DEFAULT_PRESETS.map(({ key, label }) => ({ key, label }))}
+                      onApplyLoopDefaultsPreset={applyLoopDefaultsPreset}
+                      loopDefaultsDraft={loopDefaultsDraft}
+                      onUpdateLoopDefaultsDraft={updateLoopDefaultsDraft}
+                      dangerModeConfirmed={dangerModeConfirmed}
+                      onDangerModeConfirmedChange={setDangerModeConfirmed}
+                      persistedExecutionLevel={persistedExecutionLevel}
+                      executionLevelLabel={executionLevelLabel}
+                      onResetControlDraft={resetControlDraftToSaved}
+                      onSaveQuartermasterConfig={() => void saveQuartermasterConfig()}
+                      isConfigSaving={isConfigSaving}
+                      showLoopControls={showLoopControls}
+                      onToggleLoopControls={() => setShowLoopControls((current) => !current)}
+                      onRefreshLoopStatus={() => void fetchLoopStatus()}
+                      isLoopStatusLoading={isLoopStatusLoading}
+                      isLoopStarting={isLoopStarting}
+                      isLoopStopping={isLoopStopping}
+                      loopPrompt={loopPrompt}
+                      onLoopPromptChange={setLoopPrompt}
+                      onLoopPromptKeyDown={handleLoopPromptKeyDown}
+                      onStartLoop={() => void startQuartermasterLoopRun()}
+                      onStopLoop={() => void stopQuartermasterLoopRun()}
+                      activeLoopRun={activeLoopRun}
+                      latestLoopRun={latestLoopRun}
+                      activeLoopElapsedSeconds={activeLoopElapsedSeconds}
+                      activeLoopDurationPercent={activeLoopDurationPercent}
+                      loopStopReasonLabel={loopStopReasonLabel}
+                      formatDurationSeconds={formatDurationSeconds}
+                      prompt={prompt}
+                      showCodexConnectorSetup={showCodexConnectorSetup}
+                      codexConnector={codexConnector}
+                      isCodexConnectorLoading={isCodexConnectorLoading}
+                      isCodexConnectorUpdating={isCodexConnectorUpdating}
+                      codexConnectorApiKey={codexConnectorApiKey}
+                      onCodexConnectorApiKeyChange={setCodexConnectorApiKey}
+                      onConnectCodexAccountWithApiKey={() => void connectCodexAccountWithApiKey()}
+                      onLoadCodexConnector={() => void loadCodexConnector()}
+                      codexConnectorNotice={codexConnectorNotice}
+                      codexAccountProviderLabel={codexAccountProviderLabel}
                     />
                   </div>
-                  <button
-                    type="button"
-                    onClick={handleKnowledgeSearch}
-                    disabled={isSearchingKnowledge || !knowledgeQuery.trim()}
-                    className="inline-flex items-center gap-1 rounded-md border border-cyan-500/45 bg-cyan-500/12 px-2 py-1 text-xs font-medium text-cyan-700 disabled:opacity-50 dark:border-cyan-300/45 dark:text-cyan-200"
-                  >
-                    {isSearchingKnowledge && <Loader2 className="h-3 w-3 animate-spin" />}
-                    Search
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void handleKnowledgeResync(knowledgeScope)}
-                    disabled={isResyncingKnowledge}
-                    className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 disabled:opacity-50 dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-200"
-                  >
-                    {isResyncingKnowledge ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
-                    Resync
-                  </button>
-                </div>
-                <p className="mt-2 text-[11px] text-slate-500 dark:text-slate-400">
-                  {formatSyncSummary(knowledgeLatestSync)}
-                </p>
+                )}
+                {tab === "knowledge" && (
+                  <div className="h-full overflow-y-auto pr-1">
+                    <QuartermasterKnowledgePane
+                      compact={isNarrowLayout}
+                      shipDeploymentId={shipDeploymentId}
+                      knowledgeScope={knowledgeScope}
+                      knowledgeMode={knowledgeMode}
+                      knowledgeBackend={knowledgeBackend}
+                      knowledgeQuery={knowledgeQuery}
+                      onKnowledgeScopeChange={setKnowledgeScope}
+                      onKnowledgeModeChange={setKnowledgeMode}
+                      onKnowledgeBackendChange={setKnowledgeBackend}
+                      onKnowledgeQueryChange={setKnowledgeQuery}
+                      onKnowledgeSearch={() => void handleKnowledgeSearch()}
+                      isSearchingKnowledge={isSearchingKnowledge}
+                      onKnowledgeResync={(scope) => void handleKnowledgeResync(scope)}
+                      isResyncingKnowledge={isResyncingKnowledge}
+                      syncSummaryText={formatSyncSummary(knowledgeLatestSync)}
+                      knowledgeResults={knowledgeResults}
+                      knowledgeTree={knowledgeTree}
+                      isLoadingKnowledgeTree={isLoadingKnowledgeTree}
+                      onReloadKnowledgeTree={() => void loadKnowledgeTree("all")}
+                      selectedKnowledgePath={selectedKnowledgePath}
+                      onSelectKnowledgePath={(path) => {
+                        setSelectedKnowledgePath(path)
+                        setKnowledgePathInput(path)
+                      }}
+                      onCreateKnowledgePath={createKnowledgePath}
+                      knowledgePathInput={knowledgePathInput}
+                      onKnowledgePathInputChange={setKnowledgePathInput}
+                      onKnowledgeSave={() => void handleKnowledgeSave()}
+                      isSavingKnowledge={isSavingKnowledge}
+                      onKnowledgeDelete={() => void handleKnowledgeDelete()}
+                      isDeletingKnowledge={isDeletingKnowledge}
+                      isLoadingKnowledgeNote={isLoadingKnowledgeNote}
+                      knowledgeDraft={knowledgeDraft}
+                      onKnowledgeDraftChange={setKnowledgeDraft}
+                    />
+                  </div>
+                )}
               </div>
-
-              {compact ? (
-                <div className="space-y-2 rounded-lg border border-slate-300/70 bg-white/80 p-3 dark:border-white/12 dark:bg-white/[0.03]">
-                  {knowledgeResults.length === 0 ? (
-                    <p className="text-xs text-slate-600 dark:text-slate-300">No knowledge results yet.</p>
-                  ) : (
-                    knowledgeResults.map((result) => (
+            </div>
+          ) : (
+            <div className="grid h-full min-h-0 gap-3 lg:grid-cols-[minmax(0,1fr)_20rem] xl:grid-cols-[minmax(0,1fr)_22rem]">
+              <div className="min-w-0 min-h-0 flex flex-col gap-3">
+                <div className="inline-flex w-full rounded-lg border border-slate-300/70 bg-white/70 p-1 dark:border-white/12 dark:bg-white/[0.03]">
+                  {(["chat", "knowledge"] as QuartermasterTab[]).map((item) => {
+                    const badgeLabel = tabBadgeLabel(item)
+                    return (
                       <button
-                        key={`${result.id}:${result.path}`}
+                        key={item}
                         type="button"
-                        onClick={() => {
-                          setSelectedKnowledgePath(result.path)
-                          setKnowledgePathInput(result.path)
-                        }}
-                        className="w-full rounded-md border border-slate-200/80 bg-white/80 px-2 py-1.5 text-left text-xs dark:border-white/10 dark:bg-white/[0.03]"
+                        onClick={() => setTab(item)}
+                        className={`flex-1 inline-flex items-center justify-center rounded-md px-2 py-1.5 text-xs font-medium uppercase tracking-wide ${
+                          tab === item
+                            ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900"
+                            : "text-slate-600 dark:text-slate-300"
+                        }`}
                       >
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="truncate font-medium text-slate-800 dark:text-slate-100">{result.path}</span>
-                          <span className="rounded border border-slate-300 px-1.5 py-0.5 text-[10px] text-slate-500 dark:border-white/15 dark:text-slate-400">
-                            {scopeBadge(result.scopeType)}
+                        <span>{item === "chat" ? "Chat" : "Knowledge Base"}</span>
+                        {badgeLabel && (
+                          <span className="ml-2 inline-flex min-w-5 items-center justify-center rounded-full bg-rose-500 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white">
+                            {badgeLabel}
                           </span>
-                        </div>
-                        <p className="mt-1 line-clamp-2 text-[11px] text-slate-600 dark:text-slate-300">{result.excerpt}</p>
+                        )}
                       </button>
-                    ))
+                    )
+                  })}
+                </div>
+
+                <div className="min-h-0 flex-1">
+                  {tab === "knowledge" ? (
+                    <div className="h-full overflow-y-auto pr-1">
+                      <QuartermasterKnowledgePane
+                        compact={false}
+                        shipDeploymentId={shipDeploymentId}
+                        knowledgeScope={knowledgeScope}
+                        knowledgeMode={knowledgeMode}
+                        knowledgeBackend={knowledgeBackend}
+                        knowledgeQuery={knowledgeQuery}
+                        onKnowledgeScopeChange={setKnowledgeScope}
+                        onKnowledgeModeChange={setKnowledgeMode}
+                        onKnowledgeBackendChange={setKnowledgeBackend}
+                        onKnowledgeQueryChange={setKnowledgeQuery}
+                        onKnowledgeSearch={() => void handleKnowledgeSearch()}
+                        isSearchingKnowledge={isSearchingKnowledge}
+                        onKnowledgeResync={(scope) => void handleKnowledgeResync(scope)}
+                        isResyncingKnowledge={isResyncingKnowledge}
+                        syncSummaryText={formatSyncSummary(knowledgeLatestSync)}
+                        knowledgeResults={knowledgeResults}
+                        knowledgeTree={knowledgeTree}
+                        isLoadingKnowledgeTree={isLoadingKnowledgeTree}
+                        onReloadKnowledgeTree={() => void loadKnowledgeTree("all")}
+                        selectedKnowledgePath={selectedKnowledgePath}
+                        onSelectKnowledgePath={(path) => {
+                          setSelectedKnowledgePath(path)
+                          setKnowledgePathInput(path)
+                        }}
+                        onCreateKnowledgePath={createKnowledgePath}
+                        knowledgePathInput={knowledgePathInput}
+                        onKnowledgePathInputChange={setKnowledgePathInput}
+                        onKnowledgeSave={() => void handleKnowledgeSave()}
+                        isSavingKnowledge={isSavingKnowledge}
+                        onKnowledgeDelete={() => void handleKnowledgeDelete()}
+                        isDeletingKnowledge={isDeletingKnowledge}
+                        isLoadingKnowledgeNote={isLoadingKnowledgeNote}
+                        knowledgeDraft={knowledgeDraft}
+                        onKnowledgeDraftChange={setKnowledgeDraft}
+                      />
+                    </div>
+                  ) : (
+                    <QuartermasterChatPane
+                      interactions={displayedInteractions}
+                      isSending={isSending}
+                      prompt={prompt}
+                      onPromptChange={setPrompt}
+                      onPromptKeyDown={handlePromptKeyDown}
+                      onSend={() => void handleSend()}
+                      sendDisabled={!prompt.trim() || isSending}
+                      chatLogRef={chatLogRef}
+                      compact={false}
+                      activeLoopRun={activeLoopRun}
+                      activeLoopElapsedSeconds={activeLoopElapsedSeconds}
+                      formatDurationSeconds={formatDurationSeconds}
+                      onRetryLastPrompt={retryLastPrompt}
+                      onRefreshConnector={() => void loadCodexConnector()}
+                      isConnectorRefreshing={isCodexConnectorLoading}
+                    />
                   )}
                 </div>
-              ) : (
-                <div className="grid gap-3 lg:grid-cols-[280px_minmax(0,1fr)]">
-                  <div className="space-y-3">
-                    <div className="rounded-lg border border-slate-300/70 bg-white/80 p-2.5 dark:border-white/12 dark:bg-white/[0.03]">
-                      <div className="mb-2 flex items-center justify-between">
-                        <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Knowledge Tree</p>
-                        <button
-                          type="button"
-                          onClick={() => void loadKnowledgeTree("all")}
-                          disabled={isLoadingKnowledgeTree}
-                          className="inline-flex items-center gap-1 rounded-md border border-slate-300 px-1.5 py-0.5 text-[11px] text-slate-600 dark:border-white/15 dark:text-slate-300"
-                        >
-                          {isLoadingKnowledgeTree ? <Loader2 className="h-3 w-3 animate-spin" /> : <BookOpen className="h-3 w-3" />}
-                          Reload
-                        </button>
-                      </div>
+              </div>
 
-                      <div className="max-h-48 overflow-auto">
-                        {knowledgeTree.length === 0 ? (
-                          <p className="px-1 py-2 text-xs text-slate-500 dark:text-slate-400">No ship/fleet KB notes yet.</p>
-                        ) : (
-                          <KnowledgeTreeList
-                            nodes={knowledgeTree}
-                            selectedPath={selectedKnowledgePath}
-                            onSelectPath={(path) => {
-                              setSelectedKnowledgePath(path)
-                              setKnowledgePathInput(path)
-                            }}
-                          />
-                        )}
-                      </div>
-
-                      <div className="mt-2 flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => createKnowledgePath("ship")}
-                          className="inline-flex items-center gap-1 rounded-md border border-slate-300 px-2 py-1 text-[11px] text-slate-700 dark:border-white/15 dark:text-slate-300"
-                        >
-                          <FilePlus2 className="h-3 w-3" />
-                          Ship Note
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => createKnowledgePath("fleet")}
-                          className="inline-flex items-center gap-1 rounded-md border border-slate-300 px-2 py-1 text-[11px] text-slate-700 dark:border-white/15 dark:text-slate-300"
-                        >
-                          <FilePlus2 className="h-3 w-3" />
-                          Fleet Note
-                        </button>
-                      </div>
-                    </div>
-
-                    <div className="rounded-lg border border-slate-300/70 bg-white/80 p-2.5 dark:border-white/12 dark:bg-white/[0.03]">
-                      <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                        Query Results ({knowledgeResults.length})
-                      </p>
-                      <div className="mt-2 max-h-52 space-y-1.5 overflow-auto">
-                        {knowledgeResults.length === 0 ? (
-                          <p className="px-1 py-2 text-xs text-slate-500 dark:text-slate-400">No results.</p>
-                        ) : (
-                          knowledgeResults.map((result) => (
-                            <button
-                              key={`${result.id}:${result.path}`}
-                              type="button"
-                              onClick={() => {
-                                setSelectedKnowledgePath(result.path)
-                                setKnowledgePathInput(result.path)
-                              }}
-                              className="w-full rounded-md border border-slate-200/80 bg-white/80 px-2 py-1.5 text-left text-xs hover:border-cyan-500/40 dark:border-white/10 dark:bg-white/[0.03]"
-                            >
-                              <div className="flex items-center justify-between gap-2">
-                                <span className="truncate font-medium text-slate-800 dark:text-slate-100">{result.path}</span>
-                                <span className="rounded border border-slate-300 px-1.5 py-0.5 text-[10px] text-slate-500 dark:border-white/15 dark:text-slate-400">
-                                  {scopeBadge(result.scopeType)} · {result.score.toFixed(2)}
-                                </span>
-                              </div>
-                              <p className="mt-1 line-clamp-2 text-[11px] text-slate-600 dark:text-slate-300">{result.excerpt}</p>
-                            </button>
-                          ))
-                        )}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="rounded-lg border border-slate-300/70 bg-white/80 p-3 dark:border-white/12 dark:bg-white/[0.03]">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <input
-                        type="text"
-                        value={knowledgePathInput}
-                        onChange={(event) => setKnowledgePathInput(event.target.value)}
-                        placeholder={`kb/ships/${shipDeploymentId}/topic.md`}
-                        className="min-w-[220px] flex-1 rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-900 dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-100"
-                      />
-                      <button
-                        type="button"
-                        onClick={handleKnowledgeSave}
-                        disabled={isSavingKnowledge || !knowledgePathInput.trim()}
-                        className="inline-flex items-center gap-1 rounded-md border border-cyan-500/45 bg-cyan-500/12 px-2 py-1 text-xs font-medium text-cyan-700 disabled:opacity-50 dark:border-cyan-300/45 dark:text-cyan-200"
-                      >
-                        {isSavingKnowledge ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3" />}
-                        Save
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handleKnowledgeDelete}
-                        disabled={isDeletingKnowledge || !knowledgePathInput.trim()}
-                        className="inline-flex items-center gap-1 rounded-md border border-rose-500/45 bg-rose-500/10 px-2 py-1 text-xs text-rose-700 disabled:opacity-50 dark:text-rose-200"
-                      >
-                        {isDeletingKnowledge ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
-                        Delete
-                      </button>
-                    </div>
-
-                    <div className="mt-2 min-h-[280px]">
-                      {isLoadingKnowledgeNote ? (
-                        <div className="inline-flex items-center gap-2 text-xs text-slate-500 dark:text-slate-300">
-                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                          Loading note...
-                        </div>
-                      ) : (
-                        <textarea
-                          value={knowledgeDraft}
-                          onChange={(event) => setKnowledgeDraft(event.target.value)}
-                          placeholder="Ship/Fleet knowledge markdown..."
-                          className="h-[360px] w-full rounded-md border border-slate-300 bg-white p-2 font-mono text-xs text-slate-900 dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-100"
-                        />
-                      )}
-                    </div>
-                  </div>
-                </div>
-              )}
+              <div className="min-w-0 min-h-0 overflow-y-auto pr-1">
+                <QuartermasterControlRail
+                  showExecutiveControls={showExecutiveControls}
+                  onToggleExecutiveControls={() => setShowExecutiveControls((current) => !current)}
+                  isControlDraftDirty={isControlDraftDirty}
+                  isConfigLoading={isConfigLoading}
+                  executionLevelDraft={executionLevelDraft}
+                  onExecutionLevelDraftChange={(nextLevel) => {
+                    setExecutionLevelDraft(nextLevel)
+                    if (nextLevel !== "danger_full_access") {
+                      setDangerModeConfirmed(false)
+                    }
+                  }}
+                  loopPresets={LOOP_DEFAULT_PRESETS.map(({ key, label }) => ({ key, label }))}
+                  onApplyLoopDefaultsPreset={applyLoopDefaultsPreset}
+                  loopDefaultsDraft={loopDefaultsDraft}
+                  onUpdateLoopDefaultsDraft={updateLoopDefaultsDraft}
+                  dangerModeConfirmed={dangerModeConfirmed}
+                  onDangerModeConfirmedChange={setDangerModeConfirmed}
+                  persistedExecutionLevel={persistedExecutionLevel}
+                  executionLevelLabel={executionLevelLabel}
+                  onResetControlDraft={resetControlDraftToSaved}
+                  onSaveQuartermasterConfig={() => void saveQuartermasterConfig()}
+                  isConfigSaving={isConfigSaving}
+                  showLoopControls={showLoopControls}
+                  onToggleLoopControls={() => setShowLoopControls((current) => !current)}
+                  onRefreshLoopStatus={() => void fetchLoopStatus()}
+                  isLoopStatusLoading={isLoopStatusLoading}
+                  isLoopStarting={isLoopStarting}
+                  isLoopStopping={isLoopStopping}
+                  loopPrompt={loopPrompt}
+                  onLoopPromptChange={setLoopPrompt}
+                  onLoopPromptKeyDown={handleLoopPromptKeyDown}
+                  onStartLoop={() => void startQuartermasterLoopRun()}
+                  onStopLoop={() => void stopQuartermasterLoopRun()}
+                  activeLoopRun={activeLoopRun}
+                  latestLoopRun={latestLoopRun}
+                  activeLoopElapsedSeconds={activeLoopElapsedSeconds}
+                  activeLoopDurationPercent={activeLoopDurationPercent}
+                  loopStopReasonLabel={loopStopReasonLabel}
+                  formatDurationSeconds={formatDurationSeconds}
+                  prompt={prompt}
+                  showCodexConnectorSetup={showCodexConnectorSetup}
+                  codexConnector={codexConnector}
+                  isCodexConnectorLoading={isCodexConnectorLoading}
+                  isCodexConnectorUpdating={isCodexConnectorUpdating}
+                  codexConnectorApiKey={codexConnectorApiKey}
+                  onCodexConnectorApiKeyChange={setCodexConnectorApiKey}
+                  onConnectCodexAccountWithApiKey={() => void connectCodexAccountWithApiKey()}
+                  onLoadCodexConnector={() => void loadCodexConnector()}
+                  codexConnectorNotice={codexConnectorNotice}
+                  codexAccountProviderLabel={codexAccountProviderLabel}
+                />
+              </div>
             </div>
           )}
-        </>
+        </div>
       ) : null}
 
       {isToolRequestModalOpen && (

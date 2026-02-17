@@ -11,6 +11,10 @@ import {
 } from "@/lib/runtime/errors"
 import type { RuntimeProviderDefinition } from "@/lib/runtime/providers/types"
 import { evaluateCommandPermission } from "@/lib/execution/permissions"
+import {
+  parseQuartermasterExecutionLevel,
+  type QuartermasterExecutionLevel,
+} from "@/lib/quartermaster/constants"
 
 const execFileAsync = promisify(execFileCallback)
 
@@ -34,11 +38,37 @@ function codexCliPath(): string {
   return asString(process.env.CODEX_CLI_PATH) || "codex"
 }
 
-function codexTimeoutMs(): number {
-  const parsed = Number.parseInt(process.env.CODEX_RUNTIME_TIMEOUT_MS || "120000", 10)
+function parseTimeoutMs(value: string | undefined): number | null {
+  const parsed = Number.parseInt(value || "", 10)
   if (Number.isFinite(parsed) && parsed > 0) {
     return parsed
   }
+  return null
+}
+
+function isQuartermasterRuntimeRequest(request: RuntimeRequest): boolean {
+  const metadata = asRecord(request.metadata)
+  const runtimeMetadata = asRecord(metadata.runtime)
+  const quartermasterMetadata = asRecord(metadata.quartermaster)
+  const runtimeProfile = asString(runtimeMetadata.profile)?.toLowerCase()
+  const channel = asString(quartermasterMetadata.channel)
+
+  return runtimeProfile === "quartermaster" || channel === "ship-quartermaster"
+}
+
+export function resolveCodexTimeoutMs(request: RuntimeRequest): number {
+  if (isQuartermasterRuntimeRequest(request)) {
+    const quartermasterTimeout = parseTimeoutMs(process.env.CODEX_RUNTIME_TIMEOUT_MS_QUARTERMASTER)
+    if (quartermasterTimeout !== null) {
+      return quartermasterTimeout
+    }
+  }
+
+  const fallbackTimeout = parseTimeoutMs(process.env.CODEX_RUNTIME_TIMEOUT_MS)
+  if (fallbackTimeout !== null) {
+    return fallbackTimeout
+  }
+
   return 120000
 }
 
@@ -89,8 +119,43 @@ function quartermasterPolicyContext(request: RuntimeRequest): {
   }
 }
 
-function buildCanonicalCommandCandidate(model: string | null): string {
-  const base = "codex exec --sandbox read-only --skip-git-repo-check -C <workspace> --output-last-message <tmpfile>"
+export interface QuartermasterCodexExecutionConfig {
+  executionLevel: QuartermasterExecutionLevel
+  sandbox: "read-only" | "workspace-write" | "danger-full-access"
+  fullAuto: boolean
+}
+
+function resolveSandboxForExecutionLevel(level: QuartermasterExecutionLevel): "read-only" | "workspace-write" | "danger-full-access" {
+  if (level === "danger_full_access") {
+    return "danger-full-access"
+  }
+  if (level === "workspace_write") {
+    return "workspace-write"
+  }
+  return "read-only"
+}
+
+export function resolveQuartermasterCodexExecutionConfig(
+  request: RuntimeRequest,
+): QuartermasterCodexExecutionConfig {
+  const metadata = asRecord(request.metadata)
+  const quartermasterMetadata = asRecord(metadata.quartermaster)
+  const loopMetadata = asRecord(quartermasterMetadata.loop)
+  const executionLevel = parseQuartermasterExecutionLevel(quartermasterMetadata.executionLevel, "read_only")
+
+  return {
+    executionLevel,
+    sandbox: resolveSandboxForExecutionLevel(executionLevel),
+    fullAuto: loopMetadata.fullAuto === true,
+  }
+}
+
+export function buildCodexCanonicalCommandCandidate(
+  model: string | null,
+  execution: QuartermasterCodexExecutionConfig,
+): string {
+  const fullAutoPart = execution.fullAuto ? " --full-auto" : ""
+  const base = `codex exec --sandbox ${execution.sandbox} --skip-git-repo-check -C <workspace> --output-last-message <tmpfile>${fullAutoPart}`
   if (!model) {
     return base
   }
@@ -98,7 +163,11 @@ function buildCanonicalCommandCandidate(model: string | null): string {
   return `${base} -m <model>`
 }
 
-async function enforceQuartermasterPolicy(request: RuntimeRequest, model: string | null) {
+async function enforceQuartermasterPolicy(
+  request: RuntimeRequest,
+  model: string | null,
+  execution: QuartermasterCodexExecutionConfig,
+) {
   const context = quartermasterPolicyContext(request)
   if (!context.enforcePolicy) {
     return
@@ -114,7 +183,7 @@ async function enforceQuartermasterPolicy(request: RuntimeRequest, model: string
   }
 
   const decision = await evaluateCommandPermission(
-    [buildCanonicalCommandCandidate(model)],
+    [buildCodexCanonicalCommandCandidate(model, execution)],
     { subagentId: context.subagentId },
   )
 
@@ -205,7 +274,8 @@ function classifyCodexExecFailure(error: unknown): RuntimeProviderError {
 
 async function runCodexCliRuntime(request: RuntimeRequest): Promise<RuntimeResult> {
   const model = resolveCodexRuntimeModel(request)
-  await enforceQuartermasterPolicy(request, model)
+  const execution = resolveQuartermasterCodexExecutionConfig(request)
+  await enforceQuartermasterPolicy(request, model, execution)
 
   const proxyUrlRaw = codexProviderProxyUrl()
   if (proxyUrlRaw) {
@@ -281,20 +351,24 @@ async function runCodexCliRuntime(request: RuntimeRequest): Promise<RuntimeResul
 
   const executable = codexCliPath()
   const workspace = codexWorkspace()
-  const timeoutMs = codexTimeoutMs()
+  const timeoutMs = resolveCodexTimeoutMs(request)
   const tempDir = await mkdtemp(join(tmpdir(), "orchwiz-codex-runtime-"))
   const outputPath = join(tempDir, "last-message.txt")
 
   const args = [
     "exec",
     "--sandbox",
-    "read-only",
+    execution.sandbox,
     "--skip-git-repo-check",
     "-C",
     workspace,
     "--output-last-message",
     outputPath,
   ]
+
+  if (execution.fullAuto) {
+    args.push("--full-auto")
+  }
 
   if (model) {
     args.push("-m", model)
@@ -334,6 +408,8 @@ async function runCodexCliRuntime(request: RuntimeRequest): Promise<RuntimeResul
         timeoutMs,
         durationMs: Date.now() - startedAt,
         model,
+        quartermasterExecutionLevel: execution.executionLevel,
+        quartermasterFullAuto: execution.fullAuto,
       },
     }
   } catch (error) {

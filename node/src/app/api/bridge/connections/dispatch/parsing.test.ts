@@ -3,8 +3,8 @@ import assert from "node:assert/strict"
 import { BridgeDispatchRuntimeValidationError } from "@/lib/bridge/connections/dispatch-runtime"
 import { parseBridgeDispatchRequestBody } from "./parsing"
 
-test("parseBridgeDispatchRequestBody supports legacy payload without runtime or bridgeContext", () => {
-  const parsed = parseBridgeDispatchRequestBody({
+test("parseBridgeDispatchRequestBody supports legacy payload without runtime or bridgeContext", async () => {
+  const parsed = await parseBridgeDispatchRequestBody({
     deploymentId: "ship-1",
     message: "  bridge update  ",
   })
@@ -15,8 +15,8 @@ test("parseBridgeDispatchRequestBody supports legacy payload without runtime or 
   assert.equal(parsed.bridgeContext, undefined)
 })
 
-test("parseBridgeDispatchRequestBody parses explicit runtime and bridge context", () => {
-  const parsed = parseBridgeDispatchRequestBody({
+test("parseBridgeDispatchRequestBody parses explicit runtime and bridge context", async () => {
+  const parsed = await parseBridgeDispatchRequestBody({
     deploymentId: "ship-2",
     message: "status green",
     runtime: "openclaw",
@@ -37,9 +37,9 @@ test("parseBridgeDispatchRequestBody parses explicit runtime and bridge context"
   })
 })
 
-test("parseBridgeDispatchRequestBody rejects unknown runtime", () => {
-  assert.throws(
-    () =>
+test("parseBridgeDispatchRequestBody rejects unknown runtime", async () => {
+  await assert.rejects(
+    async () =>
       parseBridgeDispatchRequestBody({
         deploymentId: "ship-3",
         message: "hello",
