@@ -43,7 +43,7 @@ import {
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-type DeploymentProfile = "local_starship_build" | "cloud_shipyard"
+type DeploymentProfile = "local_starship_build" | "lightweight_shuttle" | "cloud_shipyard"
 type ProvisioningMode = "terraform_ansible" | "terraform_only" | "ansible_only"
 type NodeType = "local" | "cloud" | "hybrid"
 type InfrastructureKind = "kind" | "minikube" | "existing_k8s"
@@ -84,6 +84,7 @@ interface DeploymentFormData {
 // ---------------------------------------------------------------------------
 const deploymentProfileLabels: Record<DeploymentProfile, string> = {
   local_starship_build: "Local Starship Build",
+  lightweight_shuttle: "Lightweight Shuttle",
   cloud_shipyard: "Cloud Shipyard",
 }
 
@@ -140,7 +141,7 @@ function deriveNodeType(
   advancedOverride: boolean,
   requested: NodeType,
 ): NodeType {
-  if (profile === "local_starship_build") return "local"
+  if (profile === "local_starship_build" || profile === "lightweight_shuttle") return "local"
   if (advancedOverride && requested === "hybrid") return "hybrid"
   return "cloud"
 }
@@ -395,7 +396,7 @@ export default function ShipsPage() {
 
   useEffect(() => {
     if (!showModal || !runtime || !runtime.kind.clusters.length) return
-    if (form.deploymentProfile !== "local_starship_build" || form.infrastructure.kind !== "kind") return
+    if (form.deploymentProfile === "cloud_shipyard" || form.infrastructure.kind !== "kind") return
     const defCtx = defaultInfrastructure("local_starship_build").kubeContext
     if (form.infrastructure.kubeContext !== defCtx) return
     const ctx = runtime.kind.clusters.find(c => c.runningNodeCount > 0)?.kubeContext || runtime.kind.clusters[0]?.kubeContext
@@ -693,11 +694,20 @@ export default function ShipsPage() {
                   const isSel = ship.id === selectedId
 
                   return (
-                    <button
+                    <div
                       key={ship.id}
+                      role="button"
+                      tabIndex={0}
                       onClick={() => { setSelectedId(ship.id); setTab("overview") }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          setSelectedId(ship.id);
+                          setTab("overview");
+                        }
+                      }}
                       aria-label={`Select ship ${ship.name}`}
-                      className={`animate-fade-up group relative w-full rounded-xl border text-left transition-all duration-200 ${
+                      className={`animate-fade-up group relative w-full rounded-xl border text-left transition-all duration-200 cursor-pointer ${
                         isSel
                           ? "glass-elevated border-cyan-500/30 dark:border-cyan-400/30 surface-glow-cyan"
                           : "glass border-transparent hover:border-slate-300/50 dark:hover:border-white/15"
@@ -764,7 +774,7 @@ export default function ShipsPage() {
                           )}
                         </div>
                       </div>
-                    </button>
+                    </div>
                   )
                 })
               )}
@@ -953,11 +963,18 @@ export default function ShipsPage() {
                       value={form.deploymentProfile}
                       onChange={e => {
                         const dp = e.target.value as DeploymentProfile
-                        setForm({ ...form, deploymentProfile: dp, advancedNodeTypeOverride: dp === "cloud_shipyard" ? form.advancedNodeTypeOverride : false, nodeType: dp === "local_starship_build" ? "local" : form.nodeType === "hybrid" ? "hybrid" : "cloud", infrastructure: defaultInfrastructure(dp) })
+                        setForm({
+                          ...form,
+                          deploymentProfile: dp,
+                          advancedNodeTypeOverride: dp === "cloud_shipyard" ? form.advancedNodeTypeOverride : false,
+                          nodeType: dp === "cloud_shipyard" ? (form.nodeType === "hybrid" ? "hybrid" : "cloud") : "local",
+                          infrastructure: defaultInfrastructure(dp),
+                        })
                       }}
                       className={`${selectCls} w-full`}
                     >
                       <option value="local_starship_build">Local Starship Build</option>
+                      <option value="lightweight_shuttle">Lightweight Shuttle</option>
                       <option value="cloud_shipyard">Cloud Shipyard</option>
                     </select>
                   </div>
@@ -976,8 +993,13 @@ export default function ShipsPage() {
                     <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">DESCRIPTION</label>
                     <textarea value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} rows={2} className={inputCls} placeholder="Ship description..." />
                   </div>
+                </div>
                 )}
-                <div className="sm:col-span-2">
+
+              {/* Step 2: Infra */}
+              {wizardStep === 2 && (
+                <div className="animate-slide-in sm:col-span-2 space-y-4">
+                  <div className="sm:col-span-2">
                   <label className="readout mb-1.5 block text-slate-500 dark:text-gray-400">NODE URL</label>
                   <input type="url" value={form.nodeUrl} onChange={e => setForm({ ...form, nodeUrl: e.target.value })} className={inputCls} placeholder="https://node.example.com" />
                 </div>
@@ -1093,6 +1115,7 @@ export default function ShipsPage() {
                       )}
                     </div>
                   )}
+                </div>
                 </div>
               )}
 

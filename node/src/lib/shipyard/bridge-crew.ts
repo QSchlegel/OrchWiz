@@ -1,3 +1,5 @@
+import type { DeploymentProfile } from "@/lib/deployment/profile"
+
 export type BridgeCrewRole = "xo" | "ops" | "eng" | "sec" | "med" | "cou"
 
 export interface BridgeCrewTemplate {
@@ -9,6 +11,7 @@ export interface BridgeCrewTemplate {
 }
 
 export const BRIDGE_CREW_ROLE_ORDER: BridgeCrewRole[] = ["xo", "ops", "eng", "sec", "med", "cou"]
+const LIGHTWEIGHT_BRIDGE_CREW_ROLE_ORDER: BridgeCrewRole[] = ["xo"]
 
 const BRIDGE_CREW_DEFAULTS: Record<BridgeCrewRole, Omit<BridgeCrewTemplate, "role">> = {
   xo: {
@@ -68,4 +71,13 @@ export function bridgeCrewTemplateForRole(role: BridgeCrewRole): BridgeCrewTempl
 
 export function listBridgeCrewTemplates(): BridgeCrewTemplate[] {
   return BRIDGE_CREW_ROLE_ORDER.map((role) => bridgeCrewTemplateForRole(role))
+}
+
+export function requiredBridgeCrewRolesForDeploymentProfile(
+  deploymentProfile: DeploymentProfile,
+): BridgeCrewRole[] {
+  if (deploymentProfile === "lightweight_shuttle") {
+    return [...LIGHTWEIGHT_BRIDGE_CREW_ROLE_ORDER]
+  }
+  return [...BRIDGE_CREW_ROLE_ORDER]
 }

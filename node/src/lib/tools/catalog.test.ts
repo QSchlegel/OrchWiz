@@ -72,12 +72,14 @@ test("isToolCatalogStale evaluates by staleness window", () => {
   assert.equal(isToolCatalogStale(fresh, now), false)
 })
 
-test("n8n curated tool surfaces env-driven unavailable warning when N8N_TOOL_URI is missing", () => {
+test("n8n curated tool defaults to localhost endpoint when N8N_TOOL_URI is missing", () => {
   withEnv({ N8N_TOOL_URI: undefined }, () => {
     const curated = findCuratedToolBySlug("n8n")
     assert.ok(curated)
-    assert.equal(curated?.available, false)
-    assert.match(curated?.unavailableReason || "", /N8N_TOOL_URI/)
+    assert.equal(curated?.available, true)
+    assert.equal(curated?.repo, null)
+    assert.equal(curated?.sourceUrl, "http://localhost:5678/n8n")
+    assert.equal(curated?.unavailableReason, null)
   })
 })
 
@@ -89,5 +91,16 @@ test("n8n curated tool resolves env-driven GitHub URI when N8N_TOOL_URI is set",
     assert.equal(curated?.repo, "example/n8n-tool")
     assert.equal(curated?.sourceRef, "main")
     assert.equal(curated?.sourcePath, ".")
+  })
+})
+
+test("n8n curated tool accepts localhost endpoint URI override when N8N_TOOL_URI is set", () => {
+  withEnv({ N8N_TOOL_URI: "http://localhost:8888/mcp" }, () => {
+    const curated = findCuratedToolBySlug("n8n")
+    assert.ok(curated)
+    assert.equal(curated?.available, true)
+    assert.equal(curated?.repo, null)
+    assert.equal(curated?.sourceUrl, "http://localhost:8888/mcp")
+    assert.equal(curated?.unavailableReason, null)
   })
 })

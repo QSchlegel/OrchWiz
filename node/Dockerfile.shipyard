@@ -3,6 +3,12 @@ WORKDIR /app
 COPY package*.json ./
 COPY scripts/fix-libsodium-wrappers-sumo.cjs ./scripts/
 RUN npm ci
+# Next.js dev server in this image needs native SWC bindings (wasm bindings fail with turbo.createProject).
+RUN NEXT_VERSION="$(node -p "require('./node_modules/next/package.json').version")" \
+  && ARCH="$(dpkg --print-architecture)" \
+  && if [ "$ARCH" = "arm64" ]; then npm install --no-save "@next/swc-linux-arm64-gnu@$NEXT_VERSION"; \
+  elif [ "$ARCH" = "amd64" ]; then npm install --no-save "@next/swc-linux-x64-gnu@$NEXT_VERSION"; \
+  else echo "Skipping explicit SWC native install for unsupported arch: $ARCH"; fi
 COPY . .
 # Prisma requires DATABASE_URL to be present to resolve env() in schema at generate-time.
 RUN DATABASE_URL="postgresql://orchwiz:orchwiz_dev@localhost:5432/orchis?schema=public" npm run db:generate

@@ -10,6 +10,8 @@ import {
   normalizeDeploymentProfileInput,
   normalizeInfrastructureInConfig,
 } from "@/lib/deployment/profile"
+import { withLangfuseCloudSettingsInConfig } from "@/lib/shipyard/monitoring"
+import { readUserLangfuseCloudSettings } from "@/lib/settings/langfuse-cloud"
 import { ensureShipQuartermaster } from "@/lib/quartermaster/service"
 import { publishNotificationUpdated } from "@/lib/realtime/notifications"
 import { SHIP_LATEST_VERSION } from "@/lib/shipyard/versions"
@@ -123,12 +125,20 @@ export async function POST(request: NextRequest) {
       advancedNodeTypeOverride,
     } = body
 
+    let configWithSettings = config
+    try {
+      const langfuseCloudSettings = await readUserLangfuseCloudSettings(session.user.id)
+      configWithSettings = withLangfuseCloudSettingsInConfig(config, langfuseCloudSettings)
+    } catch (error) {
+      console.error("Failed to load Langfuse Cloud settings for ship creation defaults:", error)
+    }
+
     const normalizedProfile = normalizeDeploymentProfileInput({
       deploymentProfile,
       provisioningMode,
       nodeType,
       advancedNodeTypeOverride,
-      config,
+      config: configWithSettings,
     })
 
     const ship = await prisma.agentDeployment.create({

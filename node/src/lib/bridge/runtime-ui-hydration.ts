@@ -20,6 +20,21 @@ export interface RuntimeUiBootstrapMetadata {
   portForwardCommand: string | null
 }
 
+export interface ObservabilityServiceBootstrapMetadata {
+  enabled: boolean | null
+  url?: string | null
+  source: RuntimeUiMetadataSource
+}
+
+export interface ObservabilityBootstrapMetadata {
+  monitoringNamespace: string | null
+  grafana: ObservabilityServiceBootstrapMetadata
+  prometheus: ObservabilityServiceBootstrapMetadata
+  loki: ObservabilityServiceBootstrapMetadata
+  clickhouse: ObservabilityServiceBootstrapMetadata
+  langfuse: ObservabilityServiceBootstrapMetadata
+}
+
 export interface RuntimeEdgeTerraformMetadata {
   kubeContext: string | null
   namespace: string | null
@@ -30,6 +45,7 @@ export interface RuntimeEdgeTerraformMetadata {
 
 export interface RuntimeUiTerraformResolution {
   runtimeUi: RuntimeUiBootstrapMetadata
+  observability: ObservabilityBootstrapMetadata
   runtimeEdge: RuntimeEdgeTerraformMetadata
   source: "terraform_state" | "terraform_output"
 }
@@ -70,6 +86,13 @@ function asNumber(value: unknown): number | null {
   return null
 }
 
+function asBoolean(value: unknown): boolean | null {
+  if (typeof value !== "boolean") {
+    return null
+  }
+  return value
+}
+
 function isStationKey(value: string): value is BridgeStationKey {
   return (
     value === "xo"
@@ -92,6 +115,35 @@ function fallbackRuntimeUiMetadata(): RuntimeUiBootstrapMetadata {
       source: "fallback",
     },
     portForwardCommand: null,
+  }
+}
+
+function fallbackObservabilityMetadata(): ObservabilityBootstrapMetadata {
+  return {
+    monitoringNamespace: null,
+    grafana: {
+      enabled: null,
+      url: null,
+      source: "fallback",
+    },
+    prometheus: {
+      enabled: null,
+      url: null,
+      source: "fallback",
+    },
+    loki: {
+      enabled: null,
+      source: "fallback",
+    },
+    clickhouse: {
+      enabled: null,
+      source: "fallback",
+    },
+    langfuse: {
+      enabled: null,
+      url: null,
+      source: "fallback",
+    },
   }
 }
 
@@ -243,6 +295,52 @@ function resolveRuntimeEdgeMetadataFromOutputs(outputs: TerraformOutputShape): R
   }
 }
 
+function resolveObservabilityMetadataFromOutputs(
+  outputs: TerraformOutputShape,
+): ObservabilityBootstrapMetadata | null {
+  const hasObservabilityOutputs =
+    outputs.monitoring_namespace !== undefined
+    || outputs.grafana_enabled !== undefined
+    || outputs.grafana_url !== undefined
+    || outputs.prometheus_enabled !== undefined
+    || outputs.prometheus_url !== undefined
+    || outputs.loki_enabled !== undefined
+    || outputs.clickhouse_enabled !== undefined
+    || outputs.langfuse_enabled !== undefined
+    || outputs.langfuse_url !== undefined
+
+  if (!hasObservabilityOutputs) {
+    return null
+  }
+
+  return {
+    monitoringNamespace: getTerraformString(outputs, "monitoring_namespace"),
+    grafana: {
+      enabled: asBoolean(outputs.grafana_enabled?.value),
+      url: getTerraformString(outputs, "grafana_url"),
+      source: "terraform_output",
+    },
+    prometheus: {
+      enabled: asBoolean(outputs.prometheus_enabled?.value),
+      url: getTerraformString(outputs, "prometheus_url"),
+      source: "terraform_output",
+    },
+    loki: {
+      enabled: asBoolean(outputs.loki_enabled?.value),
+      source: "terraform_output",
+    },
+    clickhouse: {
+      enabled: asBoolean(outputs.clickhouse_enabled?.value),
+      source: "terraform_output",
+    },
+    langfuse: {
+      enabled: asBoolean(outputs.langfuse_enabled?.value),
+      url: getTerraformString(outputs, "langfuse_url"),
+      source: "terraform_output",
+    },
+  }
+}
+
 export async function resolveRuntimeUiFromTerraform(args: {
   repoRoot: string
   terraformEnvDir: string
@@ -267,17 +365,33 @@ export async function resolveRuntimeUiFromTerraform(args: {
   }
 
   const runtimeUi = resolveRuntimeUiMetadataFromOutputs(loaded.outputs) || fallbackRuntimeUiMetadata()
+  const observability = resolveObservabilityMetadataFromOutputs(loaded.outputs) || fallbackObservabilityMetadata()
   const runtimeEdge = resolveRuntimeEdgeMetadataFromOutputs(loaded.outputs)
 
-  // If Terraform doesn't have runtime UI outputs at all, skip hydration.
-  if (runtimeUi.openclaw.source === "fallback" && runtimeUi.kubeview.source === "fallback" && !runtimeUi.portForwardCommand) {
+  const hasRuntimeUiOutputs =
+    runtimeUi.openclaw.source !== "fallback"
+    || runtimeUi.kubeview.source !== "fallback"
+    || Boolean(runtimeUi.portForwardCommand)
+  const hasObservabilityOutputs =
+    observability.monitoringNamespace !== null
+    || observability.grafana.enabled !== null
+    || observability.grafana.url !== null
+    || observability.prometheus.enabled !== null
+    || observability.prometheus.url !== null
+    || observability.loki.enabled !== null
+    || observability.clickhouse.enabled !== null
+    || observability.langfuse.enabled !== null
+    || observability.langfuse.url !== null
+
+  // If Terraform doesn't expose runtime UI or observability outputs at all, skip hydration.
+  if (!hasRuntimeUiOutputs && !hasObservabilityOutputs) {
     return null
   }
 
   return {
     runtimeUi,
+    observability,
     runtimeEdge,
     source: loaded.source,
   }
 }
-

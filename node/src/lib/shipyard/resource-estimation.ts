@@ -1,7 +1,7 @@
 import type { DeploymentProfile } from "@/lib/deployment/profile"
 import {
-  BRIDGE_CREW_ROLE_ORDER,
   isBridgeCrewRole,
+  requiredBridgeCrewRolesForDeploymentProfile,
   type BridgeCrewRole,
 } from "@/lib/shipyard/bridge-crew"
 
@@ -32,6 +32,10 @@ const PROFILE_BASELINES: Record<DeploymentProfile, ResourceAmount> = {
     cpuMillicores: 750,
     memoryMiB: 1024,
   },
+  lightweight_shuttle: {
+    cpuMillicores: 500,
+    memoryMiB: 768,
+  },
   cloud_shipyard: {
     cpuMillicores: 1000,
     memoryMiB: 1536,
@@ -55,7 +59,9 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 }
 
 function isDeploymentProfile(value: unknown): value is DeploymentProfile {
-  return value === "local_starship_build" || value === "cloud_shipyard"
+  return value === "local_starship_build"
+    || value === "lightweight_shuttle"
+    || value === "cloud_shipyard"
 }
 
 function addResourceAmounts(base: ResourceAmount, delta: ResourceAmount): ResourceAmount {
@@ -69,19 +75,23 @@ function resourceAmountsEqual(a: ResourceAmount, b: ResourceAmount): boolean {
   return a.cpuMillicores === b.cpuMillicores && a.memoryMiB === b.memoryMiB
 }
 
-function uniqueCrewRoles(input: unknown): BridgeCrewRole[] {
+function uniqueCrewRolesForDeploymentProfile(
+  deploymentProfile: DeploymentProfile,
+  input: unknown,
+): BridgeCrewRole[] {
   if (!Array.isArray(input)) {
     return []
   }
 
+  const requiredRoles = requiredBridgeCrewRolesForDeploymentProfile(deploymentProfile)
   const roleSet = new Set<BridgeCrewRole>()
   for (const entry of input) {
-    if (isBridgeCrewRole(entry)) {
+    if (isBridgeCrewRole(entry) && requiredRoles.includes(entry)) {
       roleSet.add(entry)
     }
   }
 
-  return BRIDGE_CREW_ROLE_ORDER.filter((role) => roleSet.has(role))
+  return requiredRoles.filter((role) => roleSet.has(role))
 }
 
 function parseNonNegativeInteger(value: unknown): number | null {
@@ -144,7 +154,7 @@ export function estimateShipBaseRequirements(input: {
   crewRoles: unknown
 }): ShipBaseRequirementsEstimate {
   const baseline = PROFILE_BASELINES[input.deploymentProfile]
-  const crewRoleList = uniqueCrewRoles(input.crewRoles)
+  const crewRoleList = uniqueCrewRolesForDeploymentProfile(input.deploymentProfile, input.crewRoles)
 
   const roleBreakdown = crewRoleList.map((role) => ({
     role,

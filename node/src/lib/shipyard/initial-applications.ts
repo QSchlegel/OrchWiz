@@ -15,6 +15,7 @@ import {
   type RunCommandFn,
 } from "@/lib/shipyard/cluster-database-url"
 import { applyN8NBootstrapDefaults } from "@/lib/shipyard/n8n-bootstrap-defaults"
+import { readShipAppRegistryFromConfig } from "@/lib/shipyard/app-registry"
 import { resolveShipyardSecretTemplateValues } from "@/lib/shipyard/secret-vault"
 import { importCuratedToolForUser } from "@/lib/tools/catalog"
 import { ensureShipToolGrantForBootstrap } from "@/lib/tools/requests"
@@ -72,11 +73,6 @@ export interface ShipBootstrapTarget {
   deploymentProfile: DeploymentProfile
   provisioningMode: ProvisioningMode
   config: Prisma.JsonValue | null
-}
-
-interface InitialApplicationsSelection {
-  n8n: boolean
-  dokploy: boolean
 }
 
 interface N8NDbConfig {
@@ -151,19 +147,6 @@ function envInt(name: string, fallback: number, min: number, max: number): numbe
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-function readInitialApplicationsSelection(rawConfig: unknown): InitialApplicationsSelection {
-  const config = asRecord(rawConfig)
-  const initial = asRecord(config.initialApplications)
-
-  const n8nValue = initial.n8n
-  const dokployValue = initial.dokploy
-
-  return {
-    n8n: typeof n8nValue === "boolean" ? n8nValue : true,
-    dokploy: typeof dokployValue === "boolean" ? dokployValue : false,
-  }
 }
 
 function createN8NBootstrapResult(
@@ -468,8 +451,8 @@ export async function bootstrapInitialApplicationsForShip(
   },
   dependencies: InitialApplicationDependencies = {},
 ): Promise<InitialApplicationsBootstrapResult> {
-  const selection = readInitialApplicationsSelection(args.ship.config)
-  if (!selection.n8n) {
+  const appRegistry = readShipAppRegistryFromConfig(args.ship.config, args.ship.deploymentProfile)
+  if (!appRegistry.n8n.enabled) {
     return createSkippedInitialApplicationsBootstrap("n8n bootstrap skipped by app selection.")
   }
 
@@ -532,9 +515,10 @@ export async function bootstrapInitialApplicationsForShip(
   const kubeContext = asString(shipInfrastructure.kubeContext)
 
   let databaseUrlFromCluster: string | null = null
+  const localProfile = args.ship.deploymentProfile !== "cloud_shipyard"
   const needDatabaseUrlFromCluster =
-    (args.ship.deploymentProfile === "local_starship_build" && !asString(resolvedSecrets.postgres_password)) ||
-    (args.ship.deploymentProfile === "cloud_shipyard" && !asString(resolvedSecrets.database_url))
+    (localProfile && !asString(resolvedSecrets.postgres_password)) ||
+    (!localProfile && !asString(resolvedSecrets.database_url))
   if (needDatabaseUrlFromCluster && dependencies.runCommandFn && namespace && kubeContext) {
     databaseUrlFromCluster = await getDatabaseUrlFromCluster(
       { kubeContext, namespace },

@@ -92,6 +92,7 @@ const defaultDeps: ShipyardShipsRouteDeps = {
 
 const DEPLOYMENT_PROFILE_VALUES = new Set<DeploymentProfile>([
   "local_starship_build",
+  "lightweight_shuttle",
   "cloud_shipyard",
 ])
 
@@ -120,7 +121,7 @@ function parseDeleteShipsFilter(url: URL): { ok: true; value: DeleteShipsFilter 
   if (!DEPLOYMENT_PROFILE_VALUES.has(profileRaw as DeploymentProfile)) {
     return {
       ok: false,
-      error: "deploymentProfile must be one of: local_starship_build, cloud_shipyard",
+      error: "deploymentProfile must be one of: local_starship_build, lightweight_shuttle, cloud_shipyard",
     }
   }
 

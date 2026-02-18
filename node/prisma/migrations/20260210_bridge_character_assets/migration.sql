@@ -1,5 +1,5 @@
 -- CreateTable
-CREATE TABLE "BridgeCharacterAsset" (
+CREATE TABLE IF NOT EXISTS "BridgeCharacterAsset" (
     "id" TEXT NOT NULL,
     "role" "BridgeCrewRole" NOT NULL,
     "modelUrl" TEXT NOT NULL,
@@ -10,4 +10,4 @@ CREATE TABLE "BridgeCharacterAsset" (
 );
 
 -- CreateIndex
-CREATE UNIQUE INDEX "BridgeCharacterAsset_role_key" ON "BridgeCharacterAsset"("role");
+CREATE UNIQUE INDEX IF NOT EXISTS "BridgeCharacterAsset_role_key" ON "BridgeCharacterAsset"("role");

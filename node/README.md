@@ -33,6 +33,48 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000).
 
+## Playwright Test Bot
+
+Run UI smoke/full/custom checks against the local app (or any target base URL).
+
+### First run
+
+```bash
+cd node
+npm install
+npx playwright install
+npm run test:bot
+```
+
+### Command matrix
+
+- `npm run test:bot` runs the default mode (`smoke`) using `PW_BOT_MODE` and base/target env defaults.
+- `npm run test:bot:smoke` runs critical public-route checks.
+- `npm run test:bot:full` runs deeper non-auth checks plus visual comparison step.
+- `npm run test:bot:headed` runs the smoke flow in headed mode.
+- `npm run test:bot:ci` runs smoke in CI mode with fail-fast behavior.
+
+### Bot env knobs
+
+- `ORCHWIZ_BOT_BASE_URL` (default `http://127.0.0.1:3000`)
+- `PW_BOT_MODE` (`smoke`, `full`, `custom`)
+- `PW_TARGET_URLS` (comma-separated URLs for custom mode)
+- `PW_REPORT_DIR` (default `node/output/playwright`)
+
+Example:
+
+```bash
+PW_BOT_MODE=custom \
+PW_TARGET_URLS=https://example.com,https://example.org \
+npm run test:bot
+```
+
+### Output artifacts
+
+- `output/playwright/junit.xml` (CI parser output)
+- `output/playwright/playwright-report/` (HTML report)
+- `output/playwright/bot-summary.json` (machine-readable bot summary)
+
 ## Control plane in Docker
 
 The production image for the OrchWiz control plane is built from `node/Dockerfile` (multi-stage, Node 20). It is used by:
@@ -50,13 +92,14 @@ Copy `node/.env.example`. Key groups:
 - User role bootstrap: `ORCHWIZ_ADMIN_EMAILS` (comma-separated emails promoted to `admin`; default role is `captain`)
 - GitHub auth/webhooks: `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_WEBHOOK_SECRET`, `ENABLE_GITHUB_WEBHOOK_COMMENTS`, `GITHUB_TOKEN`
 - PostToolUse hooks/webhooks: `HOOK_TRIGGER_BEARER_TOKEN`, `HOOK_WEBHOOK_TARGET_ALLOWLIST`, `HOOK_WEBHOOK_ALLOW_NGROK`, `HOOK_WEBHOOK_TIMEOUT_MS`
-- Command execution policy: `ENABLE_LOCAL_COMMAND_EXECUTION`, `LOCAL_COMMAND_TIMEOUT_MS`, `COMMAND_EXECUTION_SHELL`, `ENABLE_LOCAL_INFRA_AUTO_INSTALL`, `LOCAL_INFRA_COMMAND_TIMEOUT_MS`, `CLOUD_DEPLOY_ONLY` (set `true` to block local starship launches and force cloud-only Ship Yard posture), `LOCAL_SHIPYARD_AUTO_BUILD_APP_IMAGE`, `LOCAL_SHIPYARD_AUTO_CREATE_KIND_CLUSTER`, `LOCAL_SHIPYARD_FORCE_REBUILD_APP_IMAGE`, `LOCAL_SHIPYARD_APP_IMAGE`, `LOCAL_SHIPYARD_DOCKERFILE`, `LOCAL_SHIPYARD_DOCKER_CONTEXT`, `LOCAL_SHIPYARD_KIND_CLUSTER_NAME`
+- Command execution policy: `ENABLE_LOCAL_COMMAND_EXECUTION`, `LOCAL_COMMAND_TIMEOUT_MS`, `COMMAND_EXECUTION_SHELL`, `ENABLE_LOCAL_INFRA_AUTO_INSTALL`, `LOCAL_INFRA_COMMAND_TIMEOUT_MS`, `CLOUD_DEPLOY_ONLY` (set `true` to block local starship launches and force cloud-only Ship Yard posture), `LOCAL_SHIPYARD_AUTO_BUILD_APP_IMAGE`, `LOCAL_SHIPYARD_AUTO_CREATE_KIND_CLUSTER`, `LOCAL_SHIPYARD_ENABLE_OBSERVABILITY_STACK`, `LOCAL_SHIPYARD_FORCE_REBUILD_APP_IMAGE`, `LOCAL_SHIPYARD_APP_IMAGE`, `LOCAL_SHIPYARD_DOCKERFILE`, `LOCAL_SHIPYARD_DOCKER_CONTEXT`, `LOCAL_SHIPYARD_KIND_CLUSTER_NAME`
 - Runtime provider: `OPENCLAW_*`, `OPENCLAW_DISPATCH_PATH`, `OPENCLAW_DISPATCH_TIMEOUT_MS`, `ENABLE_OPENAI_RUNTIME_FALLBACK`, `OPENAI_API_KEY`, `OPENAI_RUNTIME_FALLBACK_MODEL`, `CODEX_CLI_PATH`, `CODEX_RUNTIME_TIMEOUT_MS`, `CODEX_RUNTIME_TIMEOUT_MS_QUARTERMASTER`, `CODEX_RUNTIME_MODEL`, `CODEX_RUNTIME_WORKDIR`, `RUNTIME_PROFILE_DEFAULT`, `RUNTIME_PROFILE_QUARTERMASTER`
 - Harness enhancements (optional): `ENABLE_AGENT_HARNESS_POD`, `TRUSTGRAPH_SOCKET_URL`, `TRUSTGRAPH_TOKEN`
 - Runtime intelligence policy: `RUNTIME_INTELLIGENCE_POLICY_ENABLED`, `RUNTIME_INTELLIGENCE_REQUIRE_CONTROLLABLE_PROVIDERS`, `RUNTIME_INTELLIGENCE_MAX_MODEL`, `RUNTIME_INTELLIGENCE_SIMPLE_MODEL`, `RUNTIME_INTELLIGENCE_CLASSIFIER_MODEL`, `RUNTIME_INTELLIGENCE_CLASSIFIER_TIMEOUT_MS`, `RUNTIME_INTELLIGENCE_LANGFUSE_PROMPT_NAME`, `RUNTIME_INTELLIGENCE_LANGFUSE_PROMPT_LABEL`, `RUNTIME_INTELLIGENCE_LANGFUSE_PROMPT_VERSION`, `RUNTIME_INTELLIGENCE_LANGFUSE_PROMPT_CACHE_TTL_SECONDS`, `RUNTIME_INTELLIGENCE_USD_TO_EUR`, `RUNTIME_INTELLIGENCE_MODEL_PRICING_USD_PER_1M`, `RUNTIME_INTELLIGENCE_THRESHOLD_DEFAULT`, `RUNTIME_INTELLIGENCE_THRESHOLD_MIN`, `RUNTIME_INTELLIGENCE_THRESHOLD_MAX`, `RUNTIME_INTELLIGENCE_LEARNING_RATE`, `RUNTIME_INTELLIGENCE_EXPLORATION_RATE`, `RUNTIME_INTELLIGENCE_TARGET_REWARD`, `RUNTIME_INTELLIGENCE_NIGHTLY_CRON_TOKEN`
 - Bridge TTS (optional Kugelaudio sidecar): `BRIDGE_TTS_ENABLED`, `KUGELAUDIO_TTS_BASE_URL`, `KUGELAUDIO_TTS_TIMEOUT_MS`, `KUGELAUDIO_TTS_BEARER_TOKEN`, `KUGELAUDIO_TTS_CFG_SCALE`, `KUGELAUDIO_TTS_MAX_TOKENS`, `KUGELAUDIO_TTS_VOICE_DEFAULT`, `KUGELAUDIO_TTS_VOICE_XO`, `KUGELAUDIO_TTS_VOICE_OPS`, `KUGELAUDIO_TTS_VOICE_ENG`, `KUGELAUDIO_TTS_VOICE_SEC`, `KUGELAUDIO_TTS_VOICE_MED`, `KUGELAUDIO_TTS_VOICE_COU`
 - Skills catalog/import: `ORCHWIZ_CODEX_HOME_ROOT`, `ORCHWIZ_SKILL_IMPORT_TIMEOUT_MS`, `ORCHWIZ_SKILL_CATALOG_STALE_MS`
 - Curated tool URIs: `WALLET_ENCLAVE_TOOL_URI`, `DATA_CORE_CONNECTOR_TOOL_URI`, `N8N_TOOL_URI`
+  - `N8N_TOOL_URI` is optional; when unset, n8n uses localhost endpoint mode (`http://localhost:5678/n8n`).
 - Bridge chat compatibility auth: `BRIDGE_ADMIN_TOKEN`
 - Ship Yard legacy machine auth (launch/status only): `SHIPYARD_API_TOKEN`
 - Ship Yard initial n8n bootstrap: `SHIPYARD_N8N_INITIAL_APP_ENABLED`, `SHIPYARD_N8N_INITIAL_APP_IMAGE`, `SHIPYARD_N8N_INITIAL_APP_PORT`, `SHIPYARD_N8N_BOOTSTRAP_MAX_ATTEMPTS`
@@ -134,9 +177,11 @@ Create flows for both agent and application deployments support profile-aware fi
   - Loads image into the `kind` cluster before running Terraform/Ansible
   - If the built image changes, Ship Yard restarts the in-cluster `orchwiz` Deployment to ensure the new image is picked up even when the tag is unchanged
   - Sets `TF_VAR_app_image` automatically for the provisioning run
-  - Controls: `LOCAL_SHIPYARD_AUTO_BUILD_APP_IMAGE`, `LOCAL_SHIPYARD_AUTO_CREATE_KIND_CLUSTER`, `LOCAL_SHIPYARD_FORCE_REBUILD_APP_IMAGE`, `LOCAL_SHIPYARD_APP_IMAGE`, `LOCAL_SHIPYARD_DOCKERFILE`, `LOCAL_SHIPYARD_DOCKER_CONTEXT`, `LOCAL_SHIPYARD_KIND_CLUSTER_NAME`
+  - Controls: `LOCAL_SHIPYARD_AUTO_BUILD_APP_IMAGE`, `LOCAL_SHIPYARD_AUTO_CREATE_KIND_CLUSTER`, `LOCAL_SHIPYARD_ENABLE_OBSERVABILITY_STACK`, `LOCAL_SHIPYARD_FORCE_REBUILD_APP_IMAGE`, `LOCAL_SHIPYARD_APP_IMAGE`, `LOCAL_SHIPYARD_DOCKERFILE`, `LOCAL_SHIPYARD_DOCKER_CONTEXT`, `LOCAL_SHIPYARD_KIND_CLUSTER_NAME`
 - Local launch requests are rejected when `CLOUD_DEPLOY_ONLY=true`
-- Local flow validates kube context presence; when `LOCAL_SHIPYARD_AUTO_CREATE_KIND_CLUSTER=true` (default) and the target `kind` cluster is missing, Ship Yard creates it before loading the app image.
+- Local flow validates kube context presence; when `LOCAL_SHIPYARD_AUTO_CREATE_KIND_CLUSTER=true` and the target `kind` cluster is missing, Ship Yard creates it before loading the app image (default is `false`).
+- Local flow defaults to lean observability for resource control (`TF_VAR_enable_grafana/prometheus/loki/clickhouse/langfuse=false`). Set `LOCAL_SHIPYARD_ENABLE_OBSERVABILITY_STACK=true` to opt in to full local observability provisioning.
+- Recommended Docker Desktop workstation budget for local Ship Yard loops: `4 CPU / 8 GiB`.
 - Failures return structured non-2xx responses with `error`, `code`, and optional `details.suggestedCommands`
 - Local flow does not delete/reset clusters automatically; use the debug loop or `/api/ship-yard/local/cluster/reset` when you need a fresh cluster.
 
@@ -159,17 +204,32 @@ Behavior before launch (debug harness only):
 - If ship cleanup fails, the loop logs a warning and still attempts forced cluster reset.
 - If cluster reset fails, the loop exits `2` and does not launch.
 
+Behavior after launch completion (debug harness only):
+
+- By default, the loop performs post-run cleanup for both `local_starship_build` and `lightweight_shuttle` with `preserveInfra=false`, then runs best-effort `kind delete cluster --name <cluster>`.
+- Use `--keep-cluster` to skip post-run teardown when you want to inspect the local cluster after the run.
+
 Useful flags:
 
 - `--base-url=<url>`: target a different API host.
 - `--poll-ms=<ms>`: status poll interval.
 - `--timeout-ms=<ms>`: max wait for launch request + terminal status progression.
 - `--name-prefix=<prefix>`: customize generated ship names.
+- `--keep-cluster`: skip post-run auto teardown.
 - `--verbose`: print launch/status response payloads for deeper debugging.
 
 Relevant env vars:
 
 - `LOCAL_SHIPYARD_KIND_CLUSTER_NAME`: reset target cluster name (default `orchwiz`).
+
+Manual cooldown utility:
+
+```bash
+cd node
+npm run shipyard:local:cooldown
+```
+
+The cooldown script runs best-effort local cleanup (`kind delete cluster` + docker compose down for local stacks).
 
 The loop exits:
 
@@ -659,6 +719,7 @@ npm run dev:ngrok:webhooks
 npm run dev:ngrok:urls
 npm run shipyard:smoke
 npm run shipyard:local:debug
+npm run shipyard:local:cooldown
 npm run lint
 npm run test
 npm run build

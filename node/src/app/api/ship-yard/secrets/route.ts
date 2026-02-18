@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import type { Prisma } from "@prisma/client"
+import { DeploymentProfile as PrismaDeploymentProfile } from "@prisma/client"
 import type { DeploymentProfile } from "@/lib/deployment/profile"
 import { prisma } from "@/lib/prisma"
 import { AccessControlError } from "@/lib/security/access-control"
@@ -16,7 +17,11 @@ import { requireShipyardRequestActor } from "@/lib/shipyard/request-actor"
 
 export const dynamic = "force-dynamic"
 
-const DEPLOYMENT_PROFILES = new Set<DeploymentProfile>(["local_starship_build", "cloud_shipyard"])
+const DEPLOYMENT_PROFILES = new Set<DeploymentProfile>([
+  "local_starship_build",
+  "lightweight_shuttle",
+  "cloud_shipyard",
+])
 
 function parseDeploymentProfile(value: unknown): DeploymentProfile | null {
   if (typeof value !== "string") {
@@ -46,12 +51,11 @@ export async function GET(request: NextRequest) {
     }
 
     const includeValues = includeValuesFromQuery(request.nextUrl.searchParams.get("includeValues"))
-    const template = await prisma.shipyardSecretTemplate.findUnique({
+    const profileEnum = deploymentProfile as PrismaDeploymentProfile
+    const template = await prisma.shipyardSecretTemplate.findFirst({
       where: {
-        userId_deploymentProfile: {
-          userId: actor.userId,
-          deploymentProfile,
-        },
+        userId: actor.userId,
+        deploymentProfile: profileEnum,
       },
     })
 
@@ -145,11 +149,12 @@ export async function PUT(request: NextRequest) {
       values: normalizedValues,
     })
 
+    const profileEnum = deploymentProfile as PrismaDeploymentProfile
     const template = await prisma.shipyardSecretTemplate.upsert({
       where: {
         userId_deploymentProfile: {
           userId: actor.userId,
-          deploymentProfile,
+          deploymentProfile: profileEnum,
         },
       },
       update: {

@@ -25,6 +25,20 @@ test("estimateShipBaseRequirements computes cloud profile totals for xo/ops/eng"
   assert.equal(estimate.totals.memoryMiB, 2048)
 })
 
+test("estimateShipBaseRequirements keeps lightweight profile at XO-only agent sizing", () => {
+  const estimate = estimateShipBaseRequirements({
+    deploymentProfile: "lightweight_shuttle",
+    crewRoles: ["xo", "ops", "eng", "sec", "med", "cou"],
+  })
+
+  assert.deepEqual(
+    estimate.crew.roles.map((role) => role.role),
+    ["xo"],
+  )
+  assert.equal(estimate.totals.cpuMillicores, 600)
+  assert.equal(estimate.totals.memoryMiB, 896)
+})
+
 test("estimateShipBaseRequirements de-dupes duplicate bridge crew roles", () => {
   const estimate = estimateShipBaseRequirements({
     deploymentProfile: "local_starship_build",

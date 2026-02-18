@@ -6,6 +6,20 @@ export interface ShipyardInspectionFailure {
   suggestedCommands: string[]
 }
 
+export interface ShipyardInspectionRootCause {
+  reasonCode: string
+  title: string
+  summary: string
+  confidence: "low" | "medium" | "high"
+  evidence: string[]
+  suggestedCommands: string[]
+}
+
+export interface ShipyardInspectionDiagnostics {
+  rootCause: ShipyardInspectionRootCause | null
+  kubernetes: Record<string, unknown> | null
+}
+
 export interface ShipyardInspectionLogTail {
   key: string
   value: string
@@ -71,6 +85,17 @@ function asRecordOrNull(value: unknown): Record<string, unknown> | null {
   return value as Record<string, unknown>
 }
 
+function asStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return []
+  }
+  return [...new Set(
+    value
+      .map((entry) => asNonEmptyString(entry))
+      .filter((entry): entry is string => entry !== null),
+  )]
+}
+
 function truncateTail(value: string, maxChars: number): string {
   if (value.length <= maxChars) {
     return value
@@ -115,6 +140,90 @@ export function extractInspectionFailureFromMetadata(args: {
     message,
     details,
     suggestedCommands,
+  }
+}
+
+function normalizeRootCauseFromMetadata(metadataInput: unknown): ShipyardInspectionRootCause | null {
+  const metadata = asRecord(metadataInput)
+  const source = asRecordOrNull(metadata.provisioningFailureSummary)
+  if (!source) {
+    return null
+  }
+
+  const reasonCode = asNonEmptyString(source.reasonCode)
+  const title = asNonEmptyString(source.title)
+  const summary = asNonEmptyString(source.summary)
+  const confidenceRaw = asNonEmptyString(source.confidence)
+  const confidence =
+    confidenceRaw === "high" || confidenceRaw === "medium" || confidenceRaw === "low"
+      ? confidenceRaw
+      : "low"
+
+  if (!reasonCode || !title || !summary) {
+    return null
+  }
+
+  return {
+    reasonCode,
+    title,
+    summary,
+    confidence,
+    evidence: asStringArray(source.evidence),
+    suggestedCommands: asStringArray(source.suggestedCommands),
+  }
+}
+
+function fallbackRootCause(args: {
+  failure: ShipyardInspectionFailure
+}): ShipyardInspectionRootCause | null {
+  if (args.failure.code === "LOCAL_BOOTSTRAP_CONTEXT_MISSING") {
+    return {
+      reasonCode: "kubernetes_context_missing",
+      title: "Kubernetes context not found",
+      summary: "The requested local kube context is missing, so provisioning could not start.",
+      confidence: "high",
+      evidence: [],
+      suggestedCommands: args.failure.suggestedCommands,
+    }
+  }
+
+  const details = asRecord(args.failure.details)
+  const detailsError = asNonEmptyString(details.error) || ""
+  const failureMessage = `${args.failure.message || ""} ${detailsError}`.toLowerCase()
+  if (failureMessage.includes("waiting for rollout to finish")) {
+    return {
+      reasonCode: "kubernetes_rollout_not_ready",
+      title: "Kubernetes rollout did not become ready",
+      summary: "Terraform apply waited for deployment readiness and timed out on unready replicas.",
+      confidence: "medium",
+      evidence: [],
+      suggestedCommands: args.failure.suggestedCommands,
+    }
+  }
+
+  return null
+}
+
+export function extractInspectionDiagnosticsFromMetadata(args: {
+  metadata: unknown
+  failure: ShipyardInspectionFailure
+}): ShipyardInspectionDiagnostics {
+  const metadata = asRecord(args.metadata)
+  const rootCause = normalizeRootCauseFromMetadata(metadata) || fallbackRootCause({ failure: args.failure })
+  const kubernetes = asRecordOrNull(metadata.kubernetesDiagnostics)
+  const mergedRootCause = rootCause
+    ? {
+        ...rootCause,
+        suggestedCommands: [...new Set([
+          ...rootCause.suggestedCommands,
+          ...args.failure.suggestedCommands,
+        ])],
+      }
+    : null
+
+  return {
+    rootCause: mergedRootCause,
+    kubernetes,
   }
 }
 

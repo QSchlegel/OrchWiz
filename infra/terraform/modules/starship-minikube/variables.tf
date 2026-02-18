@@ -147,6 +147,17 @@ variable "openclaw_gateway_token" {
   default     = "orchwiz-openclaw-dev-token"
 }
 
+variable "openclaw_station_count" {
+  type        = number
+  description = "Number of OpenClaw stations to deploy (1-6 in order: xo, ops, eng, sec, med, cou)."
+  default     = 6
+
+  validation {
+    condition     = var.openclaw_station_count >= 1 && var.openclaw_station_count <= 6 && floor(var.openclaw_station_count) == var.openclaw_station_count
+    error_message = "openclaw_station_count must be an integer between 1 and 6."
+  }
+}
+
 variable "openclaw_gateway_tokens" {
   type        = map(string)
   description = "Optional explicit per-station OpenClaw gateway tokens (keys: xo, ops, eng, sec, med, cou). When empty, tokens are derived from openclaw_gateway_token."
@@ -311,7 +322,7 @@ variable "enable_prometheus" {
 variable "prometheus_chart_version" {
   type        = string
   description = "Prometheus Helm chart version"
-  default     = "31.0.0"
+  default     = "28.9.1"
 }
 
 variable "prometheus_ingress_enabled" {

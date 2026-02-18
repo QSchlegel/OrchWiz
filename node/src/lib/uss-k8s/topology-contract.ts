@@ -11,10 +11,11 @@ import {
   type SubsystemGroup,
   type TopologyComponent,
 } from "./topology"
+import type { DeploymentProfile } from "@/lib/deployment/profile"
 
 export type ShipSelectorStatus = "pending" | "deploying" | "active" | "inactive" | "failed" | "updating"
 export type ShipSelectorNodeType = "local" | "cloud" | "hybrid"
-export type ShipSelectorDeploymentProfile = "local_starship_build" | "cloud_shipyard"
+export type ShipSelectorDeploymentProfile = DeploymentProfile
 export type KubeviewSource = "terraform_output" | "fallback" | "unavailable"
 
 export interface ShipSelectorItem {
@@ -51,7 +52,11 @@ const COMPONENT_TYPES = new Set<ComponentType>(["operator", "agent", "runtime", 
 const EDGE_TYPES = new Set<EdgeType>(["data", "control", "telemetry", "alert"])
 const SHIP_STATUSES = new Set<ShipSelectorStatus>(["pending", "deploying", "active", "inactive", "failed", "updating"])
 const SHIP_NODE_TYPES = new Set<ShipSelectorNodeType>(["local", "cloud", "hybrid"])
-const SHIP_DEPLOYMENT_PROFILES = new Set<ShipSelectorDeploymentProfile>(["local_starship_build", "cloud_shipyard"])
+const SHIP_DEPLOYMENT_PROFILES = new Set<ShipSelectorDeploymentProfile>([
+  "local_starship_build",
+  "lightweight_shuttle",
+  "cloud_shipyard",
+])
 const KUBEVIEW_SOURCES = new Set<KubeviewSource>(["terraform_output", "fallback", "unavailable"])
 
 function asRecord(value: unknown): Record<string, unknown> | null {

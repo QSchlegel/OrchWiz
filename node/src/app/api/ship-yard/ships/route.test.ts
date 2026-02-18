@@ -142,7 +142,7 @@ test("ship-yard ships DELETE validates deployment profile filter", async () => {
   const payload = (await response.json()) as Record<string, unknown>
   assert.equal(
     payload.error,
-    "deploymentProfile must be one of: local_starship_build, cloud_shipyard",
+    "deploymentProfile must be one of: local_starship_build, lightweight_shuttle, cloud_shipyard",
   )
 })
 

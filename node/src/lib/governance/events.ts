@@ -98,51 +98,19 @@ export async function listRecentGovernanceGrantEvents(args: {
           }
         : {}),
     },
-    include: {
-      bridgeCrew: {
-        select: {
-          id: true,
-          role: true,
-          callsign: true,
-          name: true,
-        },
-      },
-      actorBridgeCrew: {
-        select: {
-          id: true,
-          role: true,
-          callsign: true,
-          name: true,
-        },
-      },
-      subagent: {
-        select: {
-          id: true,
-          name: true,
-          subagentType: true,
-        },
-      },
-      toolCatalogEntry: {
-        select: {
-          id: true,
-          slug: true,
-          name: true,
-        },
-      },
-      runtimeAdapterCatalogEntry: {
-        select: {
-          id: true,
-          adapterId: true,
-          name: true,
-        },
-      },
-      skillCatalogEntry: {
-        select: {
-          id: true,
-          slug: true,
-          name: true,
-        },
-      },
+    // Keep this projection narrow so older/local databases missing newly-added
+    // governance columns can still serve ship-tools state without a 500.
+    select: {
+      id: true,
+      eventType: true,
+      toolCatalogEntryId: true,
+      skillCatalogEntryId: true,
+      bridgeCrewId: true,
+      subagentId: true,
+      actorBridgeCrewId: true,
+      rationale: true,
+      metadata: true,
+      createdAt: true,
       securityReport: {
         select: {
           id: true,

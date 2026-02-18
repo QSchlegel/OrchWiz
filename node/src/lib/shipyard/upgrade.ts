@@ -10,6 +10,7 @@ import {
   type DeploymentAdapterResult,
 } from "@/lib/deployment/adapter"
 import {
+  isLocalDeploymentProfile,
   normalizeInfrastructureInConfig,
   type DeploymentProfile,
   type InfrastructureConfig,
@@ -136,6 +137,7 @@ export interface ShipUpgradeDeps {
     args: ResolveCloudSshPrivateKeyInput,
   ) => Promise<string>
   runLocalUpgrade: (input: {
+    deploymentProfile: DeploymentProfile
     provisioningMode: ProvisioningMode
     infrastructure: InfrastructureConfig
     saneBootstrap: boolean
@@ -417,7 +419,7 @@ async function executeShipUpgrade(
   )
   const infrastructure = normalizedInfrastructure.infrastructure
 
-  if (input.ship.deploymentProfile === "local_starship_build") {
+  if (isLocalDeploymentProfile(input.ship.deploymentProfile)) {
     const bridgeCrewContext = await deps.listBridgeCrewContext(input.ship.id)
     const sortedBridgeCrew = [...bridgeCrewContext].sort(
       (left, right) => BRIDGE_CREW_ROLE_ORDER.indexOf(left.role) - BRIDGE_CREW_ROLE_ORDER.indexOf(right.role),
@@ -436,6 +438,7 @@ async function executeShipUpgrade(
         : undefined
 
     const launchResult = await deps.runLocalUpgrade({
+      deploymentProfile: input.ship.deploymentProfile,
       provisioningMode: input.ship.provisioningMode,
       infrastructure,
       saneBootstrap: readSaneBootstrap(input.ship.metadata),

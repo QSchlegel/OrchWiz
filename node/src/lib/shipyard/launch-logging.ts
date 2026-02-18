@@ -60,6 +60,19 @@ const MAX_EMITTED_LINE_CHARS = 8_000
 const MAX_ACCUMULATED_CHARS = 8 * 1024 * 1024
 const RESOURCE_SAMPLING_INTERVAL_MS = 45_000
 const RESOURCE_SAMPLING_MIN_TIMEOUT_MS = 60_000
+const HIGH_SIGNAL_FAILURE_PATTERNS: RegExp[] = [
+  /\bfatal:/iu,
+  /\berror:\b/iu,
+  /failed! =>/iu,
+  /waiting for rollout to finish/iu,
+  /crashloopbackoff/iu,
+  /imagepullbackoff/iu,
+  /errimagepull/iu,
+  /qschlegel\/orchwiz-provider-proxy/iu,
+  /403 forbidden/iu,
+  /failed to start orchwiz server/iu,
+  /turbo\.createproject/iu,
+]
 
 function stripAnsi(value: string): string {
   return value.replace(ANSI_ESCAPE_REGEX, "")
@@ -83,6 +96,21 @@ function normalizeLines(lines: string[]): string[] {
     out.push(truncateLine(trimmed, MAX_EMITTED_LINE_CHARS))
   }
   return out
+}
+
+function normalizeLineForDedup(line: string): string {
+  return line.trim().toLowerCase()
+}
+
+function highSignalFailureLines(lines: string[]): string[] {
+  const matches: string[] = []
+  for (const line of lines) {
+    if (!HIGH_SIGNAL_FAILURE_PATTERNS.some((pattern) => pattern.test(line))) {
+      continue
+    }
+    matches.push(line)
+  }
+  return matches
 }
 
 function appendCapped(buffer: string, chunk: string, maxChars: number): string {
@@ -149,6 +177,24 @@ export function createStreamingRunCommand(args: {
     let stderr = ""
     let stdoutRemainder = ""
     let stderrRemainder = ""
+    const emittedHighSignal = new Set<string>()
+
+    const emitHighSignalFailures = (lines: string[], stream: ShipLaunchLogStream) => {
+      const highlights = highSignalFailureLines(lines)
+      for (const line of highlights) {
+        const key = normalizeLineForDedup(line)
+        if (emittedHighSignal.has(key)) {
+          continue
+        }
+        emittedHighSignal.add(key)
+        args.emitLaunchLog({
+          level: "error",
+          source: args.source,
+          stream,
+          lines: [`[diagnostic] ${line}`],
+        })
+      }
+    }
 
     let timeoutId: ReturnType<typeof setTimeout> | null = null
     let timedOut = false
@@ -169,6 +215,7 @@ export function createStreamingRunCommand(args: {
             stream: "stdout",
             lines,
           })
+          emitHighSignalFailures(lines, "stdout")
         }
       }
       if (stderrRemainder.trim().length > 0) {
@@ -180,6 +227,7 @@ export function createStreamingRunCommand(args: {
             stream: "stderr",
             lines,
           })
+          emitHighSignalFailures(lines, "stderr")
         }
       }
     }
@@ -198,6 +246,7 @@ export function createStreamingRunCommand(args: {
           stream: "stdout",
           lines,
         })
+        emitHighSignalFailures(lines, "stdout")
       }
     }
 
@@ -215,6 +264,7 @@ export function createStreamingRunCommand(args: {
           stream: "stderr",
           lines,
         })
+        emitHighSignalFailures(lines, "stderr")
       }
     }
 
@@ -303,6 +353,12 @@ export function createStreamingRunCommand(args: {
     }
 
     const ok = result.exitCode === 0
+    if (!ok) {
+      const failureTailLines = normalizeLines(
+        `${appendCapped("", stdout, 4_096)}\n${appendCapped("", stderr, 4_096)}`.split("\n"),
+      )
+      emitHighSignalFailures(failureTailLines, "stderr")
+    }
     return {
       ok,
       stdout,

@@ -55,6 +55,7 @@ const RAW_CURATED_TOOLS: CuratedToolDefinition[] = [
     description:
       "n8n workflow orchestration connector for creating, debugging, and operating automations.",
     sourceUriEnvKey: "N8N_TOOL_URI",
+    sourceUrl: "http://localhost:5678/n8n",
   },
 ]
 
@@ -126,6 +127,29 @@ function parseGitHubToolUri(rawValue: string): {
   }
 }
 
+function parseHttpEndpointUri(rawValue: string): string | null {
+  const value = rawValue.trim()
+  if (!value) {
+    return null
+  }
+
+  const loopbackHostPattern = /^(localhost|127\.0\.0\.1|\[::1\]|::1)(:\d+)?(\/.*)?$/iu
+  const candidate = loopbackHostPattern.test(value) ? `http://${value}` : value
+
+  let parsed: URL
+  try {
+    parsed = new URL(candidate)
+  } catch {
+    return null
+  }
+
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return null
+  }
+
+  return parsed.toString()
+}
+
 function normalizeSourceUriFromEnv(tool: CuratedToolDefinition): {
   repo: string | null
   sourcePath: string | null
@@ -134,6 +158,8 @@ function normalizeSourceUriFromEnv(tool: CuratedToolDefinition): {
   available: boolean
   unavailableReason: string | null
 } {
+  const endpointFallback = parseHttpEndpointUri(tool.sourceUrl || "")
+
   if (!tool.sourceUriEnvKey) {
     return {
       repo: tool.repo || null,
@@ -147,6 +173,17 @@ function normalizeSourceUriFromEnv(tool: CuratedToolDefinition): {
 
   const rawUri = process.env[tool.sourceUriEnvKey]
   if (!rawUri || !rawUri.trim()) {
+    if (endpointFallback) {
+      return {
+        repo: null,
+        sourcePath: null,
+        sourceRef: null,
+        sourceUrl: endpointFallback,
+        available: true,
+        unavailableReason: null,
+      }
+    }
+
     return {
       repo: null,
       sourcePath: null,
@@ -158,24 +195,40 @@ function normalizeSourceUriFromEnv(tool: CuratedToolDefinition): {
   }
 
   const parsed = parseGitHubToolUri(rawUri)
-  if (!parsed) {
+  if (parsed) {
     return {
-      repo: null,
-      sourcePath: null,
-      sourceRef: null,
-      sourceUrl: rawUri.trim(),
-      available: false,
-      unavailableReason: `${tool.sourceUriEnvKey} must be a GitHub URL or owner/repo tuple.`,
+      repo: parsed.repo,
+      sourcePath: parsed.sourcePath,
+      sourceRef: parsed.sourceRef,
+      sourceUrl: parsed.sourceUrl,
+      available: true,
+      unavailableReason: null,
+    }
+  }
+
+  if (endpointFallback) {
+    const endpointOverride = parseHttpEndpointUri(rawUri)
+    if (endpointOverride) {
+      return {
+        repo: null,
+        sourcePath: null,
+        sourceRef: null,
+        sourceUrl: endpointOverride,
+        available: true,
+        unavailableReason: null,
+      }
     }
   }
 
   return {
-    repo: parsed.repo,
-    sourcePath: parsed.sourcePath,
-    sourceRef: parsed.sourceRef,
-    sourceUrl: parsed.sourceUrl,
-    available: true,
-    unavailableReason: null,
+    repo: null,
+    sourcePath: null,
+    sourceRef: null,
+    sourceUrl: rawUri.trim(),
+    available: false,
+    unavailableReason: endpointFallback
+      ? `${tool.sourceUriEnvKey} must be a GitHub URL, owner/repo tuple, or an http(s) endpoint URI.`
+      : `${tool.sourceUriEnvKey} must be a GitHub URL or owner/repo tuple.`,
   }
 }
 

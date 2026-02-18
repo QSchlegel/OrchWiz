@@ -31,6 +31,8 @@ import {
 import {
   defaultInfrastructureConfig,
   deriveNodeTypeFromProfile,
+  isLightweightShuttleProfile,
+  isLocalDeploymentProfile,
   type DeploymentProfile,
   type InfrastructureConfig,
   type NodeType,
@@ -45,8 +47,8 @@ import {
   SHIP_MONITORING_DEFAULTS,
 } from "@/lib/shipyard/monitoring"
 import {
-  BRIDGE_CREW_ROLE_ORDER,
   listBridgeCrewTemplates,
+  requiredBridgeCrewRolesForDeploymentProfile,
   type BridgeCrewRole,
 } from "@/lib/shipyard/bridge-crew"
 import {
@@ -82,6 +84,25 @@ import {
   type ShipyardClusterSummary,
 } from "@/lib/shipyard/cluster-summary"
 import {
+  defaultShipAppRegistry,
+  SHIP_APP_IDS,
+  SHIP_RUNTIME_APP_IDS,
+  type ShipAppId,
+  type ShipAppRegistry,
+} from "@/lib/shipyard/app-registry"
+import {
+  APP_REGISTRY_STORAGE_KEY,
+  defaultAppRegistryEntries,
+  parseAppRegistryEntries,
+  type AppRegistryApplicationType,
+  type AppRegistryEntry,
+} from "@/lib/applications/registry"
+import {
+  SPACEBOT_AGENT_RUNTIME_VALUES,
+  type SpacebotAgentRuntime,
+  type SpacebotLaunchStack,
+} from "@/lib/shipyard/spacebot-launch-intent"
+import {
   SHIP_LATEST_VERSION,
   resolveShipVersion,
   shipVersionNeedsUpgrade,
@@ -104,10 +125,6 @@ type WizardStepId = "mission" | "environment" | "secrets" | "apps" | "crew" | "r
 
 type MainTab = "build" | "fleet" | "apiKeys" | "ops"
 
-type BootstrapAppId = "n8n" | "dokploy"
-
-type InitialApplicationsSelection = Record<BootstrapAppId, boolean>
-
 interface CrewOverrideInput {
   name: string
   description: string
@@ -126,7 +143,7 @@ interface LaunchFormState {
   description: string
   nodeId: string
   nodeUrl: string
-  initialApplications: InitialApplicationsSelection
+  appRegistry: ShipAppRegistry
   saneBootstrap: boolean
   deploymentProfile: DeploymentProfile
   provisioningMode: ProvisioningMode
@@ -248,11 +265,10 @@ interface RuntimeSnapshot {
   }
 }
 
-type SpacebotStack = "dev-local" | "cloudflare-local"
 type SpacebotAction = "start" | "stop" | "restart"
 
 interface SpacebotConnectorSnapshot {
-  stack: SpacebotStack
+  stack: SpacebotLaunchStack
   baseUrl: string
   connectorEnabled: boolean
   localCommandExecutionEnabled: boolean
@@ -307,33 +323,71 @@ const steps: { id: WizardStepId; title: string; subtitle: string; icon: ElementT
   { id: "review", title: "Launch", subtitle: "Review and deploy", icon: Rocket },
 ]
 
-const DEFAULT_INITIAL_APPLICATIONS: InitialApplicationsSelection = {
-  n8n: true,
-  dokploy: false,
+const BOOTSTRAP_APP_ICONS: Record<ShipAppId, ElementType> = {
+  n8n: AppWindow,
+  dokploy: Server,
+  spacebot: Bot,
+  opencode: Bot,
+  codex: Bot,
+  "gemini-cli": Bot,
+  "github-copilot": Bot,
+  amp: Bot,
+  "kimi-cli": Bot,
 }
 
-const BOOTSTRAP_APPS: Array<{
-  id: BootstrapAppId
+interface BootstrapAppCard {
+  id: ShipAppId
   label: string
+  appType: string
   description: string
   icon: ElementType
-}> = [
-  {
-    id: "n8n",
-    label: "n8n",
-    description: "Workflow automation + curated tool bridge bootstrap.",
-    icon: AppWindow,
-  },
-  {
-    id: "dokploy",
-    label: "Dokploy",
-    description: "Staging deploy control plane (connect-only for local profile, provisioning later).",
-    icon: Server,
-  },
-]
+}
+
+const APP_TYPE_LABEL_BY_REGISTRY_TYPE: Record<AppRegistryApplicationType, string> = {
+  docker: "docker service",
+  nodejs: "nodejs service",
+  python: "python service",
+  static: "static site",
+  n8n: "workflow automation",
+  custom: "custom app",
+}
+
+function toBootstrapAppCards(entries: AppRegistryEntry[]): BootstrapAppCard[] {
+  const byId = new Map(entries.map((entry) => [entry.id, entry] as const))
+  const cards: BootstrapAppCard[] = []
+
+  for (const appId of SHIP_APP_IDS) {
+    const entry = byId.get(appId)
+    if (!entry || !entry.showInLaunchWizard) {
+      continue
+    }
+
+    cards.push({
+      id: appId,
+      label: entry.name.trim() || appId,
+      appType: APP_TYPE_LABEL_BY_REGISTRY_TYPE[entry.applicationType],
+      description: entry.description,
+      icon: BOOTSTRAP_APP_ICONS[appId],
+    })
+  }
+
+  return cards
+}
+
+const DEFAULT_BOOTSTRAP_APPS = toBootstrapAppCards(defaultAppRegistryEntries())
+
+const spacebotAgentRuntimeLabels: Record<SpacebotAgentRuntime, string> = {
+  opencode: "opencode",
+  codex: "codex",
+  "gemini-cli": "gemini-cli",
+  "github-copilot": "github-copilot",
+  amp: "amp",
+  "kimi-cli": "kimi-cli",
+}
 
 const deploymentProfileLabels: Record<DeploymentProfile, string> = {
   local_starship_build: "Local Starship Build",
+  lightweight_shuttle: "Lightweight Shuttle",
   cloud_shipyard: "Cloud Shipyard",
 }
 
@@ -353,8 +407,6 @@ const crewRoleLabels: Record<BridgeCrewRole, string> = {
   med: "Medical",
   cou: "Communications",
 }
-
-const REQUIRED_BRIDGE_CREW_ROLES = [...BRIDGE_CREW_ROLE_ORDER] as BridgeCrewRole[]
 
 const requirementStatusClasses: Record<DeploymentOverviewRequirement["status"], string> = {
   ready: "border-emerald-400/35 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200",
@@ -455,6 +507,14 @@ const PROFILE_SECRET_FIELDS_BY_PROFILE: Record<DeploymentProfile, ShipyardSecret
     "github_client_secret",
     "postgres_password",
   ],
+  lightweight_shuttle: [
+    "better_auth_secret",
+    "openai_api_key",
+    "openclaw_api_key",
+    "github_client_id",
+    "github_client_secret",
+    "postgres_password",
+  ],
   cloud_shipyard: [
     "better_auth_secret",
     "openai_api_key",
@@ -467,11 +527,18 @@ const PROFILE_SECRET_FIELDS_BY_PROFILE: Record<DeploymentProfile, ShipyardSecret
 
 const LAUNCH_ESSENTIAL_SECRET_FIELDS_BY_PROFILE: Record<DeploymentProfile, ShipyardSecretFieldKey[]> = {
   local_starship_build: ["better_auth_secret", "postgres_password"],
+  lightweight_shuttle: ["better_auth_secret", "postgres_password"],
   cloud_shipyard: ["better_auth_secret", "database_url"],
 }
 
 const OPTIONAL_INTEGRATION_SECRET_FIELDS_BY_PROFILE: Record<DeploymentProfile, ShipyardSecretFieldKey[]> = {
   local_starship_build: [
+    "openai_api_key",
+    "openclaw_api_key",
+    "github_client_id",
+    "github_client_secret",
+  ],
+  lightweight_shuttle: [
     "openai_api_key",
     "openclaw_api_key",
     "github_client_id",
@@ -604,6 +671,7 @@ function createEmptySecretSummary(): ShipyardSecretTemplateSummary {
 function createInitialSecretValuesByProfile(): Record<DeploymentProfile, ShipyardSecretTemplateValues> {
   return {
     local_starship_build: {},
+    lightweight_shuttle: {},
     cloud_shipyard: {},
   }
 }
@@ -611,6 +679,7 @@ function createInitialSecretValuesByProfile(): Record<DeploymentProfile, Shipyar
 function createInitialSecretSummaryByProfile(): Record<DeploymentProfile, ShipyardSecretTemplateSummary> {
   return {
     local_starship_build: createEmptySecretSummary(),
+    lightweight_shuttle: createEmptySecretSummary(),
     cloud_shipyard: createEmptySecretSummary(),
   }
 }
@@ -618,6 +687,7 @@ function createInitialSecretSummaryByProfile(): Record<DeploymentProfile, Shipya
 function createInitialSecretSnippetsByProfile(): Record<DeploymentProfile, ShipyardSetupSnippets> {
   return {
     local_starship_build: { ...EMPTY_SECRET_SNIPPETS },
+    lightweight_shuttle: { ...EMPTY_SECRET_SNIPPETS },
     cloud_shipyard: { ...EMPTY_SECRET_SNIPPETS },
   }
 }
@@ -670,7 +740,7 @@ function asBoolean(value: unknown): boolean | null {
   return null
 }
 
-function parseSpacebotStack(value: unknown): SpacebotStack | null {
+function parseSpacebotStack(value: unknown): SpacebotLaunchStack | null {
   if (value === "dev-local" || value === "cloudflare-local") {
     return value
   }
@@ -822,7 +892,7 @@ function createInitialFormState(): LaunchFormState {
     description: "",
     nodeId: "",
     nodeUrl: "",
-    initialApplications: { ...DEFAULT_INITIAL_APPLICATIONS },
+    appRegistry: defaultShipAppRegistry(deploymentProfile),
     saneBootstrap: true,
     deploymentProfile,
     provisioningMode: "terraform_ansible",
@@ -1158,7 +1228,6 @@ export default function ShipYardPage() {
   const [isLoadingShips, setIsLoadingShips] = useState(true)
   const [runtimeSnapshot, setRuntimeSnapshot] = useState<RuntimeSnapshot | null>(null)
   const [isLoadingRuntime, setIsLoadingRuntime] = useState(false)
-  const [spacebotStack, setSpacebotStack] = useState<SpacebotStack>("cloudflare-local")
   const [spacebotConnector, setSpacebotConnector] = useState<SpacebotConnectorSnapshot | null>(null)
   const [isSpacebotLoading, setIsSpacebotLoading] = useState(false)
   const [isSpacebotUpdating, setIsSpacebotUpdating] = useState(false)
@@ -1194,6 +1263,7 @@ export default function ShipYardPage() {
   const [secretUpdatedAtByProfile, setSecretUpdatedAtByProfile] =
     useState<Record<DeploymentProfile, string | null>>({
       local_starship_build: null,
+      lightweight_shuttle: null,
       cloud_shipyard: null,
     })
   const [isLoadingSecrets, setIsLoadingSecrets] = useState(false)
@@ -1206,6 +1276,9 @@ export default function ShipYardPage() {
     tfvars: false,
   })
   const [quickLaunchPendingScroll, setQuickLaunchPendingScroll] = useState(false)
+  const [isQuickLaunchAnimating, setIsQuickLaunchAnimating] = useState(false)
+  const quickLaunchAnimationTimerRef = useRef<number | null>(null)
+  const quickLaunchAnimationFrameRef = useRef<number | null>(null)
 
   const toggleSecretSnippetExpanded = useCallback((kind: SecretSnippetKind) => {
     setSecretSnippetExpanded((current) => ({ ...current, [kind]: !current[kind] }))
@@ -1224,7 +1297,8 @@ export default function ShipYardPage() {
     setN8nFieldExpanded((current) => ({ ...current, [field]: !current[field] }))
   }, [])
 
-  type AppCardId = BootstrapAppId
+  type AppCardId = ShipAppId
+  const [bootstrapApps, setBootstrapApps] = useState<BootstrapAppCard[]>(() => DEFAULT_BOOTSTRAP_APPS)
   const [expandedAppCard, setExpandedAppCard] = useState<AppCardId | null>(null)
   const [appSecretsDirty, setAppSecretsDirty] = useState(false)
   const APP_SECRET_FIELDS = useMemo(
@@ -1239,9 +1313,30 @@ export default function ShipYardPage() {
 
   const currentStep = steps[stepIndex]
   const [mainTab, setMainTab] = useState<MainTab>("build")
+  const bootstrapAppIdSet = useMemo(
+    () => new Set<ShipAppId>(bootstrapApps.map((app) => app.id)),
+    [bootstrapApps],
+  )
+  const enabledBootstrapAppCount = useMemo(
+    () => bootstrapApps.filter((app) => form.appRegistry[app.id].enabled).length,
+    [bootstrapApps, form.appRegistry],
+  )
+  const selectedSpacebotStack = form.appRegistry.spacebot.stack
+  const selectedSpacebotAgentRuntimes = form.appRegistry.spacebot.agentRuntimes
   const requiresRefueling = form.deploymentProfile === "cloud_shipyard"
   const launchBlockedByRefueling =
     requiresRefueling && (!billingQuote || !billingQuote.canLaunch || isBillingLoading)
+  const launchBlockedBySpacebot =
+    form.appRegistry.spacebot.enabled
+    && (
+      isSpacebotLoading
+      || !spacebotConnector
+      || spacebotConnector.stack !== selectedSpacebotStack
+      || !spacebotConnector.running
+    )
+  const isShuttleLaunchProfile = isLightweightShuttleProfile(form.deploymentProfile)
+  const launchVehicleLabel = isShuttleLaunchProfile ? "Shuttle" : "Ship"
+  const launchVehicleLabelLower = isShuttleLaunchProfile ? "shuttle" : "ship"
 
   const derivedNodeType = useMemo(
     () =>
@@ -1267,6 +1362,68 @@ export default function ShipYardPage() {
     [selectedShipDeploymentId, shipsWithInfrastructure],
   )
   const hasSelectedShip = Boolean(selectedShip)
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return
+    }
+
+    const syncBootstrapAppsFromRegistry = () => {
+      const entries = parseAppRegistryEntries(window.localStorage.getItem(APP_REGISTRY_STORAGE_KEY))
+      setBootstrapApps(toBootstrapAppCards(entries))
+    }
+
+    syncBootstrapAppsFromRegistry()
+
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key && event.key !== APP_REGISTRY_STORAGE_KEY) {
+        return
+      }
+      syncBootstrapAppsFromRegistry()
+    }
+
+    window.addEventListener("storage", handleStorage)
+    return () => {
+      window.removeEventListener("storage", handleStorage)
+    }
+  }, [])
+
+  useEffect(() => {
+    setForm((current) => {
+      let changed = false
+      const nextRegistry: ShipAppRegistry = {
+        n8n: { ...current.appRegistry.n8n },
+        dokploy: { ...current.appRegistry.dokploy },
+        spacebot: { ...current.appRegistry.spacebot },
+        opencode: { ...current.appRegistry.opencode },
+        codex: { ...current.appRegistry.codex },
+        "gemini-cli": { ...current.appRegistry["gemini-cli"] },
+        "github-copilot": { ...current.appRegistry["github-copilot"] },
+        amp: { ...current.appRegistry.amp },
+        "kimi-cli": { ...current.appRegistry["kimi-cli"] },
+      }
+
+      for (const appId of SHIP_APP_IDS) {
+        if (bootstrapAppIdSet.has(appId)) {
+          continue
+        }
+
+        if (nextRegistry[appId].enabled) {
+          nextRegistry[appId].enabled = false
+          changed = true
+        }
+      }
+
+      if (!changed) {
+        return current
+      }
+
+      return {
+        ...current,
+        appRegistry: nextRegistry,
+      }
+    })
+  }, [bootstrapAppIdSet])
 
   useEffect(() => {
     if (!selectedShip) {
@@ -1376,14 +1533,18 @@ export default function ShipYardPage() {
   const defaultNodeId = useMemo(() => formatDefaultNodeId(nextShipOrdinal), [nextShipOrdinal])
   const resolvedShipName = useMemo(() => form.name.trim() || defaultShipName, [defaultShipName, form.name])
   const resolvedNodeId = useMemo(() => form.nodeId.trim() || defaultNodeId, [defaultNodeId, form.nodeId])
+  const requiredBridgeCrewRoles = useMemo(
+    () => requiredBridgeCrewRolesForDeploymentProfile(form.deploymentProfile),
+    [form.deploymentProfile],
+  )
 
   const reviewBaseRequirementsEstimate = useMemo(
     () =>
       estimateShipBaseRequirements({
         deploymentProfile: form.deploymentProfile,
-        crewRoles: REQUIRED_BRIDGE_CREW_ROLES,
+        crewRoles: requiredBridgeCrewRoles,
       }),
-    [form.deploymentProfile],
+    [form.deploymentProfile, requiredBridgeCrewRoles],
   )
 
   const reviewDeploymentOverview = useMemo(
@@ -1393,7 +1554,7 @@ export default function ShipYardPage() {
         provisioningMode: form.provisioningMode,
         nodeType: derivedNodeType,
         infrastructure: form.infrastructure,
-        crewRoles: REQUIRED_BRIDGE_CREW_ROLES,
+        crewRoles: requiredBridgeCrewRoles,
         baseRequirementsEstimate: reviewBaseRequirementsEstimate,
       }),
     [
@@ -1401,6 +1562,7 @@ export default function ShipYardPage() {
       form.deploymentProfile,
       form.infrastructure,
       form.provisioningMode,
+      requiredBridgeCrewRoles,
       reviewBaseRequirementsEstimate,
     ],
   )
@@ -1436,13 +1598,13 @@ export default function ShipYardPage() {
     if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
       return estimateShipBaseRequirements({
         deploymentProfile: selectedShip.deploymentProfile,
-        crewRoles: REQUIRED_BRIDGE_CREW_ROLES,
+        crewRoles: requiredBridgeCrewRolesForDeploymentProfile(selectedShip.deploymentProfile),
       })
     }
     if (!Object.prototype.hasOwnProperty.call(metadata, "bridgeCrewRoles")) {
       return estimateShipBaseRequirements({
         deploymentProfile: selectedShip.deploymentProfile,
-        crewRoles: REQUIRED_BRIDGE_CREW_ROLES,
+        crewRoles: requiredBridgeCrewRolesForDeploymentProfile(selectedShip.deploymentProfile),
       })
     }
 
@@ -1450,7 +1612,7 @@ export default function ShipYardPage() {
     const fallbackCrewRoles =
       Array.isArray(metadataCrewRoles) && metadataCrewRoles.length > 0
         ? metadataCrewRoles
-        : REQUIRED_BRIDGE_CREW_ROLES
+        : requiredBridgeCrewRolesForDeploymentProfile(selectedShip.deploymentProfile)
 
     return estimateShipBaseRequirements({
       deploymentProfile: selectedShip.deploymentProfile,
@@ -1472,11 +1634,11 @@ export default function ShipYardPage() {
     const metadataCrewRoles =
       metadata && typeof metadata === "object" && !Array.isArray(metadata)
         ? (metadata as Record<string, unknown>).bridgeCrewRoles
-        : REQUIRED_BRIDGE_CREW_ROLES
+        : requiredBridgeCrewRolesForDeploymentProfile(selectedShip.deploymentProfile)
     const fallbackCrewRoles =
       Array.isArray(metadataCrewRoles) && metadataCrewRoles.length > 0
         ? metadataCrewRoles
-        : REQUIRED_BRIDGE_CREW_ROLES
+        : requiredBridgeCrewRolesForDeploymentProfile(selectedShip.deploymentProfile)
 
     const infrastructure = resolveInfrastructureConfig(selectedShip.deploymentProfile, selectedShip.config)
     const fallbackBaseEstimate =
@@ -1617,7 +1779,7 @@ export default function ShipYardPage() {
 
     try {
       const response = await fetch(
-        `/api/runtime/spacebot/connector?stack=${encodeURIComponent(spacebotStack)}`,
+        `/api/runtime/spacebot/connector?stack=${encodeURIComponent(selectedSpacebotStack)}`,
         { cache: "no-store" },
       )
       const payload = await response.json().catch(() => ({}))
@@ -1647,7 +1809,7 @@ export default function ShipYardPage() {
         setIsSpacebotLoading(false)
       }
     }
-  }, [spacebotStack])
+  }, [selectedSpacebotStack])
 
   const runSpacebotAction = useCallback(async (action: SpacebotAction) => {
     setIsSpacebotUpdating(true)
@@ -1660,7 +1822,7 @@ export default function ShipYardPage() {
         },
         body: JSON.stringify({
           action,
-          stack: spacebotStack,
+          stack: selectedSpacebotStack,
         }),
       })
       const payload = await response.json().catch(() => ({}))
@@ -1677,7 +1839,7 @@ export default function ShipYardPage() {
 
       setSpacebotNotice({
         type: "success",
-        text: `Spacebot ${action} action completed for ${spacebotStack}.`,
+        text: `Spacebot ${action} action completed for ${selectedSpacebotStack}.`,
       })
     } catch (error) {
       console.error(`Failed to ${action} Spacebot:`, error)
@@ -1688,7 +1850,7 @@ export default function ShipYardPage() {
     } finally {
       setIsSpacebotUpdating(false)
     }
-  }, [fetchSpacebotConnector, spacebotStack])
+  }, [fetchSpacebotConnector, selectedSpacebotStack])
 
   const fetchBridgeCrew = useCallback(async () => {
     if (!selectedShipDeploymentId) {
@@ -2076,7 +2238,7 @@ export default function ShipYardPage() {
       }
       const candidate = buildValue()
       if (!candidate || candidate.trim().length === 0) {
-        if (field === "n8n_database_url" && deploymentProfile === "local_starship_build") {
+        if (field === "n8n_database_url" && isLocalDeploymentProfile(deploymentProfile)) {
           localDbSkipped = true
         }
         if (field === "n8n_database_url" && deploymentProfile === "cloud_shipyard") {
@@ -2542,11 +2704,11 @@ export default function ShipYardPage() {
   }, [fetchConnectionSummary])
 
   useEffect(() => {
-    if (mainTab !== "ops") {
+    if (mainTab !== "build" || currentStep.id !== "apps") {
       return
     }
     void fetchSpacebotConnector()
-  }, [fetchSpacebotConnector, mainTab])
+  }, [currentStep.id, fetchSpacebotConnector, mainTab])
 
   useEffect(() => {
     if (!selectedShipDeploymentId) {
@@ -2625,10 +2787,39 @@ export default function ShipYardPage() {
     if (currentStep.id === "mission") {
       return resolvedShipName.length > 0 && resolvedNodeId.length > 0
     }
+
     return true
-  }, [currentStep.id, resolvedNodeId, resolvedShipName])
+  }, [
+    currentStep.id,
+    resolvedNodeId,
+    resolvedShipName,
+  ])
+
+  const triggerQuickLaunchAnimation = useCallback(() => {
+    if (quickLaunchAnimationTimerRef.current !== null) {
+      window.clearTimeout(quickLaunchAnimationTimerRef.current)
+      quickLaunchAnimationTimerRef.current = null
+    }
+
+    if (quickLaunchAnimationFrameRef.current !== null) {
+      window.cancelAnimationFrame(quickLaunchAnimationFrameRef.current)
+      quickLaunchAnimationFrameRef.current = null
+    }
+
+    setIsQuickLaunchAnimating(false)
+    quickLaunchAnimationFrameRef.current = window.requestAnimationFrame(() => {
+      quickLaunchAnimationFrameRef.current = null
+      setIsQuickLaunchAnimating(true)
+      quickLaunchAnimationTimerRef.current = window.setTimeout(() => {
+        quickLaunchAnimationTimerRef.current = null
+        setIsQuickLaunchAnimating(false)
+      }, 620)
+    })
+  }, [])
 
   const handleQuickLaunch = useCallback(() => {
+    triggerQuickLaunchAnimation()
+
     const launchStepIndex = steps.findIndex((step) => step.id === "review")
     const targetIndex = launchStepIndex >= 0 ? launchStepIndex : steps.length - 1
 
@@ -2639,7 +2830,18 @@ export default function ShipYardPage() {
     }
 
     wizardFooterRef.current?.scrollIntoView({ behavior: "smooth", block: "end" })
-  }, [stepIndex])
+  }, [stepIndex, triggerQuickLaunchAnimation])
+
+  useEffect(() => {
+    return () => {
+      if (quickLaunchAnimationTimerRef.current !== null) {
+        window.clearTimeout(quickLaunchAnimationTimerRef.current)
+      }
+      if (quickLaunchAnimationFrameRef.current !== null) {
+        window.cancelAnimationFrame(quickLaunchAnimationFrameRef.current)
+      }
+    }
+  }, [])
 
   useEffect(() => {
     if (!quickLaunchPendingScroll) {
@@ -2683,6 +2885,22 @@ export default function ShipYardPage() {
       return
     }
 
+    if (form.appRegistry.spacebot.enabled) {
+      const snapshot = await fetchSpacebotConnector({ silent: true })
+      if (!snapshot || snapshot.stack !== selectedSpacebotStack || !snapshot.running) {
+        const guidance = `Spacebot is enabled for this deployment. Start Spacebot on ${selectedSpacebotStack} before launching.`
+        setSpacebotNotice({
+          type: "error",
+          text: guidance,
+        })
+        setMessage({
+          type: "error",
+          text: guidance,
+        })
+        return
+      }
+    }
+
     setIsLaunching(true)
     setMessage(null)
     launchHasServerProgressRef.current = false
@@ -2696,11 +2914,11 @@ export default function ShipYardPage() {
     setLaunchLogOpen(true)
     setLaunchLogAutoScroll(true)
     setLaunchProgress(0)
-    setLaunchStatus("Preparing ship launch")
+    setLaunchStatus(`Preparing ${launchVehicleLabelLower} launch`)
     startLaunchFallbackProgress()
     try {
       const selectedOverrides = Object.fromEntries(
-        REQUIRED_BRIDGE_CREW_ROLES.map((role) => [role, form.crewOverrides[role]]),
+        requiredBridgeCrewRoles.map((role) => [role, form.crewOverrides[role]]),
       )
 
       const response = await fetch("/api/ship-yard/launch", {
@@ -2714,7 +2932,7 @@ export default function ShipYardPage() {
           description: form.description || null,
           nodeId: resolvedNodeId,
           nodeUrl: form.nodeUrl || null,
-          saneBootstrap: form.deploymentProfile === "local_starship_build" ? form.saneBootstrap : undefined,
+          saneBootstrap: isLocalDeploymentProfile(form.deploymentProfile) ? form.saneBootstrap : undefined,
           deploymentProfile: form.deploymentProfile,
           provisioningMode: form.provisioningMode,
           advancedNodeTypeOverride: form.advancedNodeTypeOverride,
@@ -2727,14 +2945,14 @@ export default function ShipYardPage() {
               kubeviewUrl: form.monitoring.kubeviewUrl,
               langfuseUrl: form.monitoring.langfuseUrl,
             },
-            initialApplications: form.initialApplications,
+            appRegistry: form.appRegistry,
             ...(form.deploymentProfile === "cloud_shipyard"
               ? {
                   cloudProvider: form.cloudProvider,
                 }
               : {}),
           },
-          crewRoles: REQUIRED_BRIDGE_CREW_ROLES,
+          crewRoles: requiredBridgeCrewRoles,
           crewOverrides: selectedOverrides,
         }),
       })
@@ -2754,7 +2972,7 @@ export default function ShipYardPage() {
 
         setMessage({
           type: "error",
-          text: typeof payload?.error === "string" ? payload.error : "Ship launch failed",
+          text: typeof payload?.error === "string" ? payload.error : `${launchVehicleLabel} launch failed`,
           ...(suggestedCommands.length > 0 ? { suggestedCommands } : {}),
         })
         if (payload?.code === "INSUFFICIENT_CREDITS") {
@@ -2800,11 +3018,11 @@ export default function ShipYardPage() {
 
         setMessage({
           type: "info",
-          text: `Ship launched. Bridge crew bootstrap complete. n8n bootstrap is ${bootstrapN8N.status}.`,
+          text: `${launchVehicleLabel} launched. Bridge crew bootstrap complete. n8n bootstrap is ${bootstrapN8N.status}.`,
           ...(suggestedCommands.length > 0 ? { suggestedCommands } : {}),
         })
       } else {
-        setMessage({ type: "success", text: "Ship launched. Bridge crew bootstrap complete." })
+        setMessage({ type: "success", text: `${launchVehicleLabel} launched. Bridge crew bootstrap complete.` })
       }
       setStepIndex(0)
       setForm(createInitialFormState())
@@ -2815,7 +3033,7 @@ export default function ShipYardPage() {
       await refreshFleetView()
     } catch (error) {
       console.error("Ship launch failed:", error)
-      setMessage({ type: "error", text: "Ship launch failed" })
+      setMessage({ type: "error", text: `${launchVehicleLabel} launch failed` })
     } finally {
       stopLaunchFallbackProgress()
       setIsLaunching(false)
@@ -3003,6 +3221,8 @@ export default function ShipYardPage() {
         },
       }
 
+      const relaunchCrewRoles = requiredBridgeCrewRolesForDeploymentProfile(selectedShip.deploymentProfile)
+
       const response = await fetch("/api/ship-yard/launch", {
         method: "POST",
         headers: {
@@ -3011,13 +3231,13 @@ export default function ShipYardPage() {
         body: JSON.stringify({
           name: selectedShip.name,
           nodeId: selectedShip.nodeId,
-          saneBootstrap: selectedShip.deploymentProfile === "local_starship_build" ? true : undefined,
+          saneBootstrap: isLocalDeploymentProfile(selectedShip.deploymentProfile) ? true : undefined,
           deploymentProfile: selectedShip.deploymentProfile,
           provisioningMode: selectedShip.provisioningMode,
           advancedNodeTypeOverride: selectedShip.nodeType === "hybrid",
           nodeType: selectedShip.nodeType,
           config: relaunchConfig,
-          crewRoles: REQUIRED_BRIDGE_CREW_ROLES,
+          crewRoles: relaunchCrewRoles,
           crewOverrides: {},
         }),
       })
@@ -3466,7 +3686,7 @@ export default function ShipYardPage() {
         {mainTab === "build" && (<SurfaceCard className="border-amber-400/25 bg-gradient-to-br from-amber-50/60 via-white to-orange-50/40 dark:from-amber-500/8 dark:via-white/[0.03] dark:to-orange-500/5">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <p className="readout text-amber-700 dark:text-amber-400">Launch New Ship</p>
+              <p className="readout text-amber-700 dark:text-amber-400">Launch New {launchVehicleLabel}</p>
               <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-50">Deployment Wizard</h2>
               <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
                 Configure mission, environment, secrets, apps, and bridge crew for a new deployment.
@@ -3518,22 +3738,42 @@ export default function ShipYardPage() {
 	                <span className="readout text-slate-500 dark:text-slate-400">
 	                  {stepIndex + 1} / {steps.length}
 	                </span>
-	                <button
-	                  type="button"
-	                  onClick={handleQuickLaunch}
-	                  disabled={isLaunching}
-	                  className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/45 bg-amber-500/10 px-3 py-1 text-[11px] font-semibold text-amber-700 transition-colors hover:bg-amber-500/20 disabled:opacity-40 dark:border-amber-400/30 dark:text-amber-200"
-	                >
-	                  <Rocket className="h-3.5 w-3.5" />
-	                  Quick Launch
-	                </button>
+                  <button
+                    type="button"
+                    onClick={handleQuickLaunch}
+                    disabled={isLaunching}
+                    className={`group relative inline-flex items-center gap-1.5 overflow-hidden rounded-full border px-3 py-1 text-[11px] font-semibold text-amber-700 transition-[transform,box-shadow,background-color] duration-300 hover:bg-amber-500/20 disabled:opacity-40 dark:border-amber-400/30 dark:text-amber-200 ${
+                      isQuickLaunchAnimating
+                        ? "border-amber-300/75 bg-amber-400/20 shadow-[0_0_0_1px_rgba(251,191,36,0.38),0_10px_28px_-16px_rgba(245,158,11,0.85)]"
+                        : "border-amber-500/45 bg-amber-500/10"
+                    }`}
+                  >
+                    <span
+                      aria-hidden="true"
+                      className={`pointer-events-none absolute inset-0 rounded-full transition-opacity duration-200 ${
+                        isQuickLaunchAnimating ? "opacity-100" : "opacity-0"
+                      }`}
+                    >
+                      <span
+                        className={`absolute inset-y-0 -left-10 w-10 -skew-x-12 bg-gradient-to-r from-transparent via-white/45 to-transparent transition-transform duration-500 ease-out motion-reduce:hidden ${
+                          isQuickLaunchAnimating ? "translate-x-[240%]" : "translate-x-0"
+                        }`}
+                      />
+                    </span>
+                    <Rocket
+                      className={`relative h-3.5 w-3.5 transition-transform duration-500 motion-reduce:transform-none ${
+                        isQuickLaunchAnimating ? "-translate-y-0.5 rotate-[-18deg]" : ""
+                      }`}
+                    />
+                    <span className="relative">Quick Launch</span>
+                  </button>
 	              </div>
 	            </div>
 
             {currentStep.id === "mission" && (
               <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                 <label className="md:col-span-2">
-                  <span className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">Ship Name</span>
+                  <span className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">{launchVehicleLabel} Name</span>
                   <input
                     type="text"
                     value={form.name}
@@ -3549,7 +3789,7 @@ export default function ShipYardPage() {
                     value={form.description}
                     onChange={(e) => setForm((current) => ({ ...current, description: e.target.value }))}
                     rows={3}
-                    placeholder="Primary mission objective for this ship deployment..."
+                    placeholder={`Primary mission objective for this ${launchVehicleLabelLower} deployment...`}
                     className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
                   />
                 </label>
@@ -3654,7 +3894,7 @@ export default function ShipYardPage() {
 
                 <div className="md:col-span-2">
                   <span className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">Target Profile</span>
-                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                     <button
                       type="button"
                       disabled={CLOUD_DEPLOY_ONLY}
@@ -3662,6 +3902,7 @@ export default function ShipYardPage() {
                         setForm((current) => ({
                           ...current,
                           deploymentProfile: "local_starship_build",
+                          appRegistry: defaultShipAppRegistry("local_starship_build"),
                           saneBootstrap: true,
                           nodeType: "local",
                           advancedNodeTypeOverride: false,
@@ -3688,10 +3929,43 @@ export default function ShipYardPage() {
                     </button>
                     <button
                       type="button"
+                      disabled={CLOUD_DEPLOY_ONLY}
+                      onClick={() =>
+                        setForm((current) => ({
+                          ...current,
+                          deploymentProfile: "lightweight_shuttle",
+                          appRegistry: defaultShipAppRegistry("lightweight_shuttle"),
+                          saneBootstrap: true,
+                          nodeType: "local",
+                          advancedNodeTypeOverride: false,
+                          infrastructure: defaultInfrastructureConfig("lightweight_shuttle"),
+                        }))
+                      }
+                      className={`rounded-lg border p-3 text-left ${
+                        CLOUD_DEPLOY_ONLY
+                          ? "cursor-not-allowed border-slate-300/70 bg-slate-100/70 opacity-60 dark:border-white/10 dark:bg-white/[0.03]"
+                          : form.deploymentProfile === "lightweight_shuttle"
+                            ? "border-emerald-500/45 bg-emerald-500/10"
+                            : "border-slate-300/70 bg-white/70 dark:border-white/10 dark:bg-white/[0.03]"
+                      }`}
+                    >
+                      <span className="inline-flex items-center gap-2 text-sm font-medium text-slate-900 dark:text-slate-100">
+                        <Ship className="h-4 w-4 text-emerald-500" />
+                        Lightweight Shuttle
+                      </span>
+                      <p className="mt-1 text-xs text-slate-600 dark:text-slate-400">
+                        {CLOUD_DEPLOY_ONLY
+                          ? "Disabled in cloud deploy mode."
+                          : "Single-station local launch profile with lightweight defaults."}
+                      </p>
+                    </button>
+                    <button
+                      type="button"
                       onClick={() =>
                         setForm((current) => ({
                           ...current,
                           deploymentProfile: "cloud_shipyard",
+                          appRegistry: defaultShipAppRegistry("cloud_shipyard"),
                           nodeType: current.advancedNodeTypeOverride ? current.nodeType : "cloud",
                           infrastructure: defaultInfrastructureConfig("cloud_shipyard"),
                         }))
@@ -3710,6 +3984,7 @@ export default function ShipYardPage() {
                     </button>
                   </div>
                 </div>
+
               </div>
             )}
 
@@ -3767,7 +4042,7 @@ export default function ShipYardPage() {
                   </label>
                 )}
 
-                {form.deploymentProfile === "local_starship_build" && (
+                {isLocalDeploymentProfile(form.deploymentProfile) && (
                   <label className="inline-flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
                     <input
                       type="checkbox"
@@ -4117,16 +4392,13 @@ export default function ShipYardPage() {
                 <div className="rounded-lg border border-cyan-400/35 bg-cyan-500/10 px-3 py-2 text-xs text-cyan-700 dark:text-cyan-200">
                   <p className="font-medium">Bootstrap apps.</p>
                   <p className="mt-1">
-                    Toggle which apps to include. Configure variables per app. Launch remains fail-open if bootstrap
-                    degrades.
+                    Toggle which apps to include. Configure variables per app. n8n and Dokploy remain fail-open;
+                    Spacebot is launch-gated when included, and dedicated runtime apps are optional.
                   </p>
                   <p className="mt-1.5 font-medium text-slate-700 dark:text-slate-200" aria-live="polite">
-                    {[
-                      form.initialApplications.n8n,
-                      form.initialApplications.dokploy,
-                    ].filter(Boolean).length}{" "}
+                    {enabledBootstrapAppCount}{" "}
                     app(s) included
-                    {form.initialApplications.n8n && (
+                    {bootstrapAppIdSet.has("n8n") && form.appRegistry.n8n.enabled && (
                       <span className="ml-1.5">
                         • n8n:{" "}
                         {missingRequiredN8NSecretFields.length === 0 ? (
@@ -4138,17 +4410,44 @@ export default function ShipYardPage() {
                         )}
                       </span>
                     )}
+                    {bootstrapAppIdSet.has("spacebot") && form.appRegistry.spacebot.enabled && (
+                      <span className="ml-1.5">
+                        • spacebot:{" "}
+                        {spacebotConnector?.running ? (
+                          <span className="text-emerald-700 dark:text-emerald-200">running</span>
+                        ) : (
+                          <span className="text-amber-700 dark:text-amber-200">not running</span>
+                        )}
+                        {selectedSpacebotAgentRuntimes.length > 0 ? (
+                          <span className="ml-1 text-slate-600 dark:text-slate-300">
+                            ({selectedSpacebotAgentRuntimes.length} optional runtime
+                            {selectedSpacebotAgentRuntimes.length === 1 ? "" : "s"})
+                          </span>
+                        ) : (
+                          <span className="ml-1 text-slate-600 dark:text-slate-300">
+                            (no optional runtimes selected)
+                          </span>
+                        )}
+                      </span>
+                    )}
                     {appSecretsDirty && (
                       <span className="ml-1.5 text-amber-700 dark:text-amber-200">• Unsaved changes</span>
                     )}
                   </p>
                 </div>
 
+                {bootstrapApps.length === 0 && (
+                  <p className="rounded-lg border border-dashed border-slate-300/70 bg-white/70 px-3 py-2 text-xs text-slate-600 dark:border-white/12 dark:bg-white/[0.03] dark:text-slate-300">
+                    No apps are starred for Ship Yard launch. Star apps in the Applications registry to include them here.
+                  </p>
+                )}
+
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                  {BOOTSTRAP_APPS.map((app) => {
-                    const enabled = form.initialApplications[app.id]
+                  {bootstrapApps.map((app) => {
+                    const enabled = form.appRegistry[app.id].enabled
                     const Icon = app.icon
                     const isExpanded = expandedAppCard === app.id
+                    const isDedicatedRuntimeApp = SHIP_RUNTIME_APP_IDS.includes(app.id as (typeof SHIP_RUNTIME_APP_IDS)[number])
                     const n8nReady = missingRequiredN8NSecretFields.length === 0
                     const statusBadge =
                       app.id === "n8n"
@@ -4160,9 +4459,31 @@ export default function ShipYardPage() {
                                 className: "border-amber-400/35 bg-amber-500/10 text-amber-700 dark:text-amber-200",
                               }
                           : null
-                        : enabled
-                          ? { label: "Connect-only", className: "border-slate-300/70 bg-white/70 text-slate-600 dark:border-white/12 dark:bg-white/[0.04] dark:text-slate-300" as const }
-                          : null
+                        : app.id === "spacebot"
+                          ? enabled
+                            ? spacebotConnector?.running
+                              ? {
+                                  label: "Runtime running",
+                                  className: "border-emerald-400/35 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200" as const,
+                                }
+                              : {
+                                  label: "Start before launch",
+                                  className: "border-amber-400/35 bg-amber-500/10 text-amber-700 dark:text-amber-200" as const,
+                                }
+                            : null
+                          : isDedicatedRuntimeApp
+                            ? enabled
+                              ? {
+                                  label: "Dedicated runtime",
+                                  className: "border-cyan-400/35 bg-cyan-500/10 text-cyan-700 dark:text-cyan-200" as const,
+                                }
+                              : null
+                          : enabled
+                            ? {
+                                label: "Connect-only",
+                                className: "border-slate-300/70 bg-white/70 text-slate-600 dark:border-white/12 dark:bg-white/[0.04] dark:text-slate-300" as const,
+                              }
+                            : null
 
                     return (
                       <div
@@ -4190,6 +4511,9 @@ export default function ShipYardPage() {
                             </span>
                             <div>
                               <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{app.label}</p>
+                              <p className="mt-0.5 text-[10px] uppercase tracking-wide text-cyan-700 dark:text-cyan-200">
+                                App type: {app.appType}
+                              </p>
                               <p className="mt-0.5 text-[11px] text-slate-600 dark:text-slate-300">
                                 {app.description}
                               </p>
@@ -4200,15 +4524,18 @@ export default function ShipYardPage() {
                             enabled={enabled}
                             disabled={isLaunching}
                             label={`${app.label} toggle`}
-                            onChange={(next) =>
+                            onChange={(next) => {
                               setForm((current) => ({
                                 ...current,
-                                initialApplications: {
-                                  ...current.initialApplications,
-                                  [app.id]: next,
+                                appRegistry: {
+                                  ...current.appRegistry,
+                                  [app.id]: {
+                                    ...current.appRegistry[app.id],
+                                    enabled: next,
+                                  },
                                 },
                               }))
-                            }
+                            }}
                           />
                         </div>
 
@@ -4229,6 +4556,16 @@ export default function ShipYardPage() {
                           )}
                           {app.id === "dokploy" && enabled && (
                             <span className="text-slate-500 dark:text-slate-400">• URL + API key</span>
+                          )}
+                          {app.id === "spacebot" && enabled && (
+                            <span className="text-slate-500 dark:text-slate-400">
+                              • Stack {selectedSpacebotStack} • Optional runtimes {selectedSpacebotAgentRuntimes.length}
+                            </span>
+                          )}
+                          {isDedicatedRuntimeApp && enabled && (
+                            <span className="text-slate-500 dark:text-slate-400">
+                              • Dedicated app runtime
+                            </span>
                           )}
                         </div>
 
@@ -4386,7 +4723,7 @@ export default function ShipYardPage() {
                                                   {descriptor.helper}
                                                 </p>
                                                 {field === "n8n_database_url" &&
-                                                  form.deploymentProfile === "local_starship_build" &&
+                                                  isLocalDeploymentProfile(form.deploymentProfile) &&
                                                   !hasNonEmptySecretValue(activeSecretValues.postgres_password) && (
                                                     <p className="mt-0.5 text-[11px] text-amber-700 dark:text-amber-300">
                                                       Set <code>postgres_password</code> in Secrets to auto-derive.
@@ -4513,6 +4850,249 @@ export default function ShipYardPage() {
                                     </div>
                                   </>
                                 )}
+
+                                {app.id === "spacebot" && (
+                                  <>
+                                    <p className="text-[11px] text-slate-600 dark:text-slate-300">
+                                      Agent runtime app: configure stack and connector controls. Launch requires the
+                                      runtime to be running when this app is included.
+                                    </p>
+
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <label
+                                        className="text-xs text-slate-600 dark:text-slate-300"
+                                        htmlFor="shipyard-spacebot-stack-app"
+                                      >
+                                        Stack
+                                      </label>
+                                      <select
+                                        id="shipyard-spacebot-stack-app"
+                                        value={selectedSpacebotStack}
+                                        onChange={(event) =>
+                                          setForm((current) => ({
+                                            ...current,
+                                            appRegistry: {
+                                              ...current.appRegistry,
+                                              spacebot: {
+                                                ...current.appRegistry.spacebot,
+                                                stack: event.target.value as SpacebotLaunchStack,
+                                              },
+                                            },
+                                          }))
+                                        }
+                                        disabled={isSpacebotLoading || isSpacebotUpdating}
+                                        className="rounded-md border border-slate-300/70 bg-white px-2 py-1 text-xs text-slate-700 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-200"
+                                      >
+                                        <option value="cloudflare-local">cloudflare-local</option>
+                                        <option value="dev-local">dev-local</option>
+                                      </select>
+                                      <button
+                                        type="button"
+                                        onClick={() => void fetchSpacebotConnector()}
+                                        disabled={isSpacebotLoading || isSpacebotUpdating}
+                                        className="inline-flex items-center gap-1.5 rounded-md border border-indigo-500/45 bg-indigo-500/12 px-2.5 py-1 text-xs font-medium text-indigo-700 disabled:opacity-50 dark:border-indigo-300/45 dark:text-indigo-200"
+                                      >
+                                        {isSpacebotLoading ? (
+                                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                        ) : (
+                                          <RefreshCw className="h-3.5 w-3.5" />
+                                        )}
+                                        Refresh
+                                      </button>
+                                    </div>
+
+                                    <div className="rounded-lg border border-slate-200/70 bg-white/50 p-2 dark:border-white/12 dark:bg-white/[0.02]">
+                                      <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                                        Optional agent runtimes
+                                      </p>
+                                      <div className="mt-2 grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+                                        {SPACEBOT_AGENT_RUNTIME_VALUES.map((runtimeId) => {
+                                          const checked = selectedSpacebotAgentRuntimes.includes(runtimeId)
+                                          return (
+                                            <label
+                                              key={runtimeId}
+                                              className="inline-flex items-center justify-between rounded-md border border-slate-200/70 bg-white/80 px-2 py-1 text-xs text-slate-700 dark:border-white/12 dark:bg-white/[0.03] dark:text-slate-200"
+                                            >
+                                              <span>{spacebotAgentRuntimeLabels[runtimeId]}</span>
+                                              <input
+                                                type="checkbox"
+                                                checked={checked}
+                                                onChange={(event) =>
+                                                  setForm((current) => ({
+                                                    ...current,
+                                                    appRegistry: {
+                                                      ...current.appRegistry,
+                                                      spacebot: {
+                                                        ...current.appRegistry.spacebot,
+                                                        agentRuntimes: event.target.checked
+                                                          ? [...current.appRegistry.spacebot.agentRuntimes, runtimeId]
+                                                          : current.appRegistry.spacebot.agentRuntimes.filter((entry) => entry !== runtimeId),
+                                                      },
+                                                    },
+                                                  }))
+                                                }
+                                              />
+                                            </label>
+                                          )
+                                        })}
+                                      </div>
+                                      <p className="mt-2 text-[11px] text-slate-600 dark:text-slate-300">
+                                        Selected:{" "}
+                                        {selectedSpacebotAgentRuntimes.length > 0
+                                          ? selectedSpacebotAgentRuntimes.map((runtimeId) => spacebotAgentRuntimeLabels[runtimeId]).join(", ")
+                                          : "none"}
+                                      </p>
+                                    </div>
+
+                                    {spacebotNotice && (
+                                      <p
+                                        className={`text-xs ${
+                                          spacebotNotice.type === "error"
+                                            ? "text-rose-700 dark:text-rose-300"
+                                            : spacebotNotice.type === "success"
+                                              ? "text-emerald-700 dark:text-emerald-300"
+                                              : "text-slate-600 dark:text-slate-300"
+                                        }`}
+                                      >
+                                        {spacebotNotice.text}
+                                      </p>
+                                    )}
+
+                                    {spacebotConnector ? (
+                                      <>
+                                        <div className="flex flex-wrap items-center gap-2 text-xs">
+                                          <span
+                                            className={`rounded-md border px-2 py-1 ${
+                                              spacebotConnector.running
+                                                ? "border-emerald-400/45 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200"
+                                                : "border-amber-400/45 bg-amber-500/10 text-amber-700 dark:text-amber-200"
+                                            }`}
+                                          >
+                                            {spacebotConnector.running
+                                              ? "Container Running"
+                                              : "Container Stopped"}
+                                          </span>
+                                          <span
+                                            className={`rounded-md border px-2 py-1 ${
+                                              spacebotConnector.health.ok
+                                                ? "border-cyan-400/45 bg-cyan-500/10 text-cyan-700 dark:text-cyan-200"
+                                                : "border-rose-400/45 bg-rose-500/10 text-rose-700 dark:text-rose-200"
+                                            }`}
+                                          >
+                                            {spacebotConnector.health.ok
+                                              ? `Webhook Healthy${spacebotConnector.health.status ? ` (${spacebotConnector.health.status})` : ""}`
+                                              : "Webhook Unreachable"}
+                                          </span>
+                                          <span
+                                            className={`rounded-md border px-2 py-1 ${
+                                              spacebotConnector.connectorEnabled
+                                                ? "border-emerald-400/45 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200"
+                                                : "border-amber-400/45 bg-amber-500/10 text-amber-700 dark:text-amber-200"
+                                            }`}
+                                          >
+                                            Connector{" "}
+                                            {spacebotConnector.connectorEnabled ? "Enabled" : "Disabled"}
+                                          </span>
+                                        </div>
+
+                                        <p className="text-xs text-slate-600 dark:text-slate-300">
+                                          Webhook URL <code>{spacebotConnector.baseUrl}</code>
+                                        </p>
+                                        <p className="text-xs text-slate-600 dark:text-slate-300">
+                                          Compose file <code>{spacebotConnector.composeFile}</code>
+                                        </p>
+
+                                        {!spacebotConnector.localCommandExecutionEnabled && (
+                                          <p className="text-xs text-amber-700 dark:text-amber-200">
+                                            Set <code>ENABLE_LOCAL_COMMAND_EXECUTION=true</code> to enable launch
+                                            controls.
+                                          </p>
+                                        )}
+                                        {!spacebotConnector.dockerAvailable && (
+                                          <p className="text-xs text-rose-700 dark:text-rose-200">
+                                            Docker CLI is not available for this runtime.
+                                          </p>
+                                        )}
+                                        {!spacebotConnector.composeFileExists && (
+                                          <p className="text-xs text-rose-700 dark:text-rose-200">
+                                            Compose file for <code>{spacebotConnector.stack}</code> was not found.
+                                          </p>
+                                        )}
+                                        {spacebotConnector.health.error && (
+                                          <p className="text-xs text-rose-700 dark:text-rose-200">
+                                            Health error: {spacebotConnector.health.error}
+                                          </p>
+                                        )}
+
+                                        <div className="flex flex-wrap items-center gap-2">
+                                          <button
+                                            type="button"
+                                            onClick={() => void runSpacebotAction("start")}
+                                            disabled={
+                                              isSpacebotUpdating
+                                              || !spacebotConnector.localCommandExecutionEnabled
+                                            }
+                                            className="inline-flex items-center gap-1.5 rounded-md border border-emerald-500/45 bg-emerald-500/12 px-2.5 py-1 text-xs font-medium text-emerald-700 disabled:opacity-50 dark:border-emerald-300/45 dark:text-emerald-200"
+                                          >
+                                            {isSpacebotUpdating ? (
+                                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                            ) : (
+                                              <Play className="h-3.5 w-3.5" />
+                                            )}
+                                            Start
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => void runSpacebotAction("restart")}
+                                            disabled={
+                                              isSpacebotUpdating
+                                              || !spacebotConnector.localCommandExecutionEnabled
+                                            }
+                                            className="inline-flex items-center gap-1.5 rounded-md border border-indigo-500/45 bg-indigo-500/12 px-2.5 py-1 text-xs font-medium text-indigo-700 disabled:opacity-50 dark:border-indigo-300/45 dark:text-indigo-200"
+                                          >
+                                            {isSpacebotUpdating ? (
+                                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                            ) : (
+                                              <RotateCcw className="h-3.5 w-3.5" />
+                                            )}
+                                            Restart
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => void runSpacebotAction("stop")}
+                                            disabled={
+                                              isSpacebotUpdating
+                                              || !spacebotConnector.localCommandExecutionEnabled
+                                            }
+                                            className="inline-flex items-center gap-1.5 rounded-md border border-rose-500/45 bg-rose-500/12 px-2.5 py-1 text-xs font-medium text-rose-700 disabled:opacity-50 dark:border-rose-300/45 dark:text-rose-200"
+                                          >
+                                            {isSpacebotUpdating ? (
+                                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                            ) : (
+                                              <Square className="h-3.5 w-3.5" />
+                                            )}
+                                            Stop
+                                          </button>
+                                        </div>
+                                      </>
+                                    ) : isSpacebotLoading ? (
+                                      <div className="inline-flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300">
+                                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                        Loading Spacebot status...
+                                      </div>
+                                    ) : (
+                                      <p className="text-xs text-slate-600 dark:text-slate-300">
+                                        Spacebot status unavailable.
+                                      </p>
+                                    )}
+                                  </>
+                                )}
+
+                                {isDedicatedRuntimeApp && (
+                                  <p className="text-[11px] text-slate-600 dark:text-slate-300">
+                                    Dedicated runtime app selected. No additional launch variables are required yet.
+                                  </p>
+                                )}
                               </div>
                             )}
                           </>
@@ -4527,10 +5107,12 @@ export default function ShipYardPage() {
             {currentStep.id === "crew" && (
               <div className="space-y-3">
                 <div className="rounded-lg border border-cyan-500/35 bg-cyan-500/10 px-3 py-2 text-xs text-cyan-700 dark:text-cyan-200">
-                  Crew policy is fixed for Ship Yard launch: XO, OPS, ENG, SEC, MED, and COU are all required and mapped to six dedicated agent pods.
+                  {form.deploymentProfile === "lightweight_shuttle"
+                    ? "Lightweight Shuttle uses a single bridge agent pod (XO)."
+                    : "Crew policy for this profile requires XO, OPS, ENG, SEC, MED, and COU with dedicated agent pods."}
                 </div>
                 <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
-                  {REQUIRED_BRIDGE_CREW_ROLES.map((role) => {
+                  {requiredBridgeCrewRoles.map((role) => {
                     const template = form.crewOverrides[role]
                     return (
                       <div
@@ -4573,10 +5155,14 @@ export default function ShipYardPage() {
             {currentStep.id === "review" && (
               <div className="space-y-3">
                 <div
-                  className={`rounded-lg border p-3 ${
+                  className={`rounded-lg border p-3 transition-[transform,box-shadow,border-color,background-color] duration-500 ${
                     reviewLaunchSummary.readiness === "ready"
                       ? "border-emerald-400/35 bg-emerald-500/10"
                       : "border-amber-400/35 bg-amber-500/10"
+                  } ${
+                    isQuickLaunchAnimating
+                      ? "scale-[1.01] shadow-[0_0_0_1px_rgba(251,191,36,0.35),0_18px_36px_-26px_rgba(245,158,11,0.8)]"
+                      : ""
                   }`}
                 >
                   <div className="flex flex-wrap items-start justify-between gap-2">
@@ -4613,7 +5199,7 @@ export default function ShipYardPage() {
                 </div>
 
                 <div className="rounded-lg border border-slate-300/70 bg-white/75 p-3 dark:border-white/10 dark:bg-white/[0.03]">
-                  <p className="readout text-slate-500 dark:text-slate-400">Ship + Target Snapshot</p>
+                  <p className="readout text-slate-500 dark:text-slate-400">{launchVehicleLabel} + Target Snapshot</p>
                   <p className="mt-1 text-sm font-semibold text-slate-900 dark:text-slate-50">{resolvedShipName}</p>
                   <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
                     {deploymentProfileLabels[form.deploymentProfile]} • {provisioningModeLabels[form.provisioningMode]}
@@ -4622,9 +5208,10 @@ export default function ShipYardPage() {
                     Node {resolvedNodeId} • {derivedNodeType.toUpperCase()}
                   </p>
                   <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
-                    Bridge crew roles required: {REQUIRED_BRIDGE_CREW_ROLES.length}
+                    Bridge crew roles required: {requiredBridgeCrewRoles.length} (
+                    {requiredBridgeCrewRoles.map((role) => role.toUpperCase()).join(", ")})
                   </p>
-                  {form.deploymentProfile === "local_starship_build" && (
+                  {isLocalDeploymentProfile(form.deploymentProfile) && (
                     <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
                       Sane Bootstrap: {form.saneBootstrap ? "Enabled" : "Disabled"}
                     </p>
@@ -4672,7 +5259,7 @@ export default function ShipYardPage() {
                   )}
                 </div>
 
-                {form.initialApplications.n8n ? (
+                {form.appRegistry.n8n.enabled && (
                   <div
                     className={`rounded-lg border px-3 py-2 text-xs ${
                       missingRequiredN8NSecretFields.length === 0
@@ -4692,16 +5279,40 @@ export default function ShipYardPage() {
                       </p>
                     )}
                     <p className="mt-1">
-                      Launch remains fail-open. If n8n setup degrades, ship launch still succeeds with warnings.
+                      Launch remains fail-open. If n8n setup degrades, {launchVehicleLabelLower} launch still succeeds with warnings.
                     </p>
                   </div>
-                ) : (
-                  <div className="rounded-lg border border-slate-300/70 bg-white/75 px-3 py-2 text-xs text-slate-700 dark:border-white/12 dark:bg-white/[0.03] dark:text-slate-200">
-                    <p className="font-medium">n8n bootstrap</p>
-                    <p className="mt-1">n8n is not included in this launch.</p>
-                    <p className="mt-1 text-slate-600 dark:text-slate-300">
-                      Launch remains fail-open. Toggle n8n on in Apps if you want it included.
+                )}
+
+                {form.appRegistry.spacebot.enabled && (
+                  <div
+                    className={`rounded-lg border px-3 py-2 text-xs ${
+                      spacebotConnector?.running
+                        ? "border-emerald-400/35 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200"
+                        : "border-amber-400/35 bg-amber-500/10 text-amber-700 dark:text-amber-200"
+                    }`}
+                  >
+                    <p className="font-medium">Spacebot app (agent runtime)</p>
+                    <p className="mt-1">
+                      Spacebot is included on <code>{selectedSpacebotStack}</code>.
                     </p>
+                    <p className="mt-1">
+                      Optional runtimes:{" "}
+                      {selectedSpacebotAgentRuntimes.length > 0
+                        ? selectedSpacebotAgentRuntimes
+                            .map((runtimeId) => spacebotAgentRuntimeLabels[runtimeId])
+                            .join(", ")
+                        : "none"}.
+                    </p>
+                    <p className="mt-1">
+                      Runtime status:{" "}
+                      {spacebotConnector?.running
+                        ? "running"
+                        : "not running (launch will block until started)"}.
+                    </p>
+                    {spacebotConnector?.health.error && (
+                      <p className="mt-1">Health check error: {spacebotConnector.health.error}</p>
+                    )}
                   </div>
                 )}
 
@@ -4997,7 +5608,8 @@ export default function ShipYardPage() {
                 </details>
 
                 <div className="rounded-lg border border-emerald-500/35 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-700 dark:text-emerald-200">
-                  Launch creates the ship deployment and bootstraps all six bridge crew agent pods.
+                  Launch creates the {launchVehicleLabelLower} deployment and bootstraps {requiredBridgeCrewRoles.length} bridge agent{" "}
+                  {requiredBridgeCrewRoles.length === 1 ? "pod" : "pods"} ({requiredBridgeCrewRoles.map((role) => role.toUpperCase()).join(", ")}).
                 </div>
               </div>
             )}
@@ -5032,17 +5644,22 @@ export default function ShipYardPage() {
                   <button
                     type="button"
                     onClick={handleLaunch}
-                    disabled={isLaunching || !canAdvance || launchBlockedByRefueling}
+                    disabled={isLaunching || !canAdvance || launchBlockedByRefueling || launchBlockedBySpacebot}
                     className="inline-flex items-center gap-2 rounded-lg bg-gradient-to-r from-amber-500 to-orange-500 px-5 py-2 text-sm font-semibold text-white shadow-lg shadow-amber-500/20 transition-all hover:shadow-xl hover:shadow-amber-500/30 hover:brightness-110 disabled:opacity-40 active:scale-[0.98] dark:from-amber-500/90 dark:to-orange-500/90"
                   >
                     {isLaunching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Rocket className="h-4 w-4" />}
-                    Launch Ship
+                    Launch {launchVehicleLabel}
                   </button>
+                  {launchBlockedBySpacebot && (
+                    <p className="text-right text-[11px] text-amber-700 dark:text-amber-200">
+                      Spacebot is enabled. Start it on <code>{selectedSpacebotStack}</code> before launching.
+                    </p>
+                  )}
 
                   {isLaunching && (
                     <LaunchProgressIndicator
                       percent={launchProgress}
-                      status={launchStatus.length > 0 ? launchStatus : "Launching ship"}
+                      status={launchStatus.length > 0 ? launchStatus : `Launching ${launchVehicleLabelLower}`}
                     />
                   )}
                 </div>
@@ -5510,163 +6127,6 @@ export default function ShipYardPage() {
                 </div>
               </div>
             )}
-
-            <div className="mb-4 rounded-xl border border-indigo-400/35 bg-indigo-500/8 p-3 dark:border-indigo-300/35">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <Bot className="h-4 w-4 text-indigo-700 dark:text-indigo-200" />
-                    <p className="text-[11px] uppercase tracking-wide text-indigo-700 dark:text-indigo-300">
-                      Spacebot Runtime Launcher
-                    </p>
-                  </div>
-                  <p className="mt-1 text-sm text-slate-800 dark:text-slate-100">
-                    Launch and health-check Spacebot directly from Ship Yard ops.
-                  </p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <label className="text-xs text-slate-600 dark:text-slate-300" htmlFor="shipyard-spacebot-stack">
-                    Stack
-                  </label>
-                  <select
-                    id="shipyard-spacebot-stack"
-                    value={spacebotStack}
-                    onChange={(event) => setSpacebotStack(event.target.value as SpacebotStack)}
-                    disabled={isSpacebotLoading || isSpacebotUpdating}
-                    className="rounded-md border border-slate-300/70 bg-white px-2 py-1 text-xs text-slate-700 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-200"
-                  >
-                    <option value="cloudflare-local">cloudflare-local</option>
-                    <option value="dev-local">dev-local</option>
-                  </select>
-                  <button
-                    type="button"
-                    onClick={() => void fetchSpacebotConnector()}
-                    disabled={isSpacebotLoading || isSpacebotUpdating}
-                    className="inline-flex items-center gap-1.5 rounded-md border border-indigo-500/45 bg-indigo-500/12 px-2.5 py-1 text-xs font-medium text-indigo-700 disabled:opacity-50 dark:border-indigo-300/45 dark:text-indigo-200"
-                  >
-                    {isSpacebotLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-                    Refresh
-                  </button>
-                </div>
-              </div>
-
-              {spacebotNotice && (
-                <p
-                  className={`mt-2 text-xs ${
-                    spacebotNotice.type === "error"
-                      ? "text-rose-700 dark:text-rose-300"
-                      : spacebotNotice.type === "success"
-                        ? "text-emerald-700 dark:text-emerald-300"
-                        : "text-slate-600 dark:text-slate-300"
-                  }`}
-                >
-                  {spacebotNotice.text}
-                </p>
-              )}
-
-              {spacebotConnector ? (
-                <>
-                  <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-                    <span
-                      className={`rounded-md border px-2 py-1 ${
-                        spacebotConnector.running
-                          ? "border-emerald-400/45 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200"
-                          : "border-amber-400/45 bg-amber-500/10 text-amber-700 dark:text-amber-200"
-                      }`}
-                    >
-                      {spacebotConnector.running ? "Container Running" : "Container Stopped"}
-                    </span>
-                    <span
-                      className={`rounded-md border px-2 py-1 ${
-                        spacebotConnector.health.ok
-                          ? "border-cyan-400/45 bg-cyan-500/10 text-cyan-700 dark:text-cyan-200"
-                          : "border-rose-400/45 bg-rose-500/10 text-rose-700 dark:text-rose-200"
-                      }`}
-                    >
-                      {spacebotConnector.health.ok
-                        ? `Webhook Healthy${spacebotConnector.health.status ? ` (${spacebotConnector.health.status})` : ""}`
-                        : "Webhook Unreachable"}
-                    </span>
-                    <span
-                      className={`rounded-md border px-2 py-1 ${
-                        spacebotConnector.connectorEnabled
-                          ? "border-emerald-400/45 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200"
-                          : "border-amber-400/45 bg-amber-500/10 text-amber-700 dark:text-amber-200"
-                      }`}
-                    >
-                      Connector {spacebotConnector.connectorEnabled ? "Enabled" : "Disabled"}
-                    </span>
-                  </div>
-
-                  <p className="mt-2 text-xs text-slate-600 dark:text-slate-300">
-                    Webhook URL <code>{spacebotConnector.baseUrl}</code>
-                  </p>
-                  <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
-                    Compose file <code>{spacebotConnector.composeFile}</code>
-                  </p>
-
-                  {!spacebotConnector.localCommandExecutionEnabled && (
-                    <p className="mt-1 text-xs text-amber-700 dark:text-amber-200">
-                      Set <code>ENABLE_LOCAL_COMMAND_EXECUTION=true</code> to enable launch controls.
-                    </p>
-                  )}
-                  {!spacebotConnector.dockerAvailable && (
-                    <p className="mt-1 text-xs text-rose-700 dark:text-rose-200">
-                      Docker CLI is not available for this runtime.
-                    </p>
-                  )}
-                  {!spacebotConnector.composeFileExists && (
-                    <p className="mt-1 text-xs text-rose-700 dark:text-rose-200">
-                      Compose file for <code>{spacebotConnector.stack}</code> was not found.
-                    </p>
-                  )}
-                  {spacebotConnector.health.error && (
-                    <p className="mt-1 text-xs text-rose-700 dark:text-rose-200">
-                      Health error: {spacebotConnector.health.error}
-                    </p>
-                  )}
-
-                  <div className="mt-2 flex flex-wrap items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => void runSpacebotAction("start")}
-                      disabled={isSpacebotUpdating || !spacebotConnector.localCommandExecutionEnabled}
-                      className="inline-flex items-center gap-1.5 rounded-md border border-emerald-500/45 bg-emerald-500/12 px-2.5 py-1 text-xs font-medium text-emerald-700 disabled:opacity-50 dark:border-emerald-300/45 dark:text-emerald-200"
-                    >
-                      {isSpacebotUpdating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
-                      Start
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void runSpacebotAction("restart")}
-                      disabled={isSpacebotUpdating || !spacebotConnector.localCommandExecutionEnabled}
-                      className="inline-flex items-center gap-1.5 rounded-md border border-indigo-500/45 bg-indigo-500/12 px-2.5 py-1 text-xs font-medium text-indigo-700 disabled:opacity-50 dark:border-indigo-300/45 dark:text-indigo-200"
-                    >
-                      {isSpacebotUpdating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
-                      Restart
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void runSpacebotAction("stop")}
-                      disabled={isSpacebotUpdating || !spacebotConnector.localCommandExecutionEnabled}
-                      className="inline-flex items-center gap-1.5 rounded-md border border-rose-500/45 bg-rose-500/12 px-2.5 py-1 text-xs font-medium text-rose-700 disabled:opacity-50 dark:border-rose-300/45 dark:text-rose-200"
-                    >
-                      {isSpacebotUpdating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Square className="h-3.5 w-3.5" />}
-                      Stop
-                    </button>
-                  </div>
-                </>
-              ) : isSpacebotLoading ? (
-                <div className="mt-2 inline-flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300">
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  Loading Spacebot status...
-                </div>
-              ) : (
-                <p className="mt-2 text-xs text-slate-600 dark:text-slate-300">
-                  Spacebot status unavailable.
-                </p>
-              )}
-            </div>
 
             <div className="mb-4 rounded-xl border border-slate-300/70 bg-white/75 p-3 dark:border-white/12 dark:bg-white/[0.04]">
               <div className="flex items-center justify-between gap-3">

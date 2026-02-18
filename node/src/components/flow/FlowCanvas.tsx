@@ -22,6 +22,8 @@ interface FlowCanvasProps {
   edges: Edge[]
   nodeTypes?: NodeTypes
   onNodeClick?: NodeMouseHandler
+  onNodeMouseEnter?: NodeMouseHandler
+  onNodeMouseLeave?: NodeMouseHandler
   onPaneClick?: (event: React.MouseEvent) => void
   onInit?: (instance: ReactFlowInstance) => void
   onNodesChange?: OnNodesChange
@@ -53,6 +55,8 @@ export function FlowCanvas({
   edges,
   nodeTypes,
   onNodeClick,
+  onNodeMouseEnter,
+  onNodeMouseLeave,
   onPaneClick,
   onInit,
   onNodesChange,
@@ -127,6 +131,8 @@ export function FlowCanvas({
           edges={edges}
           nodeTypes={stableNodeTypes}
           onNodeClick={onNodeClick}
+          onNodeMouseEnter={onNodeMouseEnter}
+          onNodeMouseLeave={onNodeMouseLeave}
           onPaneClick={onPaneClick}
           onInit={onInit}
           onNodesChange={onNodesChange}

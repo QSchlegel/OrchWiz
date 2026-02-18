@@ -100,7 +100,7 @@ interface ShipSelectorItem {
   status: "pending" | "deploying" | "active" | "inactive" | "failed" | "updating"
   nodeId: string
   nodeType: "local" | "cloud" | "hybrid"
-  deploymentProfile: "local_starship_build" | "cloud_shipyard"
+  deploymentProfile: "local_starship_build" | "lightweight_shuttle" | "cloud_shipyard"
 }
 
 interface SessionListItem {
@@ -190,6 +190,23 @@ function asRecord(value: unknown): Record<string, unknown> {
   }
 
   return value as Record<string, unknown>
+}
+
+async function parseJsonRecordResponse(response: Response): Promise<{
+  payload: Record<string, unknown>
+  isJson: boolean
+}> {
+  const raw = await response.text()
+  if (!raw) {
+    return { payload: {}, isJson: true }
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as unknown
+    return { payload: asRecord(parsed), isJson: true }
+  } catch {
+    return { payload: {}, isJson: false }
+  }
 }
 
 function asStationKey(value: unknown): BridgeStationKey | null {
@@ -355,6 +372,7 @@ export default function BridgePage() {
 
   const [composer, setComposer] = useState("")
   const [isBridgeLoading, setIsBridgeLoading] = useState(true)
+  const [hasLoadedBridgeState, setHasLoadedBridgeState] = useState(false)
   const [isThreadLoading, setIsThreadLoading] = useState(false)
   const [isSending, setIsSending] = useState(false)
   const [isPatchingThrough, setIsPatchingThrough] = useState(false)
@@ -418,6 +436,13 @@ export default function BridgePage() {
 
     return availableShips.find((ship) => ship.id === selectedShipDeploymentId) || null
   }, [availableShips, selectedShipDeploymentId])
+
+  const isBridgeBootstrapping = isBridgeLoading && !hasLoadedBridgeState
+  const isBridgeRefreshing = isBridgeLoading && hasLoadedBridgeState
+  const bridgeLoadingHeadline = selectedShip ? `Linking ${selectedShip.name}` : "Linking active hull"
+  const bridgeLoadingDetail = selectedShip
+    ? "Syncing station roster, tactical links, and comms channels for this deployment."
+    : "Resolving active hull telemetry, station roster, and comms channels."
 
   const missionStats = useMemo(() => {
     return {
@@ -659,7 +684,11 @@ export default function BridgePage() {
                 return null
               }
 
-              if (ship.deploymentProfile !== "local_starship_build" && ship.deploymentProfile !== "cloud_shipyard") {
+              if (
+                ship.deploymentProfile !== "local_starship_build"
+                && ship.deploymentProfile !== "lightweight_shuttle"
+                && ship.deploymentProfile !== "cloud_shipyard"
+              ) {
                 return null
               }
 
@@ -696,6 +725,7 @@ export default function BridgePage() {
       }
 
       setError(null)
+      setHasLoadedBridgeState(true)
     } catch (loadError) {
       console.error("Bridge state load failed:", loadError)
       setError("Unable to load bridge state")
@@ -749,10 +779,29 @@ export default function BridgePage() {
         }),
       })
 
-      const payload = (await response.json()) as Record<string, unknown>
+      const { payload, isJson } = await parseJsonRecordResponse(response)
       if (!response.ok) {
-        const detail = typeof payload.detail === "string" ? payload.detail : `HTTP ${response.status}`
+        if (!isJson) {
+          if (response.status === 404) {
+            setError("runtime-edge helper endpoint is unavailable (HTTP 404). Restart the dev server to reload API routes.")
+          } else {
+            setError(`runtime-edge helper returned HTTP ${response.status}.`)
+          }
+          return false
+        }
+
+        const detail =
+          typeof payload.detail === "string"
+            ? payload.detail
+            : typeof payload.error === "string"
+              ? payload.error
+              : `HTTP ${response.status}`
         setError(detail)
+        return false
+      }
+
+      if (!isJson) {
+        setError("runtime-edge helper returned an unexpected response format.")
         return false
       }
 
@@ -889,7 +938,7 @@ export default function BridgePage() {
       const resolved = next.length > 0 ? next : BRIDGE_DISPATCH_FALLBACK_RUNTIME_DESCRIPTORS
       setRuntimeDescriptors(resolved)
       setSelectedRuntimeId((current) => {
-        if (resolved.some((descriptor) => descriptor.id === current)) {
+        if (resolved.some((descriptor: BridgeDispatchRuntimeDescriptor) => descriptor.id === current)) {
           return current
         }
         return resolved[0]?.id || BRIDGE_DISPATCH_DEFAULT_RUNTIME
@@ -1426,7 +1475,7 @@ export default function BridgePage() {
                     key={service}
                     onClick={() => {
                       void (async () => {
-                        if (service === "kubeview") {
+                        if (service === "grafana" || service === "prometheus" || service === "kubeview" || service === "langfuse") {
                           const ok = await ensureRuntimeEdgeAvailable(status.href as string)
                           if (!ok) return
                         }
@@ -1586,18 +1635,56 @@ export default function BridgePage() {
 
         <div className="grid gap-4 xl:grid-cols-[320px_minmax(0,1fr)]">
           <section className="bridge-cel-panel bridge-cel-outline rounded-2xl p-3">
-            <div className="mb-2 flex items-center justify-between">
+            <div className="mb-2 flex items-center justify-between gap-2">
               <h2 className="text-base font-semibold">Station Roster</h2>
-              <span className="text-xs text-slate-600 dark:text-slate-300">{stations.length}</span>
+              <div className="flex items-center gap-2">
+                {isBridgeRefreshing && (
+                  <span className="inline-flex items-center gap-1 rounded-full border border-cyan-300/35 bg-cyan-500/12 px-2 py-0.5 text-[10px] uppercase tracking-[0.12em] text-cyan-700 dark:text-cyan-100">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    Syncing
+                  </span>
+                )}
+                <span className="text-xs text-slate-600 dark:text-slate-300">{stations.length}</span>
+              </div>
             </div>
 
-            {isBridgeLoading ? (
-              <div className="inline-flex items-center gap-2 rounded-lg border border-slate-400/30 bg-white/80 px-3 py-2 text-sm dark:bg-slate-900/70">
-                <Loader2 className="h-4 w-4 animate-spin" />
-                Syncing bridge state
+            {isBridgeBootstrapping ? (
+              <div className="space-y-3" aria-live="polite">
+                <div className="rounded-xl border border-cyan-300/30 bg-cyan-500/10 px-3 py-2.5">
+                  <div className="inline-flex items-center gap-2 text-sm font-medium text-cyan-700 dark:text-cyan-100">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    {bridgeLoadingHeadline}
+                  </div>
+                  <p className="mt-1 text-xs text-cyan-700/90 dark:text-cyan-100/90">{bridgeLoadingDetail}</p>
+                </div>
+                <div className="space-y-2">
+                  {[0, 1, 2, 3].map((row) => (
+                    <div
+                      key={`station-skeleton-${row}`}
+                      className="rounded-xl border border-slate-400/30 bg-white/75 px-3 py-2.5 dark:bg-slate-900/60"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="space-y-1.5">
+                          <div className="bridge-loading-shimmer bridge-loading-breathe h-3.5 w-20 rounded-md" />
+                          <div className="bridge-loading-shimmer h-2.5 w-24 rounded-md opacity-80" />
+                        </div>
+                        <div className="bridge-loading-shimmer h-5 w-12 rounded-full opacity-80" />
+                      </div>
+                      <div className="mt-2.5 space-y-1.5">
+                        <div className="bridge-loading-shimmer h-2.5 w-[92%] rounded-md opacity-80" />
+                        <div className="bridge-loading-shimmer h-2.5 w-[64%] rounded-md opacity-70" />
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
             ) : (
               <div className="space-y-2">
+                {stations.length === 0 && (
+                  <div className="rounded-lg border border-dashed border-slate-400/40 px-3 py-4 text-sm text-slate-600 dark:text-slate-300">
+                    No stations available for this hull yet.
+                  </div>
+                )}
                 {stations.map((station) => {
                   const selected = station.stationKey === selectedStation?.stationKey
                   return (
@@ -1632,25 +1719,91 @@ export default function BridgePage() {
             <div className="mb-3 flex items-center justify-between">
               <div>
                 <p className="text-[11px] uppercase tracking-[0.18em] text-cyan-700/80 dark:text-cyan-200/80">Comms</p>
-                <h2 className="text-lg font-semibold">{selectedStation?.callsign || "No station selected"}</h2>
+                <h2 className="text-lg font-semibold">
+                  {isBridgeBootstrapping ? "Initializing comms channels" : selectedStation?.callsign || "No station selected"}
+                </h2>
               </div>
-              {isThreadLoading && <Loader2 className="h-4 w-4 animate-spin text-cyan-700 dark:text-cyan-200" />}
+              <div className="flex items-center gap-2">
+                {isThreadLoading && (
+                  <span className="inline-flex items-center gap-1 rounded-full border border-cyan-300/35 bg-cyan-500/12 px-2 py-0.5 text-[10px] uppercase tracking-[0.12em] text-cyan-700 dark:text-cyan-100">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    Hydrating transcript
+                  </span>
+                )}
+                {isBridgeRefreshing && !isThreadLoading && (
+                  <span className="rounded-full border border-slate-400/35 bg-white/70 px-2 py-0.5 text-[10px] uppercase tracking-[0.12em] text-slate-600 dark:bg-slate-900/70 dark:text-slate-300">
+                    Roster syncing
+                  </span>
+                )}
+              </div>
             </div>
 
             <div className="mb-3 h-[360px] space-y-2 overflow-y-auto rounded-xl border border-slate-400/30 bg-white/80 p-3 dark:bg-slate-950/70">
-              {!selectedStation && (
+              {isBridgeBootstrapping && (
+                <div className="space-y-3" aria-live="polite">
+                  <div className="rounded-lg border border-cyan-300/35 bg-cyan-500/10 px-3 py-3 text-sm text-cyan-700 dark:text-cyan-100">
+                    <p className="font-medium">{bridgeLoadingHeadline}</p>
+                    <p className="mt-1 text-xs text-cyan-700/90 dark:text-cyan-100/90">
+                      Establishing encrypted relay lanes and restoring the latest station context.
+                    </p>
+                  </div>
+                  <div className="space-y-2">
+                    {[0, 1, 2].map((row) => (
+                      <div
+                        key={`comms-boot-${row}`}
+                        className={`rounded-lg border border-slate-400/30 bg-white/85 p-3 dark:bg-slate-900/70 ${
+                          row % 2 === 0 ? "ml-auto w-[84%]" : "w-[90%]"
+                        }`}
+                      >
+                        <div className="mb-2 flex items-center justify-between gap-2">
+                          <div className="bridge-loading-shimmer h-2.5 w-16 rounded-md opacity-80" />
+                          <div className="bridge-loading-shimmer h-2.5 w-12 rounded-md opacity-70" />
+                        </div>
+                        <div className="space-y-1.5">
+                          <div className="bridge-loading-shimmer h-2.5 w-[96%] rounded-md opacity-80" />
+                          <div className="bridge-loading-shimmer h-2.5 w-[72%] rounded-md opacity-70" />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {!isBridgeBootstrapping && !selectedStation && (
                 <div className="rounded-lg border border-dashed border-slate-400/40 px-3 py-4 text-sm text-slate-600 dark:text-slate-300">
                   Select a station to open comms.
                 </div>
               )}
 
-              {selectedStation && threadMessages.length === 0 && !isThreadLoading && (
+              {!isBridgeBootstrapping && selectedStation && isThreadLoading && threadMessages.length === 0 && (
+                <div className="space-y-2">
+                  {[0, 1, 2].map((row) => (
+                    <div
+                      key={`thread-skeleton-${row}`}
+                      className={`rounded-lg border border-slate-400/30 bg-white/85 p-3 dark:bg-slate-900/70 ${
+                        row % 2 === 0 ? "ml-auto w-[84%]" : "w-[90%]"
+                      }`}
+                    >
+                      <div className="mb-2 flex items-center justify-between gap-2">
+                        <div className="bridge-loading-shimmer h-2.5 w-14 rounded-md opacity-80" />
+                        <div className="bridge-loading-shimmer h-2.5 w-10 rounded-md opacity-70" />
+                      </div>
+                      <div className="space-y-1.5">
+                        <div className="bridge-loading-shimmer h-2.5 w-[94%] rounded-md opacity-80" />
+                        <div className="bridge-loading-shimmer h-2.5 w-[76%] rounded-md opacity-70" />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {!isBridgeBootstrapping && selectedStation && threadMessages.length === 0 && !isThreadLoading && (
                 <div className="rounded-lg border border-dashed border-cyan-300/35 bg-cyan-500/10 px-3 py-4 text-sm text-cyan-700 dark:text-cyan-100">
                   Channel idle. Send first directive to {selectedStation.callsign}.
                 </div>
               )}
 
-              {threadMessages.map((message) => {
+              {!isBridgeBootstrapping && threadMessages.map((message) => {
                 const isUser = message.type === "user_input"
                 const isError = message.type === "error"
                 return (
@@ -1679,15 +1832,23 @@ export default function BridgePage() {
                 value={composer}
                 onChange={(event) => setComposer(event.target.value)}
                 rows={3}
-                placeholder={selectedStation ? `Send directive to ${selectedStation.callsign}...` : "Select a station first"}
-                disabled={!selectedStation || isSending}
+                placeholder={
+                  isBridgeBootstrapping
+                    ? "Linking bridge channels..."
+                    : selectedStation
+                      ? `Send directive to ${selectedStation.callsign}...`
+                      : "Select a station first"
+                }
+                disabled={!selectedStation || isSending || isBridgeBootstrapping}
                 className="w-full resize-none rounded-xl border border-slate-400/35 bg-white/80 px-3 py-2.5 text-sm placeholder:text-slate-400 focus:border-cyan-300/45 focus:outline-none dark:bg-slate-950/70"
               />
               <div className="flex items-center justify-between">
-                <span className="text-xs text-slate-600 dark:text-slate-300">Response mode: lead + support relays</span>
+                <span className="text-xs text-slate-600 dark:text-slate-300">
+                  {isBridgeBootstrapping ? "Bridge boot sequence in progress..." : "Response mode: lead + support relays"}
+                </span>
                 <button
                   type="submit"
-                  disabled={!selectedStation || !composer.trim() || isSending}
+                  disabled={!selectedStation || !composer.trim() || isSending || isBridgeBootstrapping}
                   className="inline-flex items-center gap-2 rounded-lg border border-cyan-300/40 bg-cyan-500/15 px-3 py-2 text-sm text-cyan-700 transition hover:bg-cyan-500/25 disabled:opacity-60 dark:text-cyan-100"
                 >
                   {isSending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}

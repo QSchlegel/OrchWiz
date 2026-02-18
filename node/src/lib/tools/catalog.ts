@@ -652,7 +652,7 @@ async function syncToolCatalogForUser(args: {
       sourcePath: curatedTool.sourcePath || null,
       sourceRef: curatedTool.sourceRef || "main",
       sourceUrl: curatedTool.sourceUrl || null,
-      isInstalled: Boolean(localTool),
+      isInstalled: Boolean(localTool) || (curatedTool.available && !curatedTool.repo),
       isSystem: false,
       installedPath: localTool?.installedPath || null,
       metadata: {
@@ -880,7 +880,7 @@ export async function importCuratedToolForUser(args: {
   if (!curated) {
     throw new Error(`Unknown curated tool slug: ${slug}`)
   }
-  if (!curated.available || !curated.repo) {
+  if (!curated.available) {
     throw new Error(curated.unavailableReason || `Curated tool ${slug} is unavailable.`)
   }
 
@@ -896,6 +896,65 @@ export async function importCuratedToolForUser(args: {
   })
 
   try {
+    if (!curated.repo) {
+      const sourceKey = buildToolSourceKey({
+        source: "curated",
+        slug,
+        repo: curated.repo,
+        sourcePath: curated.sourcePath || null,
+        sourceRef: curated.sourceRef || "main",
+        sourceUrl: curated.sourceUrl || null,
+      })
+      const curatedToolchain = buildToolchainMetadata({
+        protocol: curated.protocol,
+        endpoint: curated.endpoint,
+        authRef: curated.authRef,
+        capabilities: curated.capabilities,
+      })
+
+      const entry = await upsertCatalogEntry({
+        ownerUserId: args.ownerUserId,
+        slug,
+        name: curated.name || formatToolNameFromSlug(slug),
+        description: curated.description,
+        source: "curated",
+        sourceKey,
+        repo: curated.repo,
+        sourcePath: curated.sourcePath || null,
+        sourceRef: curated.sourceRef || "main",
+        sourceUrl: curated.sourceUrl || null,
+        isInstalled: true,
+        isSystem: false,
+        installedPath: null,
+        metadata: {
+          source: "curated_endpoint",
+          available: curated.available,
+          unavailableReason: curated.unavailableReason,
+          ...(curatedToolchain
+            ? {
+                toolchain: curatedToolchain,
+              }
+            : {}),
+        },
+        lastSyncedAt: new Date(),
+      })
+
+      const completed = await completeImportRun({
+        runId: run.id,
+        status: "succeeded",
+        catalogEntryId: entry.id,
+        exitCode: 0,
+        stdout: "Curated endpoint tool registered without repository install.",
+        stderr: "",
+        errorMessage: null,
+      })
+
+      return {
+        run: toImportRunDto(completed),
+        entry: toEntryDto(entry),
+      }
+    }
+
     const result = await installCuratedToolFromRepo({
       userId: args.ownerUserId,
       repo: curated.repo,

@@ -312,6 +312,9 @@ test("fails when expected kube context is missing", async () => {
 test("auto-creates Kind cluster when context is missing and saneBootstrap is true", async () => {
   let getContextsCallCount = 0
   const { runtime, calls } = createRuntime({
+    env: {
+      LOCAL_SHIPYARD_AUTO_CREATE_KIND_CLUSTER: "true",
+    },
     runCommand: async (command, args) => {
       if (command === "kubectl" && args.join(" ") === "config get-contexts -o name") {
         getContextsCallCount += 1
@@ -348,6 +351,40 @@ test("auto-creates Kind cluster when context is missing and saneBootstrap is tru
   assert.equal(kindCreateCalls.length, 1, "kind create cluster should be called once")
   assert.equal(kindCreateCalls[0].args[2], "--name")
   assert.equal(kindCreateCalls[0].args[3], "orchwiz")
+})
+
+test("does not auto-create Kind cluster when context is missing and auto-create is not enabled", async () => {
+  const { runtime, calls } = createRuntime({
+    runCommand: async (command, args) => {
+      if (command === "kubectl" && args.join(" ") === "config get-contexts -o name") {
+        return {
+          ok: true,
+          stdout: "docker-desktop\n",
+          stderr: "",
+          exitCode: 0,
+        }
+      }
+      return { ok: true, stdout: "", stderr: "", exitCode: 0 }
+    },
+  })
+
+  const result = await runLocalBootstrap(
+    {
+      infrastructure: baseInfrastructure,
+      provisioningMode: "terraform_ansible",
+      saneBootstrap: true,
+    },
+    runtime,
+  )
+
+  assert.equal(result.ok, false)
+  if (result.ok) return
+  assert.equal(result.code, "LOCAL_BOOTSTRAP_CONTEXT_MISSING")
+
+  const kindCreateCalls = calls.filter(
+    (c) => c.command === "kind" && c.args[0] === "create" && c.args[1] === "cluster",
+  )
+  assert.equal(kindCreateCalls.length, 0)
 })
 
 test("provisioning failure includes OCI helm remediation for invalid chart reference", async () => {
@@ -398,11 +435,104 @@ test("provisioning failure includes OCI helm remediation for invalid chart refer
   )
 })
 
+test("provider-proxy GHCR 403 failure surfaces targeted remediation commands", async () => {
+  const { runtime } = createRuntime({
+    runCommand: async (command, args) => {
+      if (command === "kubectl" && args.join(" ") === "config get-contexts -o name") {
+        return {
+          ok: true,
+          stdout: "kind-orchwiz\n",
+          stderr: "",
+          exitCode: 0,
+        }
+      }
+      if (command === "ansible-playbook") {
+        return {
+          ok: false,
+          stdout: "",
+          stderr:
+            "Failed to pull image \"ghcr.io/qschlegel/orchwiz-provider-proxy:latest\": failed to fetch anonymous token: 403 Forbidden",
+          exitCode: 1,
+        }
+      }
+      if (command === "kubectl" && args.join(" ") === "--context kind-orchwiz -n orchwiz-starship get pods -o json") {
+        return {
+          ok: true,
+          stdout: JSON.stringify({
+            items: [
+              {
+                metadata: { name: "orchwiz-provider-proxy-abc123" },
+                status: {
+                  phase: "Pending",
+                  containerStatuses: [
+                    {
+                      ready: false,
+                      restartCount: 0,
+                      state: {
+                        waiting: {
+                          reason: "ImagePullBackOff",
+                        },
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          }),
+          stderr: "",
+          exitCode: 0,
+        }
+      }
+      if (command === "kubectl" && args.join(" ") === "--context kind-orchwiz -n orchwiz-starship rollout status deployment/orchwiz --timeout=5s") {
+        return {
+          ok: false,
+          stdout: "",
+          stderr: "deployment \"orchwiz\" exceeded progress deadline",
+          exitCode: 1,
+        }
+      }
+      return {
+        ok: true,
+        stdout: "",
+        stderr: "",
+        exitCode: 0,
+      }
+    },
+  })
+
+  const result = await runLocalBootstrap(
+    {
+      infrastructure: baseInfrastructure,
+      provisioningMode: "terraform_ansible",
+      saneBootstrap: false,
+    },
+    runtime,
+  )
+
+  assert.equal(result.ok, false)
+  if (result.ok) return
+
+  assert.equal(result.code, "LOCAL_PROVISIONING_FAILED")
+  const failureSummary = (result.metadata?.provisioningFailureSummary || {}) as { reasonCode?: string }
+  assert.equal(failureSummary.reasonCode, "provider_proxy_image_forbidden")
+  assert.ok(
+    result.details?.suggestedCommands?.some((command) =>
+      command.includes("docker build -f services/provider-proxy/Dockerfile"),
+    ),
+  )
+  assert.ok(
+    result.details?.suggestedCommands?.some((command) =>
+      command.includes("TF_VAR_provider_proxy_image=orchwiz-provider-proxy:local-dev"),
+    ),
+  )
+})
+
 test("passes expected environment to ansible provisioning command", async () => {
   const { runtime, calls } = createRuntime({
     env: {
       ENABLE_LOCAL_COMMAND_EXECUTION: "true",
       ORCHWIZ_APP_NAME: "orchwiz-custom",
+      ORCHWIZ_RUNTIME_JWT_SECRET: "runtime-jwt-test-secret",
       LOCAL_INFRA_COMMAND_TIMEOUT_MS: "900000",
     },
   })
@@ -430,7 +560,132 @@ test("passes expected environment to ansible provisioning command", async () => 
   assert.equal(ansibleCall?.env?.KUBE_CONTEXT, "kind-orchwiz")
   assert.equal(ansibleCall?.env?.ORCHWIZ_NAMESPACE, "orchwiz-starship")
   assert.equal(ansibleCall?.env?.ORCHWIZ_APP_NAME, "orchwiz-custom")
+  assert.equal(ansibleCall?.env?.TF_VAR_runtime_jwt_secret, "runtime-jwt-test-secret")
   assert.equal(ansibleCall?.timeoutMs, 900000)
+})
+
+test("lightweight profile sets single-station terraform env and app overrides", async () => {
+  const { runtime, calls } = createRuntime({
+    env: {
+      ENABLE_LOCAL_COMMAND_EXECUTION: "true",
+    },
+  })
+
+  const result = await runLocalBootstrap(
+    {
+      deploymentProfile: "lightweight_shuttle",
+      infrastructure: baseInfrastructure,
+      provisioningMode: "terraform_ansible",
+      saneBootstrap: false,
+    },
+    runtime,
+  )
+
+  assert.equal(result.ok, true)
+  if (!result.ok) return
+
+  const ansibleCall = calls.find((call) => call.command === "ansible-playbook")
+  assert.ok(ansibleCall)
+  assert.equal(ansibleCall?.env?.TF_VAR_openclaw_station_count, "1")
+  assert.ok(ansibleCall?.env?.TF_VAR_app_env)
+
+  const appEnv = JSON.parse(ansibleCall?.env?.TF_VAR_app_env || "{}") as Record<string, string>
+  assert.equal(appEnv.ORCHWIZ_BOOTSTRAP_PROFILE, "lightweight_shuttle")
+})
+
+test("default local profile keeps terraform station count unset", async () => {
+  const { runtime, calls } = createRuntime({
+    env: {
+      ENABLE_LOCAL_COMMAND_EXECUTION: "true",
+    },
+  })
+
+  const result = await runLocalBootstrap(
+    {
+      deploymentProfile: "local_starship_build",
+      infrastructure: baseInfrastructure,
+      provisioningMode: "terraform_ansible",
+      saneBootstrap: false,
+    },
+    runtime,
+  )
+
+  assert.equal(result.ok, true)
+
+  const ansibleCall = calls.find((call) => call.command === "ansible-playbook")
+  assert.ok(ansibleCall)
+  assert.equal(ansibleCall?.env?.TF_VAR_openclaw_station_count, undefined)
+})
+
+test("default local profile forces lean observability terraform toggles", async () => {
+  const { runtime, calls } = createRuntime({
+    env: {
+      ENABLE_LOCAL_COMMAND_EXECUTION: "true",
+    },
+  })
+
+  const result = await runLocalBootstrap(
+    {
+      deploymentProfile: "local_starship_build",
+      infrastructure: baseInfrastructure,
+      provisioningMode: "terraform_ansible",
+      saneBootstrap: false,
+    },
+    runtime,
+  )
+
+  assert.equal(result.ok, true)
+  if (!result.ok) return
+
+  const ansibleCall = calls.find((call) => call.command === "ansible-playbook")
+  assert.ok(ansibleCall)
+  assert.equal(ansibleCall?.env?.TF_VAR_enable_grafana, "false")
+  assert.equal(ansibleCall?.env?.TF_VAR_enable_prometheus, "false")
+  assert.equal(ansibleCall?.env?.TF_VAR_enable_loki, "false")
+  assert.equal(ansibleCall?.env?.TF_VAR_enable_clickhouse, "false")
+  assert.equal(ansibleCall?.env?.TF_VAR_enable_langfuse, "false")
+  const localProvisioning = result.metadata.localProvisioning as {
+    observabilityStackEnabled?: boolean
+    leanObservabilityDefaultsForced?: boolean
+  }
+  assert.equal(localProvisioning.observabilityStackEnabled, false)
+  assert.equal(localProvisioning.leanObservabilityDefaultsForced, true)
+})
+
+test("local profile does not force lean observability when enabled explicitly", async () => {
+  const { runtime, calls } = createRuntime({
+    env: {
+      ENABLE_LOCAL_COMMAND_EXECUTION: "true",
+      LOCAL_SHIPYARD_ENABLE_OBSERVABILITY_STACK: "true",
+    },
+  })
+
+  const result = await runLocalBootstrap(
+    {
+      deploymentProfile: "local_starship_build",
+      infrastructure: baseInfrastructure,
+      provisioningMode: "terraform_ansible",
+      saneBootstrap: false,
+    },
+    runtime,
+  )
+
+  assert.equal(result.ok, true)
+  if (!result.ok) return
+
+  const ansibleCall = calls.find((call) => call.command === "ansible-playbook")
+  assert.ok(ansibleCall)
+  assert.equal(ansibleCall?.env?.TF_VAR_enable_grafana, undefined)
+  assert.equal(ansibleCall?.env?.TF_VAR_enable_prometheus, undefined)
+  assert.equal(ansibleCall?.env?.TF_VAR_enable_loki, undefined)
+  assert.equal(ansibleCall?.env?.TF_VAR_enable_clickhouse, undefined)
+  assert.equal(ansibleCall?.env?.TF_VAR_enable_langfuse, undefined)
+  const localProvisioning = result.metadata.localProvisioning as {
+    observabilityStackEnabled?: boolean
+    leanObservabilityDefaultsForced?: boolean
+  }
+  assert.equal(localProvisioning.observabilityStackEnabled, true)
+  assert.equal(localProvisioning.leanObservabilityDefaultsForced, false)
 })
 
 test("sane bootstrap builds/loads local app image and passes TF_VAR_app_image", async () => {
@@ -488,6 +743,7 @@ test("sane bootstrap auto-creates kind cluster when kind load reports missing no
   const { runtime, calls } = createRuntime({
     env: {
       ENABLE_LOCAL_COMMAND_EXECUTION: "true",
+      LOCAL_SHIPYARD_AUTO_CREATE_KIND_CLUSTER: "true",
     },
     runCommand: async (command, args) => {
       if (command === "kubectl" && args.join(" ") === "config get-contexts -o name") {
@@ -793,4 +1049,78 @@ test("falls back to local kubeview metadata when terraform outputs are unavailab
   assert.equal(kubeview.ingressEnabled, false)
   assert.equal(kubeview.url, null)
   assert.equal(kubeview.source, "fallback")
+})
+
+test("captures observability metadata from terraform outputs", async () => {
+  const { runtime } = createRuntime({
+    runCommand: async (command, args) => {
+      if (command === "kubectl" && args.join(" ") === "config get-contexts -o name") {
+        return {
+          ok: true,
+          stdout: "kind-orchwiz\n",
+          stderr: "",
+          exitCode: 0,
+        }
+      }
+      if (command === "ansible-playbook") {
+        return {
+          ok: true,
+          stdout: "PLAY RECAP",
+          stderr: "",
+          exitCode: 0,
+        }
+      }
+      if (command === "terraform" && args.join(" ") === "-chdir /repo/infra/terraform/environments/starship-local output -json") {
+        return {
+          ok: true,
+          stdout: JSON.stringify({
+            monitoring_namespace: { value: "monitoring" },
+            grafana_enabled: { value: false },
+            prometheus_enabled: { value: false },
+            loki_enabled: { value: false },
+            clickhouse_enabled: { value: false },
+            langfuse_enabled: { value: false },
+            grafana_url: { value: null },
+            prometheus_url: { value: null },
+            langfuse_url: { value: null },
+          }),
+          stderr: "",
+          exitCode: 0,
+        }
+      }
+      return {
+        ok: true,
+        stdout: "",
+        stderr: "",
+        exitCode: 0,
+      }
+    },
+  })
+
+  const result = await runLocalBootstrap(
+    {
+      infrastructure: baseInfrastructure,
+      provisioningMode: "terraform_ansible",
+      saneBootstrap: false,
+    },
+    runtime,
+  )
+
+  assert.equal(result.ok, true)
+  if (!result.ok) return
+
+  const observability = result.metadata.observability as {
+    monitoringNamespace?: string | null
+    grafana?: { enabled?: boolean | null }
+    prometheus?: { enabled?: boolean | null }
+    loki?: { enabled?: boolean | null }
+    clickhouse?: { enabled?: boolean | null }
+    langfuse?: { enabled?: boolean | null }
+  }
+  assert.equal(observability.monitoringNamespace, "monitoring")
+  assert.equal(observability.grafana?.enabled, false)
+  assert.equal(observability.prometheus?.enabled, false)
+  assert.equal(observability.loki?.enabled, false)
+  assert.equal(observability.clickhouse?.enabled, false)
+  assert.equal(observability.langfuse?.enabled, false)
 })

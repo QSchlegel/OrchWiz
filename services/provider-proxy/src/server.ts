@@ -10,6 +10,11 @@ import {
 } from "./codex-cli-connector.js"
 import { CodexExecError, runCodexExec, type RuntimeRequest, type RuntimeResult } from "./codex-exec.js"
 import { extractChatCompletionsPrompt, extractResponsesInputPrompt, makeResponseId } from "./openai-compat.js"
+import {
+  acquireStreamConcurrencySlot,
+  resolveStreamLimitConfig,
+  takeStreamRateLimitToken,
+} from "./rate-limit.js"
 
 function asNonEmptyString(value: unknown): string | null {
   if (typeof value !== "string") {
@@ -24,10 +29,20 @@ function envProxyApiKey(): string | null {
   return asNonEmptyString(process.env.PROVIDER_PROXY_API_KEY)
 }
 
+function parseBearerToken(value: string | undefined): string | null {
+  if (!value) {
+    return null
+  }
+
+  const match = value.match(/^Bearer\s+(.+)$/i)
+  return asNonEmptyString(match?.[1] || null)
+}
+
 export function createApp(deps: {
   runCodex?: typeof runCodexExec
 } = {}) {
   const app = express()
+  app.disable("x-powered-by")
   app.use(express.json({ limit: "4mb" }))
 
   app.get("/health", (_req, res) => {
@@ -199,8 +214,39 @@ export function createApp(deps: {
     const messages = body?.messages
     const stream = body?.stream === true
     const prompt = extractChatCompletionsPrompt(messages)
+    let streamSlotRelease: (() => void) | null = null
 
     try {
+      if (stream) {
+        const streamConfig = resolveStreamLimitConfig()
+        const apiKey = parseBearerToken(req.header("authorization")) || "unknown"
+        const clientAddress = asNonEmptyString(req.ip) || asNonEmptyString(req.socket.remoteAddress) || "unknown"
+        const key = `${apiKey}:${clientAddress}`
+
+        const rate = takeStreamRateLimitToken(key, streamConfig)
+        if (!rate.allowed) {
+          return res
+            .status(429)
+            .set("Retry-After", String(rate.retryAfterSeconds))
+            .json({ error: "Streaming rate limit exceeded." })
+        }
+        if (rate.wouldExceed) {
+          console.warn(`[provider-proxy] streaming rate limit exceeded in warn-only mode for ${key}`)
+        }
+
+        const streamSlot = acquireStreamConcurrencySlot(key, streamConfig)
+        if (!streamSlot.allowed) {
+          return res
+            .status(429)
+            .set("Retry-After", String(streamSlot.retryAfterSeconds))
+            .json({ error: "Too many concurrent streaming requests." })
+        }
+        if (streamSlot.wouldExceed) {
+          console.warn(`[provider-proxy] streaming concurrency exceeded in warn-only mode for ${key}`)
+        }
+        streamSlotRelease = streamSlot.release
+      }
+
       const run = deps.runCodex || runCodexExec
       const execResult = await run({
         request: {
@@ -242,8 +288,11 @@ export function createApp(deps: {
 
       res.status(200)
       res.setHeader("Content-Type", "text/event-stream")
-      res.setHeader("Cache-Control", "no-cache, no-transform")
+      res.setHeader("Cache-Control", "no-store, private, no-transform")
+      res.setHeader("Pragma", "no-cache")
       res.setHeader("Connection", "keep-alive")
+      res.setHeader("X-Content-Type-Options", "nosniff")
+      res.setHeader("X-Accel-Buffering", "no")
       res.flushHeaders?.()
 
       const chunk = {
@@ -274,6 +323,10 @@ export function createApp(deps: {
         code: normalized.code,
         details: normalized.details,
       })
+    } finally {
+      if (streamSlotRelease) {
+        streamSlotRelease()
+      }
     }
   })
 

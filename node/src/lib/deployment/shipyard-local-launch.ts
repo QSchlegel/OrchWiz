@@ -1,6 +1,6 @@
 import type { DeploymentAdapterResult } from "./adapter"
 import type { OpenClawContextBundle } from "./openclaw-context"
-import type { InfrastructureConfig, ProvisioningMode } from "./profile"
+import type { DeploymentProfile, InfrastructureConfig, ProvisioningMode } from "./profile"
 import { runLocalBootstrap } from "./local-bootstrap"
 import type {
   LocalBootstrapErrorCode,
@@ -9,6 +9,7 @@ import type {
 } from "./local-bootstrap.types"
 
 interface ShipyardLocalLaunchInput {
+  deploymentProfile?: DeploymentProfile
   provisioningMode: ProvisioningMode
   infrastructure: InfrastructureConfig
   saneBootstrap: boolean
@@ -41,7 +42,10 @@ export async function runShipyardLocalLaunch(
 ): Promise<ShipyardLocalLaunchResult> {
   const localBootstrapRunner = dependencies.localBootstrapRunner || runLocalBootstrap
 
-  const bootstrapResult = await localBootstrapRunner(input)
+  const bootstrapResult = await localBootstrapRunner({
+    ...input,
+    deploymentProfile: input.deploymentProfile || "local_starship_build",
+  })
   if (!bootstrapResult.ok) {
     return {
       ok: false,

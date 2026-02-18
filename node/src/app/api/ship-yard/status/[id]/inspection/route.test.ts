@@ -58,6 +58,33 @@ function deployment(overrides: Partial<ShipyardInspectionDeploymentRecord> = {})
       localProvisioning: {
         namespace: "orchwiz-starship",
       },
+      provisioningFailureSummary: {
+        reasonCode: "kubernetes_rollout_not_ready",
+        title: "Kubernetes rollout did not become ready",
+        summary: "Terraform waited for deployment readiness and timed out on unready replicas.",
+        confidence: "high",
+        evidence: ["Error: Waiting for rollout to finish: 1 replicas wanted; 0 replicas Ready"],
+        suggestedCommands: [
+          "kubectl --context kind-orchwiz -n orchwiz-starship get pods",
+        ],
+      },
+      kubernetesDiagnostics: {
+        context: "kind-orchwiz",
+        namespace: "orchwiz-starship",
+        appName: "orchwiz",
+        failingPods: [
+          {
+            name: "orchwiz-abc123",
+            phase: "Running",
+            ready: "0/1",
+            restartCount: 4,
+            reasons: ["CrashLoopBackOff"],
+          },
+        ],
+        appLogHighlights: [
+          "Failed to start OrchWiz server: Error: `turbo.createProject` is not supported by the wasm bindings.",
+        ],
+      },
       openClawContextInjection: {
         attempted: true,
       },
@@ -257,6 +284,13 @@ test("ship-yard status inspection returns curated payload without runtime by def
     "kind create cluster --name orchwiz",
     "kubectl config use-context kind-orchwiz",
   ])
+
+  const diagnosticsPayload = payload.diagnostics as Record<string, unknown>
+  const rootCausePayload = diagnosticsPayload.rootCause as Record<string, unknown>
+  assert.equal(rootCausePayload.reasonCode, "kubernetes_rollout_not_ready")
+  assert.equal(rootCausePayload.confidence, "high")
+  const kubernetesPayload = diagnosticsPayload.kubernetes as Record<string, unknown>
+  assert.equal(kubernetesPayload.appName, "orchwiz")
 
   const logsPayload = payload.logs as Record<string, unknown>
   const tails = logsPayload.tails as Array<{ key: string; value: string }>

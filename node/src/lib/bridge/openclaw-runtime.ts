@@ -146,7 +146,7 @@ export function resolveShipNamespace(config: unknown, deploymentProfile: string 
     return "orchwiz-shipyard"
   }
 
-  if (deploymentProfile === "local_starship_build") {
+  if (deploymentProfile === "local_starship_build" || deploymentProfile === "lightweight_shuttle") {
     return "orchwiz-starship"
   }
 

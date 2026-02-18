@@ -109,12 +109,14 @@ function resolvePrometheusUpstreamBaseUrl(): string {
     }
   }
 
+  const monitoringNamespace = asString(process.env.ORCHWIZ_MONITORING_NAMESPACE) || "monitoring"
   const runningInKubernetes = asString(process.env.KUBERNETES_SERVICE_HOST) !== null
   if (runningInKubernetes) {
-    return "http://prometheus-server.monitoring.svc.cluster.local:9090"
+    return `http://prometheus-server.${monitoringNamespace}.svc.cluster.local:80`
   }
 
-  return "http://127.0.0.1:9090"
+  // Outside Kubernetes, route through runtime-edge so users only need one port-forward.
+  return "http://127.0.0.1:3100/prometheus"
 }
 
 async function handleRuntimeUiProxy(

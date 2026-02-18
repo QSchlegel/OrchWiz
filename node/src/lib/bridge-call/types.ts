@@ -1,4 +1,5 @@
 import type { BridgeStationKey } from "@/lib/bridge/stations"
+import type { DeploymentProfile } from "@/lib/deployment/profile"
 
 export type BridgeCallRoundSource = "operator" | "system"
 export type BridgeCallRoundStatus = "pending" | "running" | "completed" | "partial" | "failed"
@@ -10,7 +11,7 @@ export interface BridgeCallShipSummary {
   status: "pending" | "deploying" | "active" | "inactive" | "failed" | "updating"
   nodeId: string
   nodeType: "local" | "cloud" | "hybrid"
-  deploymentProfile: "local_starship_build" | "cloud_shipyard"
+  deploymentProfile: DeploymentProfile
 }
 
 export interface BridgeCallStationSummary {

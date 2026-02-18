@@ -1,6 +1,6 @@
 import {
-  BRIDGE_CREW_ROLE_ORDER,
   isBridgeCrewRole,
+  requiredBridgeCrewRolesForDeploymentProfile,
   type BridgeCrewRole,
 } from "@/lib/shipyard/bridge-crew"
 import type {
@@ -202,19 +202,23 @@ function addResourceAmounts(a: ResourceAmount, b: ResourceAmount): ResourceAmoun
   }
 }
 
-function uniqueCrewRoles(input: unknown): BridgeCrewRole[] {
+function uniqueCrewRolesForDeploymentProfile(
+  deploymentProfile: DeploymentProfile,
+  input: unknown,
+): BridgeCrewRole[] {
   if (!Array.isArray(input)) {
     return []
   }
 
+  const requiredRoles = requiredBridgeCrewRolesForDeploymentProfile(deploymentProfile)
   const roleSet = new Set<BridgeCrewRole>()
   for (const entry of input) {
-    if (isBridgeCrewRole(entry)) {
+    if (isBridgeCrewRole(entry) && requiredRoles.includes(entry)) {
       roleSet.add(entry)
     }
   }
 
-  return BRIDGE_CREW_ROLE_ORDER.filter((role) => roleSet.has(role))
+  return requiredRoles.filter((role) => roleSet.has(role))
 }
 
 const BASE_COMPONENT_DEFAULTS: Record<string, Omit<ComponentPlanDefaults, "replicaCount"> & {
@@ -243,31 +247,36 @@ const BASE_COMPONENT_DEFAULTS: Record<string, Omit<ComponentPlanDefaults, "repli
   ops: {
     workloadKind: "deployment",
     provisioningReality: "planned_only",
-    replicaCount: (_profile, roleEnabled) => (roleEnabled ? 1 : 0),
+    replicaCount: (profile, roleEnabled) =>
+      (roleEnabled && profile !== "lightweight_shuttle") ? 1 : 0,
     resources: { cpuMillicores: 150, memoryMiB: 192 },
   },
   eng: {
     workloadKind: "deployment",
     provisioningReality: "planned_only",
-    replicaCount: (_profile, roleEnabled) => (roleEnabled ? 1 : 0),
+    replicaCount: (profile, roleEnabled) =>
+      (roleEnabled && profile !== "lightweight_shuttle") ? 1 : 0,
     resources: { cpuMillicores: 150, memoryMiB: 192 },
   },
   sec: {
     workloadKind: "deployment",
     provisioningReality: "planned_only",
-    replicaCount: (_profile, roleEnabled) => (roleEnabled ? 1 : 0),
+    replicaCount: (profile, roleEnabled) =>
+      (roleEnabled && profile !== "lightweight_shuttle") ? 1 : 0,
     resources: { cpuMillicores: 125, memoryMiB: 160 },
   },
   med: {
     workloadKind: "deployment",
     provisioningReality: "planned_only",
-    replicaCount: (_profile, roleEnabled) => (roleEnabled ? 1 : 0),
+    replicaCount: (profile, roleEnabled) =>
+      (roleEnabled && profile !== "lightweight_shuttle") ? 1 : 0,
     resources: { cpuMillicores: 100, memoryMiB: 128 },
   },
   cou: {
     workloadKind: "deployment",
     provisioningReality: "planned_only",
-    replicaCount: (_profile, roleEnabled) => (roleEnabled ? 1 : 0),
+    replicaCount: (profile, roleEnabled) =>
+      (roleEnabled && profile !== "lightweight_shuttle") ? 1 : 0,
     resources: { cpuMillicores: 75, memoryMiB: 96 },
   },
   gw: {
@@ -397,32 +406,6 @@ function buildRequirements(input: {
       hints: ["Ensure RBAC permissions allow writes in this namespace."],
     },
     {
-      id: "storage.clickhouse",
-      title: "ClickHouse persistent volume",
-      description: "ClickHouse requires durable storage class allocation.",
-      category: "storage",
-      status: "warning",
-      scope: "cluster",
-      source: "derived",
-      hints: [
-        "Confirm default StorageClass availability.",
-        "Set retention and volume sizing policy for analytics data.",
-      ],
-    },
-    {
-      id: "storage.loki",
-      title: "Loki persistent volume",
-      description: "Loki log retention depends on persistent storage.",
-      category: "storage",
-      status: "warning",
-      scope: "cluster",
-      source: "derived",
-      hints: [
-        "Provision storage for expected log ingestion rate.",
-        "Set retention windows consistent with compliance policy.",
-      ],
-    },
-    {
       id: "storage.prometheus",
       title: "Prometheus persistent volume",
       description: "Prometheus metrics history requires persistent storage.",
@@ -513,28 +496,21 @@ function buildRequirements(input: {
             ]
           : ["Use kubectl port-forward or minikube service for local access."],
     },
-    {
-      id: "scope.currentProvisioning",
-      title: "Provisioning reality",
-      description:
-        "Current Terraform/Ansible modules provision core app infrastructure; bridge runtime and observability components are represented as planned topology in this overview.",
-      category: "infrastructure",
-      status: "warning",
-      scope: "cluster",
-      source: "derived",
-      hints: ["Treat planned components as target-state design until infra modules are expanded."],
-    },
   ]
 
   return requirements
 }
 
-export function hasCompleteBridgeCrewCoverage(crewRoles: unknown): boolean {
-  const selectedRoles = uniqueCrewRoles(crewRoles)
-  if (selectedRoles.length !== BRIDGE_CREW_ROLE_ORDER.length) {
+export function hasCompleteBridgeCrewCoverage(args: {
+  deploymentProfile: DeploymentProfile
+  crewRoles: unknown
+}): boolean {
+  const requiredRoles = requiredBridgeCrewRolesForDeploymentProfile(args.deploymentProfile)
+  const selectedRoles = uniqueCrewRolesForDeploymentProfile(args.deploymentProfile, args.crewRoles)
+  if (selectedRoles.length !== requiredRoles.length) {
     return false
   }
-  return BRIDGE_CREW_ROLE_ORDER.every((role) => selectedRoles.includes(role))
+  return requiredRoles.every((role) => selectedRoles.includes(role))
 }
 
 function categoryForGroup(group: SubsystemGroup): "bridge" | "runtime" | "observability" | "other" {
@@ -551,7 +527,8 @@ function categoryForGroup(group: SubsystemGroup): "bridge" | "runtime" | "observ
 }
 
 export function buildShipDeploymentOverview(input: BuildShipDeploymentOverviewInput): ShipDeploymentOverview {
-  const selectedRoles = uniqueCrewRoles(input.crewRoles)
+  const requiredCrewRoles = requiredBridgeCrewRolesForDeploymentProfile(input.deploymentProfile)
+  const selectedRoles = uniqueCrewRolesForDeploymentProfile(input.deploymentProfile, input.crewRoles)
   const baseRequirementsEstimate =
     input.baseRequirementsEstimate ||
     estimateShipBaseRequirements({
@@ -629,9 +606,12 @@ export function buildShipDeploymentOverview(input: BuildShipDeploymentOverviewIn
         "Core app infrastructure is currently provisioned; bridge runtime and observability elements remain planned topology in this phase.",
     },
     crewPolicy: {
-      requiredRoles: [...BRIDGE_CREW_ROLE_ORDER],
+      requiredRoles: requiredCrewRoles,
       selectedRoles,
-      compliant: hasCompleteBridgeCrewCoverage(selectedRoles),
+      compliant: hasCompleteBridgeCrewCoverage({
+        deploymentProfile: input.deploymentProfile,
+        crewRoles: selectedRoles,
+      }),
     },
     infrastructureTarget: {
       deploymentProfile: input.deploymentProfile,

@@ -87,6 +87,13 @@ interface RuntimeBindingSnapshot {
   enabled: boolean
 }
 
+interface LangfuseCloudSettingsFormState {
+  langfuseCloudUrl: string
+  langfuseCloudProject: string
+  langfuseCloudPublicKey: string
+  langfuseCloudSecretKey: string
+}
+
 function asString(value: unknown): string | null {
   if (typeof value !== "string") {
     return null
@@ -101,6 +108,14 @@ function asNumber(value: unknown): number | null {
     return null
   }
   return value
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {}
+  }
+
+  return value as Record<string, unknown>
 }
 
 function codexAccountProviderLabel(provider: CodexCliAccountProvider): string {
@@ -130,6 +145,27 @@ function isGitHubProviderMissing(error: unknown): boolean {
   return message.includes("provider not found") || status === 404
 }
 
+function normalizeLangfuseCloudSettingsForForm(
+  value: unknown,
+): LangfuseCloudSettingsFormState {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {
+      langfuseCloudUrl: "",
+      langfuseCloudProject: "",
+      langfuseCloudPublicKey: "",
+      langfuseCloudSecretKey: "",
+    }
+  }
+
+  const record = value as Record<string, unknown>
+  return {
+    langfuseCloudUrl: asString(record.langfuseCloudUrl) || "",
+    langfuseCloudProject: asString(record.langfuseCloudProject) || "",
+    langfuseCloudPublicKey: asString(record.langfuseCloudPublicKey) || "",
+    langfuseCloudSecretKey: asString(record.langfuseCloudSecretKey) || "",
+  }
+}
+
 export default function SettingsPage() {
   const [connector, setConnector] = useState<CodexCliConnectorState | null>(null)
   const [isConnectorLoading, setIsConnectorLoading] = useState(true)
@@ -152,6 +188,15 @@ export default function SettingsPage() {
   const [isRuntimeLoading, setIsRuntimeLoading] = useState(true)
   const [isRuntimeUpdating, setIsRuntimeUpdating] = useState(false)
   const [runtimeNotice, setRuntimeNotice] = useState<NoticeState | null>(null)
+  const [langfuseCloudSettings, setLangfuseCloudSettings] = useState<LangfuseCloudSettingsFormState>({
+    langfuseCloudUrl: "",
+    langfuseCloudProject: "",
+    langfuseCloudPublicKey: "",
+    langfuseCloudSecretKey: "",
+  })
+  const [isLangfuseCloudSettingsLoading, setIsLangfuseCloudSettingsLoading] = useState(true)
+  const [isLangfuseCloudSettingsSaving, setIsLangfuseCloudSettingsSaving] = useState(false)
+  const [langfuseCloudNotice, setLangfuseCloudNotice] = useState<NoticeState | null>(null)
   const [copiedField, setCopiedField] = useState<"verification-url" | "one-time-code" | null>(null)
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -668,6 +713,67 @@ export default function SettingsPage() {
     }
   }, [loadRuntimeRegistry])
 
+  const loadLangfuseCloudSettings = useCallback(async () => {
+    setIsLangfuseCloudSettingsLoading(true)
+    try {
+      const response = await fetch("/api/settings/langfuse-cloud", { cache: "no-store" })
+      const payload = asRecord(await response.json().catch(() => ({})))
+      if (!response.ok) {
+        throw new Error(asString(payload.error) || "Unable to load Langfuse Cloud settings.")
+      }
+
+      setLangfuseCloudSettings(normalizeLangfuseCloudSettingsForForm(payload.settings))
+    } catch (error) {
+      console.error("Failed to load Langfuse Cloud settings:", error)
+      setLangfuseCloudNotice({
+        variant: "error",
+        text: error instanceof Error ? error.message : "Unable to load Langfuse Cloud settings.",
+      })
+    } finally {
+      setIsLangfuseCloudSettingsLoading(false)
+    }
+  }, [])
+
+  const saveLangfuseCloudSettings = useCallback(async () => {
+    setIsLangfuseCloudSettingsSaving(true)
+    setLangfuseCloudNotice(null)
+    try {
+      const response = await fetch("/api/settings/langfuse-cloud", {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          settings: {
+            langfuseCloudUrl: langfuseCloudSettings.langfuseCloudUrl.trim(),
+            langfuseCloudProject: langfuseCloudSettings.langfuseCloudProject.trim(),
+            langfuseCloudPublicKey: langfuseCloudSettings.langfuseCloudPublicKey.trim(),
+            langfuseCloudSecretKey: langfuseCloudSettings.langfuseCloudSecretKey.trim(),
+          },
+        }),
+      })
+
+      const payload = asRecord(await response.json().catch(() => ({})))
+      if (!response.ok) {
+        throw new Error(asString(payload.error) || "Unable to save Langfuse Cloud settings.")
+      }
+
+      setLangfuseCloudSettings(normalizeLangfuseCloudSettingsForForm(payload.settings))
+      setLangfuseCloudNotice({
+        variant: "success",
+        text: "Langfuse Cloud settings saved.",
+      })
+    } catch (error) {
+      console.error("Failed to save Langfuse Cloud settings:", error)
+      setLangfuseCloudNotice({
+        variant: "error",
+        text: error instanceof Error ? error.message : "Unable to save Langfuse Cloud settings.",
+      })
+    } finally {
+      setIsLangfuseCloudSettingsSaving(false)
+    }
+  }, [langfuseCloudSettings])
+
   const copyToClipboard = useCallback(async (
     value: string,
     label: string,
@@ -740,7 +846,8 @@ export default function SettingsPage() {
     void loadConnector()
     void refreshGitHubConnection()
     void loadRuntimeRegistry()
-  }, [loadConnector, refreshGitHubConnection, loadRuntimeRegistry])
+    void loadLangfuseCloudSettings()
+  }, [loadConnector, refreshGitHubConnection, loadRuntimeRegistry, loadLangfuseCloudSettings])
 
   useEffect(() => {
     if (deviceAuthFlowState !== "awaiting_authorization" || !deviceAuthFlowStartedAt) {
@@ -1214,6 +1321,126 @@ export default function SettingsPage() {
         </SurfaceCard>
 
         <CloudProvidersCard />
+
+        {langfuseCloudNotice ? <InlineNotice variant={langfuseCloudNotice.variant}>{langfuseCloudNotice.text}</InlineNotice> : null}
+        <SurfaceCard>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div className="flex items-start gap-3">
+              <div className="rounded-lg border border-slate-300 bg-slate-900 p-2 text-white dark:border-white/15">
+                <Link2 className="h-5 w-5" />
+              </div>
+              <div>
+                <p className="font-semibold text-slate-900 dark:text-slate-100">Langfuse Cloud Defaults</p>
+                <p className="text-sm text-slate-600 dark:text-slate-400">
+                  Saved defaults for Ship Yard monitoring configuration. Cloud fields are preferred and legacy langfuse* values still fallback.
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => void loadLangfuseCloudSettings()}
+              disabled={isLangfuseCloudSettingsLoading || isLangfuseCloudSettingsSaving}
+              className="inline-flex items-center gap-2 rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 hover:bg-slate-100 disabled:opacity-50 dark:border-white/15 dark:text-slate-200 dark:hover:bg-white/[0.08]"
+            >
+              {isLangfuseCloudSettingsLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+              Refresh
+            </button>
+          </div>
+
+          {isLangfuseCloudSettingsLoading ? (
+            <div className="mt-4 inline-flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Loading Langfuse Cloud settings...
+            </div>
+          ) : (
+            <>
+              <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <label>
+                  <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                    Cloud URL
+                  </span>
+                  <input
+                    type="url"
+                    value={langfuseCloudSettings.langfuseCloudUrl}
+                    onChange={(event) =>
+                      setLangfuseCloudSettings((current) => ({
+                        ...current,
+                        langfuseCloudUrl: event.target.value,
+                      }))
+                    }
+                    placeholder="https://cloud.langfuse.com"
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
+                  />
+                </label>
+                <label>
+                  <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                    Project
+                  </span>
+                  <input
+                    type="text"
+                    value={langfuseCloudSettings.langfuseCloudProject}
+                    onChange={(event) =>
+                      setLangfuseCloudSettings((current) => ({
+                        ...current,
+                        langfuseCloudProject: event.target.value,
+                      }))
+                    }
+                    placeholder="my-project"
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
+                  />
+                </label>
+                <label>
+                  <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                    Public Key
+                  </span>
+                  <input
+                    type="text"
+                    value={langfuseCloudSettings.langfuseCloudPublicKey}
+                    onChange={(event) =>
+                      setLangfuseCloudSettings((current) => ({
+                        ...current,
+                        langfuseCloudPublicKey: event.target.value,
+                      }))
+                    }
+                    placeholder="pk-lf-..."
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
+                  />
+                </label>
+                <label>
+                  <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                    Secret Key
+                  </span>
+                  <input
+                    type="password"
+                    value={langfuseCloudSettings.langfuseCloudSecretKey}
+                    onChange={(event) =>
+                      setLangfuseCloudSettings((current) => ({
+                        ...current,
+                        langfuseCloudSecretKey: event.target.value,
+                      }))
+                    }
+                    placeholder="sk-lf-..."
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/15 dark:bg-white/[0.05] dark:text-slate-100"
+                  />
+                </label>
+              </div>
+              <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
+                <p className="text-xs text-slate-600 dark:text-slate-300">
+                  Ship Yard launch uses these defaults when cloud fields are not supplied per ship.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => void saveLangfuseCloudSettings()}
+                  disabled={isLangfuseCloudSettingsSaving}
+                  className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-black disabled:opacity-50 dark:bg-white dark:text-slate-900"
+                >
+                  {isLangfuseCloudSettingsSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <KeyRound className="h-4 w-4" />}
+                  Save Defaults
+                </button>
+              </div>
+            </>
+          )}
+        </SurfaceCard>
 
         <SurfaceCard>
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">

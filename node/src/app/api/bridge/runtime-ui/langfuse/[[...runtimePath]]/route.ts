@@ -1,11 +1,21 @@
 import { NextRequest, NextResponse } from "next/server"
 import { auth } from "@/lib/auth"
 import { headers } from "next/headers"
+import { prisma } from "@/lib/prisma"
+import { resolveShipNamespace } from "@/lib/bridge/openclaw-runtime"
+import type { DeploymentProfile } from "@/lib/deployment/profile"
 
 export const dynamic = "force-dynamic"
 
 interface RuntimeUiRouteParams {
   runtimePath?: string[]
+}
+
+interface ShipSelectionRecord {
+  id: string
+  status: "pending" | "deploying" | "active" | "inactive" | "failed" | "updating"
+  deploymentProfile: DeploymentProfile
+  config: unknown
 }
 
 const COOKIE_PREFIX = "owz_langfuse_"
@@ -121,6 +131,7 @@ function buildUpstreamUrl(args: {
 function rewriteUpstreamLocation(args: {
   location: string
   upstreamBaseUrl: string
+  shipDeploymentId: string | null
 }): string {
   try {
     const upstreamBase = new URL(args.upstreamBaseUrl)
@@ -138,6 +149,9 @@ function rewriteUpstreamLocation(args: {
 
     const target = `${proxyBasePath()}${relativePath ? `/${relativePath}` : ""}`
     const query = new URLSearchParams(resolved.searchParams)
+    if (args.shipDeploymentId) {
+      query.set("shipDeploymentId", args.shipDeploymentId)
+    }
     return query.size > 0 ? `${target}?${query.toString()}` : target
   } catch {
     return args.location
@@ -283,22 +297,60 @@ function errorMessage(error: unknown): string {
   return "Unknown runtime UI proxy error."
 }
 
-function resolveLangfuseUpstreamBaseUrl(): string | null {
-  const override = asString(process.env.LANGFUSE_BASE_URL)
-  if (!override) {
+async function selectShipForRuntimeUi(args: {
+  userId: string
+  requestedShipDeploymentId: string | null
+}): Promise<ShipSelectionRecord | null> {
+  const ships = await prisma.agentDeployment.findMany({
+    where: {
+      userId: args.userId,
+      deploymentType: "ship",
+    },
+    select: {
+      id: true,
+      status: true,
+      deploymentProfile: true,
+      config: true,
+    },
+    orderBy: {
+      updatedAt: "desc",
+    },
+  })
+
+  if (ships.length === 0) {
     return null
   }
 
-  try {
-    const parsed = new URL(override)
-    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
-      return parsed.toString().replace(/\/+$/u, "")
+  if (args.requestedShipDeploymentId) {
+    const explicit = ships.find((ship) => ship.id === args.requestedShipDeploymentId)
+    if (explicit) {
+      return explicit as ShipSelectionRecord
     }
-  } catch {
-    // ignore invalid override
   }
 
-  return null
+  return (ships.find((ship) => ship.status === "active") || ships[0]) as ShipSelectionRecord
+}
+
+function resolveLangfuseUpstreamBaseUrl(args: { namespace: string | null }): string {
+  const override = asString(process.env.LANGFUSE_BASE_URL)
+  if (override) {
+    try {
+      const parsed = new URL(override)
+      if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+        return parsed.toString().replace(/\/+$/u, "")
+      }
+    } catch {
+      // ignore invalid override
+    }
+  }
+
+  const runningInKubernetes = asString(process.env.KUBERNETES_SERVICE_HOST) !== null
+  if (runningInKubernetes && args.namespace) {
+    return `http://langfuse-web.${args.namespace}.svc.cluster.local:3000`
+  }
+
+  // Local dev fallback expects `kubectl -n monitoring port-forward svc/langfuse-web 3002:3000`.
+  return "http://127.0.0.1:3002"
 }
 
 async function handleRuntimeUiProxy(
@@ -310,13 +362,16 @@ async function handleRuntimeUiProxy(
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
-  const upstreamBaseUrl = resolveLangfuseUpstreamBaseUrl()
-  if (!upstreamBaseUrl) {
-    return NextResponse.json(
-      { error: "Langfuse upstream is not configured. Set LANGFUSE_BASE_URL." },
-      { status: 404 },
-    )
+  const shipDeploymentId = asString(request.nextUrl.searchParams.get("shipDeploymentId"))
+  const selectedShip = await selectShipForRuntimeUi({
+    userId: session.user.id,
+    requestedShipDeploymentId: shipDeploymentId,
+  })
+  if (!selectedShip) {
+    return NextResponse.json({ error: "No ship deployment available." }, { status: 404 })
   }
+  const namespace = resolveShipNamespace(selectedShip.config, selectedShip.deploymentProfile)
+  const upstreamBaseUrl = resolveLangfuseUpstreamBaseUrl({ namespace })
 
   const upstreamUrl = buildUpstreamUrl({
     baseUrl: upstreamBaseUrl,
@@ -358,6 +413,7 @@ async function handleRuntimeUiProxy(
         error: "Runtime UI upstream is unreachable.",
         details: {
           upstreamUrl: upstreamUrl.toString(),
+          namespace,
           reason: errorMessage(error),
         },
       },
@@ -378,6 +434,7 @@ async function handleRuntimeUiProxy(
       rewriteUpstreamLocation({
         location,
         upstreamBaseUrl,
+        shipDeploymentId: selectedShip.id,
       }),
     )
   }
@@ -515,4 +572,3 @@ export async function DELETE(
     )
   }
 }
-

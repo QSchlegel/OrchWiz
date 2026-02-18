@@ -3,6 +3,7 @@ import test from "node:test"
 import {
   buildBridgeInspectionSummary,
   buildDeliveryMessagePreview,
+  extractInspectionDiagnosticsFromMetadata,
   extractInspectionFailureFromMetadata,
   extractInspectionLogTailsFromMetadata,
 } from "./inspection"
@@ -85,4 +86,40 @@ test("buildDeliveryMessagePreview compacts whitespace and truncates long text", 
   const truncated = buildDeliveryMessagePreview(`start ${"a".repeat(260)}`)
   assert.equal(truncated.endsWith("..."), true)
   assert.equal(truncated.length, 220)
+})
+
+test("extractInspectionDiagnosticsFromMetadata exposes root cause and kubernetes diagnostics", () => {
+  const failure = extractInspectionFailureFromMetadata({
+    deploymentStatus: "failed",
+    metadata: {
+      deploymentError: "Local provisioning failed",
+      deploymentErrorCode: "LOCAL_PROVISIONING_FAILED",
+      deploymentErrorDetails: {
+        suggestedCommands: ["kubectl get pods"],
+      },
+    },
+  })
+
+  const diagnostics = extractInspectionDiagnosticsFromMetadata({
+    failure,
+    metadata: {
+      provisioningFailureSummary: {
+        reasonCode: "orchwiz_startup_swc_mismatch",
+        title: "OrchWiz app startup failed inside cluster",
+        summary: "Missing native SWC bindings in container image.",
+        confidence: "high",
+        evidence: ["Failed to start OrchWiz server"],
+        suggestedCommands: ["docker build -f node/Dockerfile.shipyard -t orchwiz:local-dev node"],
+      },
+      kubernetesDiagnostics: {
+        appName: "orchwiz",
+        failingPods: [{ name: "orchwiz-abc", reasons: ["CrashLoopBackOff"] }],
+      },
+    },
+  })
+
+  assert.equal(diagnostics.rootCause?.reasonCode, "orchwiz_startup_swc_mismatch")
+  assert.equal(diagnostics.rootCause?.confidence, "high")
+  assert.equal(diagnostics.rootCause?.suggestedCommands.includes("kubectl get pods"), true)
+  assert.equal((diagnostics.kubernetes || {}).appName, "orchwiz")
 })

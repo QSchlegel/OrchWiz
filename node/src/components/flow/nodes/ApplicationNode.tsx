@@ -11,19 +11,25 @@ export interface ApplicationNodeData {
   deploymentProfile?: string
   provisioningMode?: string
   infrastructureKind?: string
+  healthStatus?: string
+  version?: string
+  port?: number
+  deployedAt?: string
 }
 
-const infrastructureKindLabel = (kind?: string) => {
-  switch (kind) {
-    case "kind":
-      return "KIND"
-    case "minikube":
-      return "Minikube"
-    case "existing_k8s":
-      return "Existing K8s"
-    default:
-      return kind
-  }
+const appTypeAccent: Record<string, string> = {
+  docker: "bg-blue-500",
+  nodejs: "bg-emerald-500",
+  python: "bg-amber-500",
+  static: "bg-violet-500",
+  n8n: "bg-cyan-500",
+  custom: "bg-slate-500",
+}
+
+const healthDot: Record<string, string> = {
+  healthy: "bg-emerald-400 shadow-emerald-400/50",
+  degraded: "bg-amber-400 shadow-amber-400/50 animate-pulse",
+  unhealthy: "bg-rose-400 shadow-rose-400/50",
 }
 
 const statusColor = (status: string) => {
@@ -42,41 +48,74 @@ const statusColor = (status: string) => {
   }
 }
 
+const isPulsingStatus = (status: string) => status === "deploying" || status === "updating"
+
 export function ApplicationNode({ data, selected }: NodeProps<ApplicationNodeData>) {
+  const accent = appTypeAccent[data.appType || ""] || "bg-slate-500"
+  const health = data.healthStatus ? healthDot[data.healthStatus] : undefined
+
   return (
     <div
-      className={`min-w-[185px] rounded-xl border px-3 py-2.5 backdrop-blur ${
+      className={`relative min-w-[185px] overflow-hidden rounded-xl border backdrop-blur transition-all duration-200 ${
         selected
-          ? "border-fuchsia-400/70 bg-fuchsia-500/10 shadow-[0_0_20px_rgba(217,70,239,0.35)]"
-          : "border-white/10 bg-white/5"
+          ? "border-cyan-400/70 bg-cyan-500/10 shadow-[0_0_20px_rgba(34,211,238,0.35)]"
+          : "border-white/10 bg-white/5 hover:border-white/20 hover:bg-white/[0.07]"
       }`}
     >
-      <div className="flex items-center justify-between">
-        <p className="text-sm font-semibold text-slate-100 line-clamp-2">{data.title}</p>
-        <span className={`rounded-full border px-2 py-0.5 text-[10px] uppercase ${statusColor(data.status)}`}>
-          {data.status}
-        </span>
-      </div>
-      <div className="mt-2 flex items-center justify-between text-[11px] text-slate-400">
-        {data.appType && <span>{data.appType}</span>}
-        {data.nodeType && <span>{data.nodeType}</span>}
-      </div>
-      {data.shipName && (
-        <div className="mt-1 text-[10px] text-cyan-300">
-          Ship: {data.shipName}
+      {/* App-type accent bar */}
+      <div className={`absolute left-0 top-1.5 bottom-1.5 w-[3px] rounded-r-sm ${accent} ${selected ? "opacity-100" : "opacity-60"}`} />
+
+      <div className="pl-4 pr-3 py-2.5">
+        {/* Header row: title + status */}
+        <div className="flex items-center justify-between gap-2">
+          <p className="truncate text-sm font-semibold text-slate-100">{data.title}</p>
+          <div className="flex items-center gap-1.5">
+            {health && (
+              <span className={`h-2 w-2 shrink-0 rounded-full shadow-[0_0_6px] ${health}`} />
+            )}
+            <span
+              className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] uppercase ${statusColor(data.status)} ${isPulsingStatus(data.status) ? "animate-pulse" : ""}`}
+            >
+              {data.status}
+            </span>
+          </div>
         </div>
-      )}
-      {(data.deploymentProfile || data.provisioningMode || data.infrastructureKind) && (
-        <div className="mt-1 text-[10px] text-slate-500">
-          {data.deploymentProfile && <span>{data.deploymentProfile}</span>}
-          {data.provisioningMode && <span className="ml-2">{data.provisioningMode}</span>}
-          {data.infrastructureKind && (
-            <span className="ml-2">{infrastructureKindLabel(data.infrastructureKind)}</span>
+
+        {/* Info row: app type + node type */}
+        <div className="mt-1.5 flex items-center gap-2 text-[11px] text-slate-400">
+          {data.appType && <span className="capitalize">{data.appType}</span>}
+          {data.nodeType && (
+            <>
+              <span className="text-slate-600">|</span>
+              <span>{data.nodeType}</span>
+            </>
           )}
         </div>
-      )}
-      <Handle type="target" position={Position.Left} style={{ opacity: 0 }} />
-      <Handle type="source" position={Position.Right} style={{ opacity: 0 }} />
+
+        {/* Badges row: version + port */}
+        {(data.version || data.port) && (
+          <div className="mt-1.5 flex items-center gap-2">
+            {data.version && (
+              <span className="readout rounded border border-slate-500/30 bg-slate-500/10 px-1.5 py-0.5 text-slate-300">
+                v{data.version}
+              </span>
+            )}
+            {data.port && (
+              <span className="font-mono text-[10px] text-slate-500">:{data.port}</span>
+            )}
+          </div>
+        )}
+
+        {/* Ship name */}
+        {data.shipName && (
+          <div className="mt-1 text-[10px] text-cyan-300/80">
+            {data.shipName}
+          </div>
+        )}
+      </div>
+
+      <Handle type="target" position={Position.Top} style={{ opacity: 0 }} />
+      <Handle type="source" position={Position.Bottom} style={{ opacity: 0 }} />
     </div>
   )
 }

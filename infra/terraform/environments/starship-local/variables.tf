@@ -68,6 +68,13 @@ variable "better_auth_secret" {
   sensitive   = true
 }
 
+variable "runtime_jwt_secret" {
+  type        = string
+  description = "ORCHWIZ_RUNTIME_JWT_SECRET value (defaults to better_auth_secret when empty)"
+  sensitive   = true
+  default     = ""
+}
+
 variable "better_auth_url" {
   type        = string
   description = "BETTER_AUTH_URL"
@@ -141,6 +148,17 @@ variable "openclaw_gateway_token" {
   description = "Token seed used to derive per-station OpenClaw gateway tokens when openclaw_gateway_tokens is empty."
   sensitive   = true
   default     = "orchwiz-openclaw-dev-token"
+}
+
+variable "openclaw_station_count" {
+  type        = number
+  description = "Number of OpenClaw stations to deploy locally (1-6)."
+  default     = 6
+
+  validation {
+    condition     = var.openclaw_station_count >= 1 && var.openclaw_station_count <= 6 && floor(var.openclaw_station_count) == var.openclaw_station_count
+    error_message = "openclaw_station_count must be an integer between 1 and 6."
+  }
 }
 
 variable "openclaw_gateway_tokens" {
@@ -261,7 +279,7 @@ variable "enable_prometheus" {
 }
 variable "prometheus_chart_version" {
   type    = string
-  default = "31.0.0"
+  default = "28.9.1"
 }
 variable "prometheus_ingress_enabled" {
   type    = bool

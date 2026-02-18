@@ -30,6 +30,13 @@ export function sanitizeDeploymentUpdateData(body: Record<string, unknown>): Rec
   return updateData
 }
 
+function asRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {}
+  }
+  return value as Record<string, unknown>
+}
+
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -84,15 +91,16 @@ export async function PUT(
     }
 
     const { id } = await params
-    const body = await request.json()
-    const updateData = sanitizeDeploymentUpdateData(body as Record<string, unknown>) as Record<string, any>
+    const body = await request.json().catch(() => ({}))
+    const bodyRecord = asRecord(body)
+    const updateData = sanitizeDeploymentUpdateData(bodyRecord) as Record<string, any>
 
     const shouldNormalizeProfileInput =
-      "deploymentProfile" in body ||
-      "provisioningMode" in body ||
-      "nodeType" in body ||
-      "advancedNodeTypeOverride" in body ||
-      "config" in body
+      "deploymentProfile" in bodyRecord ||
+      "provisioningMode" in bodyRecord ||
+      "nodeType" in bodyRecord ||
+      "advancedNodeTypeOverride" in bodyRecord ||
+      "config" in bodyRecord
 
     if (shouldNormalizeProfileInput) {
       const existingDeployment = await prisma.agentDeployment.findFirst({
@@ -105,6 +113,7 @@ export async function PUT(
           provisioningMode: true,
           nodeType: true,
           config: true,
+          metadata: true,
         },
       })
 
@@ -113,11 +122,11 @@ export async function PUT(
       }
 
       const normalizedProfile = normalizeDeploymentProfileInput({
-        deploymentProfile: body.deploymentProfile ?? existingDeployment.deploymentProfile,
-        provisioningMode: body.provisioningMode ?? existingDeployment.provisioningMode,
-        nodeType: body.nodeType ?? existingDeployment.nodeType,
-        advancedNodeTypeOverride: body.advancedNodeTypeOverride,
-        config: body.config ?? existingDeployment.config,
+        deploymentProfile: bodyRecord.deploymentProfile ?? existingDeployment.deploymentProfile,
+        provisioningMode: bodyRecord.provisioningMode ?? existingDeployment.provisioningMode,
+        nodeType: bodyRecord.nodeType ?? existingDeployment.nodeType,
+        advancedNodeTypeOverride: bodyRecord.advancedNodeTypeOverride,
+        config: bodyRecord.config ?? existingDeployment.config,
       })
 
       updateData.deploymentProfile = normalizedProfile.deploymentProfile
@@ -126,8 +135,8 @@ export async function PUT(
       updateData.config = normalizedProfile.config
     }
 
-    if (body.deploymentType === "agent" || body.deploymentType === "ship") {
-      updateData.deploymentType = parseDeploymentType(body.deploymentType)
+    if (bodyRecord.deploymentType === "agent" || bodyRecord.deploymentType === "ship") {
+      updateData.deploymentType = parseDeploymentType(bodyRecord.deploymentType)
     }
 
     const deployment = await prisma.agentDeployment.update({

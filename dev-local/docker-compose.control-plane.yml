@@ -9,6 +9,8 @@ services:
     image: orchwiz-control-plane:latest
     container_name: orchwiz-control-plane-dev-local
     restart: unless-stopped
+    mem_limit: 1536m
+    cpus: "1.50"
     depends_on:
       postgres:
         condition: service_healthy

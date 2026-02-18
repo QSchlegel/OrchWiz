@@ -49,6 +49,10 @@ export interface ApplicationInput {
   deploymentProfile?: string
   provisioningMode?: string
   infrastructureKind?: string
+  healthStatus?: string
+  version?: string
+  port?: number
+  deployedAt?: string
 }
 
 export interface AnchorInput {
@@ -149,6 +153,10 @@ export function mapApplicationsToNodes(applications: ApplicationInput[], selecte
       deploymentProfile: app.deploymentProfile,
       provisioningMode: app.provisioningMode,
       infrastructureKind: app.infrastructureKind,
+      healthStatus: app.healthStatus,
+      version: app.version,
+      port: app.port,
+      deployedAt: app.deployedAt,
     },
     position: { x: 0, y: 0 },
     selected: app.id === selectedId,
@@ -391,6 +399,63 @@ export function buildSubsystemEdgesFiltered(
           color: isConnected
             ? (edgeStyleForType[e.edgeType] || edgeStyleForType.data).stroke
             : "var(--flow-edge-dim-marker)",
+        },
+      }
+    })
+}
+
+// ── Application topology edge builder ─────────────────
+
+export type AppEdgeType = "deployment" | "health" | "data"
+
+export interface AppTopologyEdgeInput {
+  id: string
+  source: string
+  target: string
+  edgeType: AppEdgeType
+  label?: string
+  animated?: boolean
+}
+
+const appEdgeStyleForType: Record<AppEdgeType, { stroke: string; strokeWidth: number; strokeDasharray?: string }> = {
+  deployment: { stroke: "rgba(34, 211, 238, 0.72)", strokeWidth: 1.9 },
+  health: { stroke: "rgba(52, 211, 153, 0.65)", strokeWidth: 1.5, strokeDasharray: "5 3" },
+  data: { stroke: "rgba(148, 163, 184, 0.45)", strokeWidth: 1.2 },
+}
+
+export function buildApplicationTopologyEdges(
+  edges: AppTopologyEdgeInput[],
+  visibleEdgeTypes?: Set<string>,
+  highlightNodeId?: string | null,
+): Edge[] {
+  return edges
+    .filter((e) => !visibleEdgeTypes || visibleEdgeTypes.has(e.edgeType))
+    .map((e) => {
+      const baseStyle = appEdgeStyleForType[e.edgeType] || appEdgeStyleForType.deployment
+      const isConnected = !highlightNodeId || e.source === highlightNodeId || e.target === highlightNodeId
+
+      const style = isConnected
+        ? baseStyle
+        : {
+            ...baseStyle,
+            stroke: baseStyle.stroke.replace(/,\s*[\d.]+\)$/, ", 0.18)"),
+            strokeWidth: Math.max(1, baseStyle.strokeWidth - 0.6),
+          }
+
+      return {
+        id: e.id,
+        source: e.source,
+        target: e.target,
+        type: "smoothstep",
+        animated: isConnected && !!e.animated,
+        label: isConnected ? e.label : undefined,
+        labelStyle: edgeLabelStyle,
+        labelBgStyle: edgeLabelBgStyle,
+        labelBgPadding: edgeLabelBgPadding,
+        style,
+        markerEnd: {
+          type: MarkerType.ArrowClosed,
+          color: isConnected ? baseStyle.stroke : "var(--flow-edge-dim-marker)",
         },
       }
     })

@@ -3,7 +3,13 @@ import { accessSync, constants, existsSync, lstatSync, statSync } from "node:fs"
 import { delimiter, join, resolve } from "node:path"
 import { promisify } from "node:util"
 import { encodeOpenClawContextBundle, type OpenClawContextBundle } from "./openclaw-context"
-import type { InfrastructureConfig, ProvisioningMode } from "./profile"
+import {
+  isLightweightShuttleProfile,
+  isLocalDeploymentProfile,
+  type DeploymentProfile,
+  type InfrastructureConfig,
+  type ProvisioningMode,
+} from "./profile"
 import type {
   LocalBootstrapFailure,
   LocalBootstrapFailureDetails,
@@ -111,6 +117,7 @@ interface ResolvedInfrastructurePaths {
 }
 
 interface LocalBootstrapInput {
+  deploymentProfile?: DeploymentProfile
   infrastructure: InfrastructureConfig
   provisioningMode: ProvisioningMode
   saneBootstrap: boolean
@@ -149,6 +156,15 @@ interface TerraformOutputShape {
   runtime_ui_openclaw_urls?: TerraformOutputEntry
   runtime_ui_kubeview_url?: TerraformOutputEntry
   runtime_edge_port_forward_command?: TerraformOutputEntry
+  monitoring_namespace?: TerraformOutputEntry
+  grafana_enabled?: TerraformOutputEntry
+  grafana_url?: TerraformOutputEntry
+  prometheus_enabled?: TerraformOutputEntry
+  prometheus_url?: TerraformOutputEntry
+  loki_enabled?: TerraformOutputEntry
+  clickhouse_enabled?: TerraformOutputEntry
+  langfuse_enabled?: TerraformOutputEntry
+  langfuse_url?: TerraformOutputEntry
 }
 
 interface KubeviewBootstrapMetadata {
@@ -170,6 +186,21 @@ interface RuntimeUiBootstrapMetadata {
   portForwardCommand: string | null
 }
 
+interface ObservabilityServiceBootstrapMetadata {
+  enabled: boolean | null
+  url?: string | null
+  source: "terraform_output" | "fallback"
+}
+
+interface ObservabilityBootstrapMetadata {
+  monitoringNamespace: string | null
+  grafana: ObservabilityServiceBootstrapMetadata
+  prometheus: ObservabilityServiceBootstrapMetadata
+  loki: ObservabilityServiceBootstrapMetadata
+  clickhouse: ObservabilityServiceBootstrapMetadata
+  langfuse: ObservabilityServiceBootstrapMetadata
+}
+
 const DEFAULT_OPENCLAW_TARGET_DEPLOYMENTS = [
   "openclaw-xo",
   "openclaw-ops",
@@ -180,11 +211,71 @@ const DEFAULT_OPENCLAW_TARGET_DEPLOYMENTS = [
   "openclaw-gateway",
   "openclaw-worker",
 ] as const
+const LIGHTWEIGHT_OPENCLAW_TARGET_DEPLOYMENTS = [
+  "openclaw-xo",
+  "openclaw-gateway",
+  "openclaw-worker",
+] as const
+const LIGHTWEIGHT_OPENCLAW_STATION_COUNT = "1"
 const OPENCLAW_CONTEXT_ENV_KEY = "ORCHWIZ_BRIDGE_CONTEXT_B64"
 const OPENCLAW_CONTEXT_SCHEMA_ENV_KEY = "ORCHWIZ_BRIDGE_CONTEXT_SCHEMA"
 const OPENCLAW_CONTEXT_SOURCE_ENV_KEY = "ORCHWIZ_BRIDGE_CONTEXT_SOURCE"
 const OPENCLAW_CONTEXT_ENCODING_ENV_KEY = "ORCHWIZ_BRIDGE_CONTEXT_ENCODING"
 const OPENCLAW_CONTEXT_ENCODING_VALUE = "base64-json"
+
+const LIGHTWEIGHT_APP_ENV_OVERRIDES: Readonly<Record<string, string>> = {
+  ORCHWIZ_BOOTSTRAP_PROFILE: "lightweight_shuttle",
+  OPENCLAW_GATEWAY_URL: "http://openclaw-xo:18789",
+  OPENCLAW_GATEWAY_URL_TEMPLATE: "http://openclaw-xo:18789",
+  ENABLE_AGENT_HARNESS_POD: "true",
+  RUNTIME_INTELLIGENCE_POLICY_ENABLED: "true",
+  WALLET_ENCLAVE_ENABLED: "true",
+  WALLET_ENCLAVE_REQUIRE_PRIVATE_MEMORY_ENCRYPTION: "true",
+  WALLET_ENCLAVE_REQUIRE_BRIDGE_SIGNATURES: "true",
+}
+
+const PROVISIONING_HIGH_SIGNAL_PATTERNS: RegExp[] = [
+  /\bfatal:/iu,
+  /\berror:\b/iu,
+  /failed! =>/iu,
+  /waiting for rollout to finish/iu,
+  /crashloopbackoff/iu,
+  /imagepullbackoff/iu,
+  /errimagepull/iu,
+  /qschlegel\/orchwiz-provider-proxy/iu,
+  /403 forbidden/iu,
+  /failed to start orchwiz server/iu,
+  /turbo\.createproject/iu,
+]
+
+type ProvisioningFailureConfidence = "low" | "medium" | "high"
+
+interface ProvisioningFailureSummary {
+  reasonCode: string
+  title: string
+  summary: string
+  confidence: ProvisioningFailureConfidence
+  evidence: string[]
+  suggestedCommands: string[]
+}
+
+interface KubernetesFailurePodDiagnostics {
+  name: string
+  phase: string
+  ready: string
+  restartCount: number
+  reasons: string[]
+}
+
+interface KubernetesFailureDiagnostics {
+  checkedAt: string
+  context: string
+  namespace: string
+  appName: string
+  rolloutStatus: string | null
+  failingPods: KubernetesFailurePodDiagnostics[]
+  appLogHighlights: string[]
+}
 
 function parseTimeoutMs(value: string | undefined, defaultTimeoutMs: number): number {
   const parsed = Number.parseInt(value || String(defaultTimeoutMs), 10)
@@ -210,6 +301,21 @@ function parseBooleanEnv(value: string | undefined, fallback: boolean): boolean 
   return fallback
 }
 
+function resolveDeploymentProfile(input: LocalBootstrapInput): DeploymentProfile {
+  return input.deploymentProfile || "local_starship_build"
+}
+
+function isLightweightBootstrapProfile(input: LocalBootstrapInput): boolean {
+  return isLightweightShuttleProfile(resolveDeploymentProfile(input))
+}
+
+function lightweightAppEnvOverrides(input: LocalBootstrapInput): Record<string, string> | null {
+  if (!isLightweightBootstrapProfile(input)) {
+    return null
+  }
+  return { ...LIGHTWEIGHT_APP_ENV_OVERRIDES }
+}
+
 function resolvePathFromRepoRoot(repoRoot: string, value: string): string {
   const trimmed = value.trim()
   if (!trimmed) {
@@ -229,6 +335,31 @@ function outputTail(result: { stdout?: string; stderr?: string }): string {
     return combined
   }
   return combined.slice(-MAX_OUTPUT_CHARS)
+}
+
+function normalizeLogLine(raw: string): string {
+  return raw.replace(/\u001b\[[0-?]*[ -/]*[@-~]/gu, "").replace(/\s+/gu, " ").trim()
+}
+
+function extractProvisioningHighSignalLines(output: string, maxLines = 8): string[] {
+  if (!output.trim()) {
+    return []
+  }
+
+  const lines = output
+    .split("\n")
+    .map((line) => normalizeLogLine(line))
+    .filter(Boolean)
+
+  const highlights = lines.filter((line) =>
+    PROVISIONING_HIGH_SIGNAL_PATTERNS.some((pattern) => pattern.test(line)),
+  )
+
+  if (highlights.length > 0) {
+    return [...new Set(highlights)].slice(0, maxLines)
+  }
+
+  return lines.slice(-Math.min(maxLines, lines.length))
 }
 
 function asBoolean(value: unknown): boolean | null {
@@ -271,6 +402,35 @@ function fallbackLocalRuntimeUiMetadata(): RuntimeUiBootstrapMetadata {
       source: "fallback",
     },
     portForwardCommand: null,
+  }
+}
+
+function fallbackLocalObservabilityMetadata(): ObservabilityBootstrapMetadata {
+  return {
+    monitoringNamespace: null,
+    grafana: {
+      enabled: null,
+      url: null,
+      source: "fallback",
+    },
+    prometheus: {
+      enabled: null,
+      url: null,
+      source: "fallback",
+    },
+    loki: {
+      enabled: null,
+      source: "fallback",
+    },
+    clickhouse: {
+      enabled: null,
+      source: "fallback",
+    },
+    langfuse: {
+      enabled: null,
+      url: null,
+      source: "fallback",
+    },
   }
 }
 
@@ -386,6 +546,75 @@ async function resolveLocalRuntimeUiMetadata(args: {
       source: "terraform_output",
     },
     portForwardCommand: portForwardCommand || null,
+  }
+}
+
+async function resolveLocalObservabilityMetadata(args: {
+  runtime: LocalBootstrapRuntime
+  terraformEnvDirAbsolute: string
+  timeoutMs: number
+}): Promise<ObservabilityBootstrapMetadata> {
+  const fallback = fallbackLocalObservabilityMetadata()
+
+  const outputResult = await args.runtime.runCommand(
+    "terraform",
+    ["-chdir", args.terraformEnvDirAbsolute, "output", "-json"],
+    {
+      timeoutMs: args.timeoutMs,
+    },
+  )
+
+  if (!outputResult.ok) {
+    return fallback
+  }
+
+  let parsedOutput: TerraformOutputShape = {}
+  try {
+    parsedOutput = JSON.parse(outputResult.stdout) as TerraformOutputShape
+  } catch {
+    return fallback
+  }
+
+  const hasObservabilityOutputs = (
+    parsedOutput.monitoring_namespace !== undefined
+    || parsedOutput.grafana_enabled !== undefined
+    || parsedOutput.grafana_url !== undefined
+    || parsedOutput.prometheus_enabled !== undefined
+    || parsedOutput.prometheus_url !== undefined
+    || parsedOutput.loki_enabled !== undefined
+    || parsedOutput.clickhouse_enabled !== undefined
+    || parsedOutput.langfuse_enabled !== undefined
+    || parsedOutput.langfuse_url !== undefined
+  )
+  if (!hasObservabilityOutputs) {
+    return fallback
+  }
+
+  return {
+    monitoringNamespace: asNonEmptyString(parsedOutput.monitoring_namespace?.value),
+    grafana: {
+      enabled: asBoolean(parsedOutput.grafana_enabled?.value),
+      url: asNonEmptyString(parsedOutput.grafana_url?.value),
+      source: "terraform_output",
+    },
+    prometheus: {
+      enabled: asBoolean(parsedOutput.prometheus_enabled?.value),
+      url: asNonEmptyString(parsedOutput.prometheus_url?.value),
+      source: "terraform_output",
+    },
+    loki: {
+      enabled: asBoolean(parsedOutput.loki_enabled?.value),
+      source: "terraform_output",
+    },
+    clickhouse: {
+      enabled: asBoolean(parsedOutput.clickhouse_enabled?.value),
+      source: "terraform_output",
+    },
+    langfuse: {
+      enabled: asBoolean(parsedOutput.langfuse_enabled?.value),
+      url: asNonEmptyString(parsedOutput.langfuse_url?.value),
+      source: "terraform_output",
+    },
   }
 }
 
@@ -906,12 +1135,17 @@ function suggestedContextCommands(kind: InfrastructureConfig["kind"], context: s
   ]
 }
 
-function parseOpenClawTargetDeployments(raw: string | undefined): string[] {
-  if (!raw || raw.trim().length === 0) {
-    return [...DEFAULT_OPENCLAW_TARGET_DEPLOYMENTS]
+function parseOpenClawTargetDeployments(args: {
+  raw: string | undefined
+  input: LocalBootstrapInput
+}): string[] {
+  if (!args.raw || args.raw.trim().length === 0) {
+    return isLightweightBootstrapProfile(args.input)
+      ? [...LIGHTWEIGHT_OPENCLAW_TARGET_DEPLOYMENTS]
+      : [...DEFAULT_OPENCLAW_TARGET_DEPLOYMENTS]
   }
 
-  return raw
+  return args.raw
     .split(",")
     .map((entry) => entry.trim())
     .filter(Boolean)
@@ -961,7 +1195,10 @@ async function injectOpenClawContextBundle(
     }
   }
 
-  const targetDeployments = parseOpenClawTargetDeployments(runtime.env.OPENCLAW_TARGET_DEPLOYMENTS)
+  const targetDeployments = parseOpenClawTargetDeployments({
+    raw: runtime.env.OPENCLAW_TARGET_DEPLOYMENTS,
+    input,
+  })
   if (targetDeployments.length === 0) {
     return {
       ok: true,
@@ -1081,7 +1318,19 @@ function localShipyardAutoCreateKindClusterEnabled(
     return false
   }
 
-  return parseBooleanEnv(runtime.env.LOCAL_SHIPYARD_AUTO_CREATE_KIND_CLUSTER, true)
+  return parseBooleanEnv(runtime.env.LOCAL_SHIPYARD_AUTO_CREATE_KIND_CLUSTER, false)
+}
+
+function localShipyardObservabilityStackEnabled(
+  input: LocalBootstrapInput,
+  runtime: LocalBootstrapRuntime,
+): boolean {
+  const deploymentProfile = resolveDeploymentProfile(input)
+  if (!isLocalDeploymentProfile(deploymentProfile)) {
+    return true
+  }
+
+  return parseBooleanEnv(runtime.env.LOCAL_SHIPYARD_ENABLE_OBSERVABILITY_STACK, false)
 }
 
 function localShipyardForceRebuildEnabled(runtime: LocalBootstrapRuntime): boolean {
@@ -1099,6 +1348,296 @@ function kindClusterNameFromContext(kubeContext: string): string {
     return trimmed.slice("kind-".length)
   }
   return trimmed || "orchwiz"
+}
+
+function asRecordValue(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null
+  }
+  return value as Record<string, unknown>
+}
+
+function asArrayValue<T = unknown>(value: unknown): T[] {
+  return Array.isArray(value) ? (value as T[]) : []
+}
+
+function asNumberValue(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return null
+  }
+  return value
+}
+
+function uniqueNonEmptyCommands(commands: string[]): string[] {
+  return [...new Set(commands.map((entry) => entry.trim()).filter(Boolean))]
+}
+
+async function collectKubernetesFailureDiagnostics(args: {
+  runtime: LocalBootstrapRuntime
+  infrastructure: InfrastructureConfig
+  appName: string
+}): Promise<KubernetesFailureDiagnostics | null> {
+  if (!args.runtime.commandExists("kubectl")) {
+    return null
+  }
+
+  const podsResult = await args.runtime.runCommand(
+    "kubectl",
+    kubectlArgs(args.infrastructure, ["get", "pods", "-o", "json"]),
+    { timeoutMs: CONTEXT_CHECK_TIMEOUT_MS },
+  )
+
+  if (!podsResult.ok) {
+    return {
+      checkedAt: new Date().toISOString(),
+      context: args.infrastructure.kubeContext,
+      namespace: args.infrastructure.namespace,
+      appName: args.appName,
+      rolloutStatus: null,
+      failingPods: [],
+      appLogHighlights: extractProvisioningHighSignalLines(outputTail(podsResult)),
+    }
+  }
+
+  let podsPayload: Record<string, unknown> | null = null
+  try {
+    podsPayload = JSON.parse(podsResult.stdout) as Record<string, unknown>
+  } catch {
+    podsPayload = null
+  }
+
+  const podItems = asArrayValue<Record<string, unknown>>(asRecordValue(podsPayload)?.items)
+  const podDiagnostics = podItems
+    .map((item) => {
+      const pod = asRecordValue(item)
+      const metadata = asRecordValue(pod?.metadata)
+      const status = asRecordValue(pod?.status)
+      const podName = asNonEmptyString(metadata?.name)
+      if (!podName) {
+        return null
+      }
+
+      const phase = asNonEmptyString(status?.phase) || "Unknown"
+      const podReason = asNonEmptyString(status?.reason)
+      const containerStatuses = asArrayValue<Record<string, unknown>>(status?.containerStatuses)
+      const readyContainers = containerStatuses.filter((entry) => {
+        const record = asRecordValue(entry)
+        return record?.ready === true
+      }).length
+      const totalContainers = containerStatuses.length
+      const restartCount = containerStatuses.reduce((sum, entry) => {
+        const record = asRecordValue(entry)
+        const restart = asNumberValue(record?.restartCount) || 0
+        return sum + restart
+      }, 0)
+
+      const waitingReasons: string[] = []
+      for (const containerStatus of containerStatuses) {
+        const statusRecord = asRecordValue(containerStatus)
+        const state = asRecordValue(statusRecord?.state)
+        const waiting = asRecordValue(state?.waiting)
+        const waitingReason = asNonEmptyString(waiting?.reason)
+        if (waitingReason) {
+          waitingReasons.push(waitingReason)
+        }
+        const lastState = asRecordValue(statusRecord?.lastState)
+        const terminated = asRecordValue(lastState?.terminated)
+        const terminatedReason = asNonEmptyString(terminated?.reason)
+        if (terminatedReason) {
+          waitingReasons.push(terminatedReason)
+        }
+      }
+
+      if (podReason) {
+        waitingReasons.push(podReason)
+      }
+
+      const reasons = [...new Set(waitingReasons)]
+      const isNotReady =
+        phase !== "Running"
+        || (totalContainers > 0 && readyContainers < totalContainers)
+        || reasons.some((reason) => {
+          const normalized = reason.toLowerCase()
+          return normalized.includes("crashloop")
+            || normalized.includes("imagepull")
+            || normalized.includes("errimagepull")
+            || normalized.includes("error")
+        })
+
+      if (!isNotReady) {
+        return null
+      }
+
+      return {
+        name: podName,
+        phase,
+        ready: `${readyContainers}/${totalContainers}`,
+        restartCount,
+        reasons,
+      } satisfies KubernetesFailurePodDiagnostics
+    })
+    .filter((entry): entry is KubernetesFailurePodDiagnostics => entry !== null)
+    .sort((left, right) => right.restartCount - left.restartCount)
+
+  const rolloutResult = await args.runtime.runCommand(
+    "kubectl",
+    kubectlArgs(args.infrastructure, ["rollout", "status", `deployment/${args.appName}`, "--timeout=5s"]),
+    { timeoutMs: CONTEXT_CHECK_TIMEOUT_MS },
+  )
+  const rolloutStatus = outputTail(rolloutResult)
+
+  const appPod = podDiagnostics.find((pod) => pod.name.startsWith(`${args.appName}-`))
+  let appLogHighlights: string[] = []
+  if (appPod) {
+    const appLogsResult = await args.runtime.runCommand(
+      "kubectl",
+      kubectlArgs(args.infrastructure, ["logs", appPod.name, "--tail=200"]),
+      { timeoutMs: CONTEXT_CHECK_TIMEOUT_MS },
+    )
+    appLogHighlights = extractProvisioningHighSignalLines(outputTail(appLogsResult))
+  }
+
+  return {
+    checkedAt: new Date().toISOString(),
+    context: args.infrastructure.kubeContext,
+    namespace: args.infrastructure.namespace,
+    appName: args.appName,
+    rolloutStatus: rolloutResult.ok ? null : rolloutStatus,
+    failingPods: podDiagnostics,
+    appLogHighlights,
+  }
+}
+
+function summarizeProvisioningFailure(args: {
+  output: string
+  infrastructure: InfrastructureConfig
+  appName: string
+  kubernetesDiagnostics: KubernetesFailureDiagnostics | null
+}): ProvisioningFailureSummary {
+  const outputLower = args.output.toLowerCase()
+  const evidence = extractProvisioningHighSignalLines(args.output)
+  const kubeReasons = args.kubernetesDiagnostics
+    ? args.kubernetesDiagnostics.failingPods.flatMap((pod) => pod.reasons.map((reason) => reason.toLowerCase()))
+    : []
+  const appLogLower = (args.kubernetesDiagnostics?.appLogHighlights || []).map((line) => line.toLowerCase())
+
+  const hasImagePull = kubeReasons.some((reason) => reason.includes("imagepull") || reason.includes("errimagepull"))
+  const hasCrashLoop = kubeReasons.some((reason) => reason.includes("crashloop"))
+  const hasProviderProxyImageForbidden =
+    outputLower.includes("qschlegel/orchwiz-provider-proxy") && outputLower.includes("403 forbidden")
+  const hasSwcMismatch = (
+    evidence.some((line) => /turbo\.createproject|swc-linux-arm64/iu.test(line))
+    || appLogLower.some((line) => line.includes("turbo.createproject") || line.includes("swc-linux-arm64"))
+  )
+  const waitingForRollout = outputLower.includes("waiting for rollout to finish")
+
+  if (hasSwcMismatch) {
+    return {
+      reasonCode: "orchwiz_startup_swc_mismatch",
+      title: "OrchWiz app startup failed inside cluster",
+      summary: "The app pod crashed during Next.js startup due to missing native SWC bindings in the container image.",
+      confidence: "high",
+      evidence,
+      suggestedCommands: [
+        `kubectl --context ${args.infrastructure.kubeContext} -n ${args.infrastructure.namespace} logs deploy/${args.appName} --tail=120`,
+        "docker build -f node/Dockerfile.shipyard -t orchwiz:local-dev node",
+      ],
+    }
+  }
+
+  if (hasImagePull) {
+    if (hasProviderProxyImageForbidden) {
+      return {
+        reasonCode: "provider_proxy_image_forbidden",
+        title: "Provider-proxy image could not be pulled",
+        summary: "Kubernetes cannot pull ghcr.io/qschlegel/orchwiz-provider-proxy:latest (403 Forbidden).",
+        confidence: "high",
+        evidence,
+        suggestedCommands: [
+          "docker build -f services/provider-proxy/Dockerfile -t orchwiz-provider-proxy:local-dev services/provider-proxy",
+          "kind load docker-image orchwiz-provider-proxy:local-dev --name orchwiz",
+          "Re-run launch with TF_VAR_provider_proxy_image=orchwiz-provider-proxy:local-dev",
+        ],
+      }
+    }
+
+    return {
+      reasonCode: "kubernetes_image_pull_failure",
+      title: "Kubernetes failed to pull one or more images",
+      summary: "At least one pod is in ImagePullBackOff/ErrImagePull, so rollout cannot complete.",
+      confidence: "high",
+      evidence,
+      suggestedCommands: [
+        `kubectl --context ${args.infrastructure.kubeContext} -n ${args.infrastructure.namespace} get pods`,
+        `kubectl --context ${args.infrastructure.kubeContext} -n ${args.infrastructure.namespace} describe pod <pod-name>`,
+      ],
+    }
+  }
+
+  if (hasCrashLoop || waitingForRollout) {
+    return {
+      reasonCode: "kubernetes_rollout_not_ready",
+      title: "Kubernetes rollout did not become ready",
+      summary: "Terraform waited for deployment readiness, but at least one pod failed readiness or restarted.",
+      confidence: hasCrashLoop ? "high" : "medium",
+      evidence,
+      suggestedCommands: [
+        `kubectl --context ${args.infrastructure.kubeContext} -n ${args.infrastructure.namespace} rollout status deployment/${args.appName} --timeout=300s`,
+        `kubectl --context ${args.infrastructure.kubeContext} -n ${args.infrastructure.namespace} get pods`,
+        `kubectl --context ${args.infrastructure.kubeContext} -n ${args.infrastructure.namespace} logs deploy/${args.appName} --tail=120`,
+      ],
+    }
+  }
+
+  return {
+    reasonCode: "local_provisioning_failed",
+    title: "Local provisioning failed",
+    summary: "Ansible/Terraform returned a non-zero exit code.",
+    confidence: "low",
+    evidence,
+    suggestedCommands: [],
+  }
+}
+
+async function analyzeProvisioningFailure(args: {
+  runtime: LocalBootstrapRuntime
+  infrastructure: InfrastructureConfig
+  appName: string
+  output: string
+}): Promise<{
+  summary: ProvisioningFailureSummary
+  kubernetesDiagnostics: KubernetesFailureDiagnostics | null
+  suggestedCommands: string[]
+}> {
+  const kubernetesDiagnostics = await collectKubernetesFailureDiagnostics({
+    runtime: args.runtime,
+    infrastructure: args.infrastructure,
+    appName: args.appName,
+  })
+  const summary = summarizeProvisioningFailure({
+    output: args.output,
+    infrastructure: args.infrastructure,
+    appName: args.appName,
+    kubernetesDiagnostics,
+  })
+
+  const diagnosticCommands = kubernetesDiagnostics?.failingPods.length
+    ? [
+        `kubectl --context ${args.infrastructure.kubeContext} -n ${args.infrastructure.namespace} get pods`,
+        ...kubernetesDiagnostics.failingPods.slice(0, 2).map(
+          (pod) => `kubectl --context ${args.infrastructure.kubeContext} -n ${args.infrastructure.namespace} describe pod ${pod.name}`,
+        ),
+      ]
+    : []
+
+  return {
+    summary,
+    kubernetesDiagnostics,
+    suggestedCommands: uniqueNonEmptyCommands([
+      ...summary.suggestedCommands,
+      ...diagnosticCommands,
+    ]),
+  }
 }
 
 async function prepareLocalKindAppImage(args: {
@@ -1327,7 +1866,7 @@ function derivedProvisioningSuggestions(args: {
   infrastructure: InfrastructureConfig
   output: string
 }): string[] {
-  const suggestions = [args.baseCommand]
+  const suggestions = args.baseCommand.trim().length > 0 ? [args.baseCommand] : []
   const lower = args.output.toLowerCase()
 
   if (
@@ -1362,6 +1901,29 @@ function derivedProvisioningSuggestions(args: {
     suggestions.unshift("kubectl --context kind-orchwiz -n orchwiz-starship describe pod <pod-name>")
   }
 
+  if (lower.includes("qschlegel/orchwiz-provider-proxy") && lower.includes("403 forbidden")) {
+    suggestions.unshift(
+      "TF_VAR_provider_proxy_image=orchwiz-provider-proxy:local-dev <your-launch-command>",
+    )
+    suggestions.unshift(
+      "kind load docker-image orchwiz-provider-proxy:local-dev --name orchwiz",
+    )
+    suggestions.unshift(
+      "docker build -f services/provider-proxy/Dockerfile -t orchwiz-provider-proxy:local-dev services/provider-proxy",
+    )
+  }
+
+  if (lower.includes("waiting for rollout to finish")) {
+    suggestions.unshift("kubectl --context kind-orchwiz -n orchwiz-starship get pods")
+    suggestions.unshift("kubectl --context kind-orchwiz -n orchwiz-starship logs deploy/orchwiz --tail=120")
+    suggestions.unshift("kubectl --context kind-orchwiz -n orchwiz-starship rollout status deployment/orchwiz --timeout=300s")
+  }
+
+  if (lower.includes("turbo.createproject") || lower.includes("swc-linux-arm64")) {
+    suggestions.unshift("kubectl --context kind-orchwiz -n orchwiz-starship logs deploy/orchwiz --tail=120")
+    suggestions.unshift("Rebuild the local image after ensuring node/Dockerfile.shipyard installs the platform-specific @next/swc package.")
+  }
+
   return suggestions
 }
 
@@ -1388,10 +1950,44 @@ export async function runLocalBootstrap(
   const { paths } = resolved
   const requiredCommands = requiredCommandsForKind(input.infrastructure.kind)
   let missingCommands = requiredCommands.filter((command) => !runtime.commandExists(command))
+  const deploymentProfile = resolveDeploymentProfile(input)
+  const lightweightAppEnv = lightweightAppEnvOverrides(input)
+  const observabilityStackEnabled = localShipyardObservabilityStackEnabled(input, runtime)
+  const leanObservabilityDefaultsForced =
+    isLocalDeploymentProfile(deploymentProfile) && !observabilityStackEnabled
 
   const installMetadata: Record<string, unknown> = {
     requiredCommands,
     saneBootstrap: input.saneBootstrap,
+    deploymentProfile,
+    localObservability: {
+      stackEnabled: observabilityStackEnabled,
+      leanDefaultsForced: leanObservabilityDefaultsForced,
+      forcedTfVars: leanObservabilityDefaultsForced
+        ? {
+            enable_grafana: false,
+            enable_prometheus: false,
+            enable_loki: false,
+            enable_clickhouse: false,
+            enable_langfuse: false,
+          }
+        : {},
+    },
+    ...(lightweightAppEnv
+      ? {
+          lightweightBootstrap: {
+            openClawTargetDeployments: runtime.env.OPENCLAW_TARGET_DEPLOYMENTS?.trim().length
+              ? runtime.env.OPENCLAW_TARGET_DEPLOYMENTS
+                .split(",")
+                .map((entry) => entry.trim())
+                .filter(Boolean)
+              : [...LIGHTWEIGHT_OPENCLAW_TARGET_DEPLOYMENTS],
+            openClawStationCount:
+              runtime.env.TF_VAR_openclaw_station_count?.trim() || LIGHTWEIGHT_OPENCLAW_STATION_COUNT,
+            appEnvOverrides: lightweightAppEnv,
+          },
+        }
+      : {}),
   }
 
   if (missingCommands.length > 0) {
@@ -1592,6 +2188,31 @@ export async function runLocalBootstrap(
     KUBE_CONTEXT: input.infrastructure.kubeContext,
     ORCHWIZ_NAMESPACE: input.infrastructure.namespace,
     ORCHWIZ_APP_NAME: runtime.env.ORCHWIZ_APP_NAME || "orchwiz",
+    ...(asNonEmptyString(runtime.env.ORCHWIZ_RUNTIME_JWT_SECRET)
+      ? {
+          TF_VAR_runtime_jwt_secret: asNonEmptyString(runtime.env.ORCHWIZ_RUNTIME_JWT_SECRET) || "",
+        }
+      : {}),
+    ...(lightweightAppEnv
+      ? {
+          TF_VAR_openclaw_station_count:
+            runtime.env.TF_VAR_openclaw_station_count?.trim() || LIGHTWEIGHT_OPENCLAW_STATION_COUNT,
+        }
+      : {}),
+    ...(lightweightAppEnv
+      ? {
+          TF_VAR_app_env: JSON.stringify(lightweightAppEnv),
+        }
+      : {}),
+    ...(leanObservabilityDefaultsForced
+      ? {
+          TF_VAR_enable_grafana: "false",
+          TF_VAR_enable_prometheus: "false",
+          TF_VAR_enable_loki: "false",
+          TF_VAR_enable_clickhouse: "false",
+          TF_VAR_enable_langfuse: "false",
+        }
+      : {}),
     ...(installMetadata.localAppImage
       ? {
           TF_VAR_app_image: (installMetadata.localAppImage as { imageTag?: string }).imageTag || "",
@@ -1627,23 +2248,56 @@ export async function runLocalBootstrap(
 
   if (!provisionResult.ok) {
     const provisionOutput = outputTail(provisionResult)
-    const baseCommand = `TF_DIR=${paths.terraformEnvDirAbsolute} INFRASTRUCTURE_KIND=${input.infrastructure.kind} KUBE_CONTEXT=${input.infrastructure.kubeContext} ORCHWIZ_NAMESPACE=${input.infrastructure.namespace} ORCHWIZ_APP_NAME=${runtime.env.ORCHWIZ_APP_NAME || "orchwiz"}${provisionEnv.TF_VAR_app_image ? ` TF_VAR_app_image=${provisionEnv.TF_VAR_app_image}` : ""} ansible-playbook -i ${paths.ansibleInventoryAbsolute} ${paths.ansiblePlaybookAbsolute}`
+    const appName = runtime.env.ORCHWIZ_APP_NAME || "orchwiz"
+    const provisioningFailure = await analyzeProvisioningFailure({
+      runtime,
+      infrastructure: input.infrastructure,
+      appName,
+      output: provisionOutput,
+    })
+    const mergedSuggestedCommands = uniqueNonEmptyCommands([
+      ...provisioningFailure.suggestedCommands,
+      ...derivedProvisioningSuggestions({
+        baseCommand: "",
+        infrastructure: input.infrastructure,
+        output: provisionOutput,
+      }),
+    ]).filter((command) => command.length > 0)
+    const baseCommand = `TF_DIR=${paths.terraformEnvDirAbsolute} INFRASTRUCTURE_KIND=${input.infrastructure.kind} KUBE_CONTEXT=${input.infrastructure.kubeContext} ORCHWIZ_NAMESPACE=${input.infrastructure.namespace} ORCHWIZ_APP_NAME=${runtime.env.ORCHWIZ_APP_NAME || "orchwiz"}${provisionEnv.TF_VAR_openclaw_station_count ? ` TF_VAR_openclaw_station_count=${provisionEnv.TF_VAR_openclaw_station_count}` : ""}${provisionEnv.TF_VAR_app_image ? ` TF_VAR_app_image=${provisionEnv.TF_VAR_app_image}` : ""}${provisionEnv.TF_VAR_app_env ? ` TF_VAR_app_env='${provisionEnv.TF_VAR_app_env}'` : ""}${provisionEnv.TF_VAR_enable_grafana ? ` TF_VAR_enable_grafana=${provisionEnv.TF_VAR_enable_grafana}` : ""}${provisionEnv.TF_VAR_enable_prometheus ? ` TF_VAR_enable_prometheus=${provisionEnv.TF_VAR_enable_prometheus}` : ""}${provisionEnv.TF_VAR_enable_loki ? ` TF_VAR_enable_loki=${provisionEnv.TF_VAR_enable_loki}` : ""}${provisionEnv.TF_VAR_enable_clickhouse ? ` TF_VAR_enable_clickhouse=${provisionEnv.TF_VAR_enable_clickhouse}` : ""}${provisionEnv.TF_VAR_enable_langfuse ? ` TF_VAR_enable_langfuse=${provisionEnv.TF_VAR_enable_langfuse}` : ""} ansible-playbook -i ${paths.ansibleInventoryAbsolute} ${paths.ansiblePlaybookAbsolute}`
+    const suggestedCommands = uniqueNonEmptyCommands([
+      ...mergedSuggestedCommands.filter((entry) => entry !== ""),
+      baseCommand,
+    ])
+
+    runtime.emitLaunchLog?.({
+      level: "error",
+      source: "local-bootstrap",
+      lines: [`[diagnostic] ${provisioningFailure.summary.title}: ${provisioningFailure.summary.summary}`],
+    })
+    if (provisioningFailure.summary.evidence.length > 0) {
+      runtime.emitLaunchLog?.({
+        level: "error",
+        source: "local-bootstrap",
+        lines: provisioningFailure.summary.evidence.slice(0, 5).map((line) => `[diagnostic] evidence: ${line}`),
+      })
+    }
+
     return toFailure(
       "LOCAL_PROVISIONING_FAILED",
       "Local provisioning failed while running ansible playbook.",
       {
         details: {
-          suggestedCommands: derivedProvisioningSuggestions({
-            baseCommand,
-            infrastructure: input.infrastructure,
-            output: provisionOutput,
-          }),
+          suggestedCommands,
         },
         metadata: {
           ...installMetadata,
           provisionOutputTail: provisionOutput,
           provisionCommand: provisionCommand.join(" "),
           provisionTimeoutMs: timeoutMs,
+          provisioningFailureSummary: provisioningFailure.summary,
+          ...(provisioningFailure.kubernetesDiagnostics
+            ? { kubernetesDiagnostics: provisioningFailure.kubernetesDiagnostics }
+            : {}),
         },
       },
     )
@@ -1723,6 +2377,12 @@ export async function runLocalBootstrap(
     timeoutMs,
   })
 
+  const observability = await resolveLocalObservabilityMetadata({
+    runtime,
+    terraformEnvDirAbsolute: paths.terraformEnvDirAbsolute,
+    timeoutMs,
+  })
+
   return {
     ok: true,
     metadata: {
@@ -1735,11 +2395,14 @@ export async function runLocalBootstrap(
         kubeContext: input.infrastructure.kubeContext,
         namespace: input.infrastructure.namespace,
         timeoutMs,
+        observabilityStackEnabled,
+        leanObservabilityDefaultsForced,
       },
       provisionOutputTail: outputTail(provisionResult),
       openClawContextInjection: openClawContextInjection.summary,
       kubeview,
       runtimeUi,
+      observability,
     },
   }
 }

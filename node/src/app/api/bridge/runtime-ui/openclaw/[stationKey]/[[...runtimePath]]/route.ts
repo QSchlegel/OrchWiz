@@ -7,6 +7,7 @@ import {
   resolveOpenClawRuntimeUrlForStation,
   resolveShipNamespace,
 } from "@/lib/bridge/openclaw-runtime"
+import type { DeploymentProfile } from "@/lib/deployment/profile"
 
 export const dynamic = "force-dynamic"
 
@@ -18,7 +19,7 @@ interface RuntimeUiRouteParams {
 interface ShipSelectionRecord {
   id: string
   status: "pending" | "deploying" | "active" | "inactive" | "failed" | "updating"
-  deploymentProfile: "local_starship_build" | "cloud_shipyard"
+  deploymentProfile: DeploymentProfile
   config: unknown
 }
 

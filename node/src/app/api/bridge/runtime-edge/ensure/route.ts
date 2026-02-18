@@ -2,7 +2,11 @@ import { NextRequest, NextResponse } from "next/server"
 import { auth } from "@/lib/auth"
 import { headers } from "next/headers"
 import { prisma } from "@/lib/prisma"
-import { normalizeInfrastructureInConfig } from "@/lib/deployment/profile"
+import {
+  isLocalDeploymentProfile,
+  normalizeInfrastructureInConfig,
+  type DeploymentProfile,
+} from "@/lib/deployment/profile"
 import { resolveRuntimeUiFromTerraform } from "@/lib/bridge/runtime-ui-hydration"
 import { spawn, type ChildProcess } from "node:child_process"
 import { existsSync } from "node:fs"
@@ -287,7 +291,7 @@ async function selectShip(args: {
 }): Promise<{
   id: string
   status: string
-  deploymentProfile: "local_starship_build" | "cloud_shipyard"
+  deploymentProfile: DeploymentProfile
   config: unknown
   metadata: unknown
 } | null> {
@@ -373,12 +377,12 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "No ship deployment available." }, { status: 404 })
   }
 
-  if (ship.deploymentProfile !== "local_starship_build") {
+  if (!isLocalDeploymentProfile(ship.deploymentProfile)) {
     return NextResponse.json(
       {
         ok: false,
         status: "blocked",
-        detail: "runtime-edge port-forward is only supported for local starship builds.",
+        detail: "runtime-edge port-forward is only supported for local deployment profiles.",
       },
       { status: 400 },
     )

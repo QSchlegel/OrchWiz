@@ -153,7 +153,7 @@ test("ship-yard ghost ships GET ignores active ship namespaces", async () => {
   const payload = (await response.json()) as { ghostCount: number; ghosts: Array<{ namespace: string }>; profiles: DeploymentProfile[] }
 
   assert.equal(payload.ghostCount, 1)
-  assert.equal(payload.profiles.length, 2)
+  assert.equal(payload.profiles.length, 3)
   assert.equal(payload.ghosts.some((ghost) => ghost.namespace === "orchwiz-starship"), true)
   assert.equal(payload.ghosts.some((ghost) => ghost.namespace === "orchwiz-shipyard"), false)
 })
@@ -263,7 +263,7 @@ test("ship-yard ghost ships GET requires valid deploymentProfile", async () => {
   const payload = (await response.json()) as Record<string, unknown>
   assert.equal(
     payload.error,
-    "deploymentProfile must be one of: local_starship_build, cloud_shipyard",
+    "deploymentProfile must be one of: local_starship_build, lightweight_shuttle, cloud_shipyard",
   )
 })
 

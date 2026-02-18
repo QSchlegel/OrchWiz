@@ -15,7 +15,11 @@ import {
   type OpenClawRuntimeUrlSource,
 } from "@/lib/bridge/openclaw-runtime"
 import { readShipMonitoringConfig } from "@/lib/shipyard/monitoring"
-import { normalizeInfrastructureInConfig } from "@/lib/deployment/profile"
+import {
+  isLocalDeploymentProfile,
+  normalizeInfrastructureInConfig,
+  type DeploymentProfile,
+} from "@/lib/deployment/profile"
 import { resolveRuntimeUiFromTerraform } from "@/lib/bridge/runtime-ui-hydration"
 
 export const dynamic = "force-dynamic"
@@ -39,13 +43,13 @@ interface BridgeStateAvailableShipRecord {
   updatedAt: Date
   nodeId: string
   nodeType: "local" | "cloud" | "hybrid"
-  deploymentProfile: "local_starship_build" | "cloud_shipyard"
+  deploymentProfile: DeploymentProfile
 }
 
 interface BridgeStateSelectedShipMonitoringRecord {
   id: string
   status: "pending" | "deploying" | "active" | "inactive" | "failed" | "updating"
-  deploymentProfile: "local_starship_build" | "cloud_shipyard"
+  deploymentProfile: DeploymentProfile
   config: unknown
   metadata: unknown
 }
@@ -100,6 +104,13 @@ interface BridgeStateRuntimeUiInstance {
   label: string
   href: string | null
   source: OpenClawRuntimeUrlSource
+}
+
+interface MonitoringServiceEnablement {
+  grafana: boolean | null
+  prometheus: boolean | null
+  kubeview: boolean | null
+  langfuse: boolean | null
 }
 
 interface BridgeStateRouteDeps {
@@ -176,13 +187,14 @@ const defaultDeps: BridgeStateRouteDeps = {
       },
     }),
   maybeHydrateSelectedShipRuntimeUi: async ({ userId, selectedShip }) => {
-    if (selectedShip.deploymentProfile !== "local_starship_build") {
+    if (!isLocalDeploymentProfile(selectedShip.deploymentProfile)) {
       return selectedShip
     }
 
     const metadata = asRecord(selectedShip.metadata)
     const runtimeUi = asRecord(metadata.runtimeUi)
-    if (!runtimeUiNeedsHydration(runtimeUi)) {
+    const observability = asRecord(metadata.observability)
+    if (!runtimeUiNeedsHydration(runtimeUi) && !observabilityNeedsHydration(observability)) {
       return selectedShip
     }
 
@@ -217,9 +229,11 @@ const defaultDeps: BridgeStateRouteDeps = {
       }
 
       const nextRuntimeUi = mergeRuntimeUiMetadata(runtimeUi, resolution.runtimeUi)
+      const nextObservability = mergeObservabilityMetadata(observability, resolution.observability)
       const nextMetadata = {
         ...metadata,
         runtimeUi: nextRuntimeUi,
+        observability: nextObservability,
       }
 
       try {
@@ -314,6 +328,13 @@ function asString(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null
 }
 
+function asBoolean(value: unknown): boolean | null {
+  if (typeof value !== "boolean") {
+    return null
+  }
+  return value
+}
+
 function resolvePublicHostname(request: NextRequest): string | null {
   const forwardedHost = asString(request.headers.get("x-forwarded-host"))
   const host = forwardedHost || asString(request.headers.get("host")) || request.nextUrl.host
@@ -401,6 +422,51 @@ function runtimeUiNeedsHydration(runtimeUi: Record<string, unknown>): boolean {
   return !kubeviewUrl || !hasOpenclawUrl || !portForwardCommand
 }
 
+function observabilityNeedsHydration(observability: Record<string, unknown>): boolean {
+  const grafana = asRecord(observability.grafana)
+  const prometheus = asRecord(observability.prometheus)
+  const loki = asRecord(observability.loki)
+  const clickhouse = asRecord(observability.clickhouse)
+  const langfuse = asRecord(observability.langfuse)
+
+  const grafanaEnabled = asBoolean(grafana.enabled)
+  const prometheusEnabled = asBoolean(prometheus.enabled)
+  const lokiEnabled = asBoolean(loki.enabled)
+  const clickhouseEnabled = asBoolean(clickhouse.enabled)
+  const langfuseEnabled = asBoolean(langfuse.enabled)
+  const monitoringNamespace = asString(observability.monitoringNamespace)
+
+  const allUnknown = (
+    grafanaEnabled === null
+    && prometheusEnabled === null
+    && lokiEnabled === null
+    && clickhouseEnabled === null
+    && langfuseEnabled === null
+    && monitoringNamespace === null
+  )
+  if (allUnknown) {
+    return true
+  }
+
+  const hasFallbackOrUnknownSource = [grafana, prometheus, loki, clickhouse, langfuse].some((service) => {
+    const source = asString(service.source)
+    return source === null || source === "fallback"
+  })
+  if (hasFallbackOrUnknownSource) {
+    return true
+  }
+
+  const hasEnabledService = (
+    grafanaEnabled === true
+    || prometheusEnabled === true
+    || lokiEnabled === true
+    || clickhouseEnabled === true
+    || langfuseEnabled === true
+  )
+
+  return monitoringNamespace === null && hasEnabledService
+}
+
 function mergeRuntimeUiMetadata(
   existingRuntimeUi: Record<string, unknown>,
   incoming: {
@@ -435,6 +501,66 @@ function mergeRuntimeUiMetadata(
       source: typeof incoming.kubeview.source === "string" ? incoming.kubeview.source : existingKubeview.source,
     },
     portForwardCommand: incoming.portForwardCommand || asString(existing.portForwardCommand) || null,
+  }
+}
+
+function mergeObservabilityMetadata(
+  existingObservability: Record<string, unknown>,
+  incoming: {
+    monitoringNamespace: string | null
+    grafana: { enabled: boolean | null; url?: string | null; source: string }
+    prometheus: { enabled: boolean | null; url?: string | null; source: string }
+    loki: { enabled: boolean | null; source: string }
+    clickhouse: { enabled: boolean | null; source: string }
+    langfuse: { enabled: boolean | null; url?: string | null; source: string }
+  },
+): Record<string, unknown> {
+  const existing = asRecord(existingObservability)
+
+  const mergeService = (
+    currentValue: unknown,
+    nextValue: { enabled: boolean | null; source: string; url?: string | null },
+  ): Record<string, unknown> => {
+    const current = asRecord(currentValue)
+    const currentEnabled = asBoolean(current.enabled)
+    const nextEnabled = asBoolean(nextValue.enabled)
+
+    const merged: Record<string, unknown> = {
+      ...current,
+      enabled: nextEnabled ?? currentEnabled ?? null,
+      source: typeof nextValue.source === "string" ? nextValue.source : current.source,
+    }
+
+    if (Object.prototype.hasOwnProperty.call(nextValue, "url")) {
+      merged.url = asString(nextValue.url) || null
+    } else if (Object.prototype.hasOwnProperty.call(current, "url")) {
+      merged.url = asString(current.url) || null
+    }
+
+    return merged
+  }
+
+  return {
+    ...existing,
+    monitoringNamespace: asString(incoming.monitoringNamespace) || asString(existing.monitoringNamespace) || null,
+    grafana: mergeService(existing.grafana, incoming.grafana),
+    prometheus: mergeService(existing.prometheus, incoming.prometheus),
+    loki: mergeService(existing.loki, incoming.loki),
+    clickhouse: mergeService(existing.clickhouse, incoming.clickhouse),
+    langfuse: mergeService(existing.langfuse, incoming.langfuse),
+  }
+}
+
+function resolveMonitoringServiceEnablement(metadataInput: unknown): MonitoringServiceEnablement {
+  const metadata = asRecord(metadataInput)
+  const observability = asRecord(metadata.observability)
+  const kubeview = asRecord(metadata.kubeview)
+
+  return {
+    grafana: asBoolean(asRecord(observability.grafana).enabled),
+    prometheus: asBoolean(asRecord(observability.prometheus).enabled),
+    kubeview: asBoolean(kubeview.enabled),
+    langfuse: asBoolean(asRecord(observability.langfuse).enabled),
   }
 }
 
@@ -605,6 +731,7 @@ function matchShipScopedEvent(
 function buildFallbackMonitoringCard(args: {
   label: string
   service: MonitoringEventServiceKey
+  enabled: boolean | null
   href: string | null
   selectedShip: BridgeStateSelectedShipMonitoringRecord | null
 }): BridgeStateMonitoringCard {
@@ -620,12 +747,27 @@ function buildFallbackMonitoringCard(args: {
     }
   }
 
+  if (args.enabled === false) {
+    return {
+      label: args.label,
+      service: args.service,
+      state: "warning",
+      detail: `${args.label} is disabled for this ship infrastructure profile.`,
+      href: null,
+      source: "ship-monitoring",
+      observedAt: null,
+    }
+  }
+
   if (!args.href) {
     return {
       label: args.label,
       service: args.service,
       state: "warning",
-      detail: `Set ${args.label} URL in Ship Yard monitoring settings.`,
+      detail:
+        args.enabled === true
+          ? `${args.label} is enabled but no monitoring link was resolved.`
+          : `Set ${args.label} URL in Ship Yard monitoring settings.`,
       href: null,
       source: "ship-monitoring",
       observedAt: null,
@@ -655,7 +797,41 @@ function buildFallbackMonitoringCard(args: {
   }
 }
 
+function resolveMonitoringConfiguredHref(args: {
+  configuredHref: string | null
+  proxyBaseHref: string
+  runtimeUiHref: string | null
+  selectedShip: BridgeStateSelectedShipMonitoringRecord | null
+}): string | null {
+  const href = args.configuredHref
+  const isProxy = (() => {
+    if (!href) return false
+    return (
+      href === args.proxyBaseHref
+      || href.startsWith(`${args.proxyBaseHref}/`)
+      || href.startsWith(`${args.proxyBaseHref}?`)
+    )
+  })()
+
+  if (!isProxy) {
+    return href
+  }
+
+  if (args.runtimeUiHref) {
+    return args.runtimeUiHref
+  }
+
+  if (!args.selectedShip) {
+    return args.proxyBaseHref
+  }
+
+  const query = new URLSearchParams()
+  query.set("shipDeploymentId", args.selectedShip.id)
+  return `${args.proxyBaseHref}?${query.toString()}`
+}
+
 function buildKubeviewMonitoringCard(args: {
+  enabled: boolean | null
   href: string | null
   runtimeUiHref: string | null
   selectedShip: BridgeStateSelectedShipMonitoringRecord | null
@@ -667,6 +843,18 @@ function buildKubeviewMonitoringCard(args: {
       state: "warning",
       detail: "Select an active ship to resolve monitoring telemetry.",
       href: args.href,
+      source: "ship-monitoring",
+      observedAt: null,
+    }
+  }
+
+  if (args.enabled === false) {
+    return {
+      label: "KubeView",
+      service: "kubeview",
+      state: "warning",
+      detail: "KubeView is disabled for this ship infrastructure profile.",
+      href: null,
       source: "ship-monitoring",
       observedAt: null,
     }
@@ -735,6 +923,37 @@ function buildKubeviewMonitoringCard(args: {
   }
 }
 
+function deriveRuntimeUiHrefFromKubeview(args: {
+  kubeviewRuntimeUiHref: string | null
+  servicePath: "grafana" | "prometheus" | "langfuse"
+}): string | null {
+  const kubeviewRuntimeUiHref = args.kubeviewRuntimeUiHref
+  if (!kubeviewRuntimeUiHref) {
+    return null
+  }
+
+  if (kubeviewRuntimeUiHref.startsWith("/")) {
+    const [pathOnly] = kubeviewRuntimeUiHref.split(/[?#]/u, 1)
+    if (!pathOnly || !/\/kubeview(?:\/|$)/u.test(pathOnly)) {
+      return null
+    }
+    return pathOnly.replace(/\/kubeview(?=\/|$)/u, `/${args.servicePath}`)
+  }
+
+  try {
+    const parsed = new URL(kubeviewRuntimeUiHref)
+    if (!/\/kubeview(?:\/|$)/u.test(parsed.pathname)) {
+      return null
+    }
+    parsed.pathname = parsed.pathname.replace(/\/kubeview(?=\/|$)/u, `/${args.servicePath}`)
+    parsed.search = ""
+    parsed.hash = ""
+    return parsed.toString().replace(/\/+$/u, "")
+  } catch {
+    return null
+  }
+}
+
 function resolveLangfuseUpstreamBaseUrl(): string | null {
   const raw = asString(process.env.LANGFUSE_BASE_URL)
   if (!raw) {
@@ -753,25 +972,41 @@ function resolveLangfuseUpstreamBaseUrl(): string | null {
 }
 
 function buildLangfuseMonitoringCard(args: {
+  enabled: boolean | null
   href: string | null
+  runtimeUiHref: string | null
   selectedShip: BridgeStateSelectedShipMonitoringRecord | null
 }): BridgeStateMonitoringCard {
   const upstreamBaseUrl = resolveLangfuseUpstreamBaseUrl()
-  const proxyHref = "/api/bridge/runtime-ui/langfuse"
+  const proxyHrefBase = "/api/bridge/runtime-ui/langfuse"
+  const proxyHref = args.selectedShip
+    ? `${proxyHrefBase}?shipDeploymentId=${encodeURIComponent(args.selectedShip.id)}`
+    : proxyHrefBase
   const configuredHref = args.href
   const configuredIsProxy = (() => {
     if (!configuredHref) return false
     return (
-      configuredHref === proxyHref
-      || configuredHref.startsWith(`${proxyHref}/`)
-      || configuredHref.startsWith(`${proxyHref}?`)
+      configuredHref === proxyHrefBase
+      || configuredHref.startsWith(`${proxyHrefBase}/`)
+      || configuredHref.startsWith(`${proxyHrefBase}?`)
     )
   })()
 
-  // Prefer direct Langfuse links; keep proxy only as a backwards-compatible config value.
   const resolvedHref = configuredHref && !configuredIsProxy
     ? configuredHref
-    : upstreamBaseUrl
+    : upstreamBaseUrl || args.runtimeUiHref || (configuredIsProxy ? proxyHref : configuredHref)
+
+  if (args.enabled === false) {
+    return {
+      label: "Langfuse",
+      service: "langfuse",
+      state: "warning",
+      detail: "Langfuse is disabled for this ship infrastructure profile.",
+      href: null,
+      source: "ship-monitoring",
+      observedAt: null,
+    }
+  }
 
   if (args.selectedShip?.status === "failed") {
     return {
@@ -792,9 +1027,13 @@ function buildLangfuseMonitoringCard(args: {
     detail: resolvedHref
       ? configuredHref && !configuredIsProxy
         ? "Langfuse link configured for selected ship."
-        : "Langfuse available via proxy link."
+        : upstreamBaseUrl && resolvedHref === upstreamBaseUrl
+          ? "Langfuse available via configured upstream URL."
+          : args.runtimeUiHref && resolvedHref === args.runtimeUiHref
+            ? "Langfuse available via direct ship runtime UI."
+            : "Langfuse available via proxy link."
       : configuredIsProxy
-        ? "Langfuse proxy is configured, but LANGFUSE_BASE_URL is not set. Set a direct Langfuse URL in Ship Yard or configure LANGFUSE_BASE_URL."
+        ? "Langfuse proxy is configured, but no runtime upstream is reachable. Ensure runtime-edge is available or configure LANGFUSE_BASE_URL."
         : "Langfuse link unresolved. Set a Langfuse URL in Ship Yard monitoring settings.",
     href: resolvedHref,
     source: "ship-monitoring",
@@ -804,13 +1043,15 @@ function buildLangfuseMonitoringCard(args: {
 
 function resolveMonitoringCards(args: {
   selectedShip: BridgeStateSelectedShipMonitoringRecord | null
+  monitoringConfig: ReturnType<typeof readShipMonitoringConfig>
+  serviceEnablement: MonitoringServiceEnablement
+  runtimeUiHrefs: Partial<Record<MonitoringEventServiceKey, string | null>>
   forwardedSystemEvents: BridgeStateForwardingEventRecord[]
   now: Date
 }): {
   grafana: BridgeStateMonitoringCard
   prometheus: BridgeStateMonitoringCard
 } {
-  const monitoringConfig = readShipMonitoringConfig(args.selectedShip?.config || {})
   const selectedShipDeploymentId = args.selectedShip?.id || null
 
   const latestByService: Partial<Record<MonitoringEventServiceKey, BridgeStateForwardingEventRecord>> = {}
@@ -832,13 +1073,26 @@ function resolveMonitoringCards(args: {
 
   const buildCard = (service: MonitoringEventServiceKey): BridgeStateMonitoringCard => {
     const label = service === "grafana" ? "Grafana" : "Prometheus"
-    const href = service === "grafana" ? monitoringConfig.grafanaUrl : monitoringConfig.prometheusUrl
+    const enabled = args.serviceEnablement[service]
+    const proxyBaseHref = service === "grafana" ? "/api/bridge/runtime-ui/grafana" : "/api/bridge/runtime-ui/prometheus"
+    const configuredHref = service === "grafana" ? args.monitoringConfig.grafanaUrl : args.monitoringConfig.prometheusUrl
+    const href = resolveMonitoringConfiguredHref({
+      configuredHref,
+      proxyBaseHref,
+      runtimeUiHref: args.runtimeUiHrefs[service] || null,
+      selectedShip: args.selectedShip,
+    })
     const fallback = buildFallbackMonitoringCard({
       label,
       service,
+      enabled,
       href,
       selectedShip: args.selectedShip,
     })
+
+    if (enabled === false) {
+      return fallback
+    }
 
     const latest = latestByService[service]
     if (!latest || !href) {
@@ -988,11 +1242,9 @@ export async function handleGetBridgeState(
       },
     ]
 
-    const monitoring = resolveMonitoringCards({
-      selectedShip: hydratedSelectedShipMonitoring,
-      forwardedSystemEvents,
-      now: deps.now(),
-    })
+    const monitoringServiceEnablement = resolveMonitoringServiceEnablement(
+      hydratedSelectedShipMonitoring?.metadata || {},
+    )
     const selectedShipMonitoringConfig = readShipMonitoringConfig(hydratedSelectedShipMonitoring?.config || {})
     const selectedShipRuntimeUi = asRecord(asRecord(hydratedSelectedShipMonitoring?.metadata || {}).runtimeUi)
     const selectedShipRuntimeUiKubeview = asRecord(selectedShipRuntimeUi.kubeview)
@@ -1001,22 +1253,56 @@ export async function handleGetBridgeState(
     const runtimeUiOpenclawUrls = parseRuntimeUiOpenclawUrls(asRecord(selectedShipRuntimeUiOpenclaw.urls))
 
     const publicHost = resolvePublicHostname(request)
-    const wantsLoopbackRewrite = publicHost ? isLoopbackHostname(publicHost) : false
+    const rewrittenMonitoringConfig = publicHost
+      ? {
+          ...selectedShipMonitoringConfig,
+          grafanaUrl: rewriteLoopbackUrlHostname(selectedShipMonitoringConfig.grafanaUrl, publicHost),
+          prometheusUrl: rewriteLoopbackUrlHostname(selectedShipMonitoringConfig.prometheusUrl, publicHost),
+          kubeviewUrl: rewriteLoopbackUrlHostname(selectedShipMonitoringConfig.kubeviewUrl, publicHost),
+          langfuseUrl: rewriteLoopbackUrlHostname(selectedShipMonitoringConfig.langfuseUrl, publicHost),
+        }
+      : selectedShipMonitoringConfig
     const rewrittenKubeviewHref =
-      wantsLoopbackRewrite && publicHost
+      publicHost
         ? rewriteLoopbackUrlHostname(runtimeUiKubeviewHref, publicHost)
         : runtimeUiKubeviewHref
+    const runtimeUiGrafanaHref = deriveRuntimeUiHrefFromKubeview({
+      kubeviewRuntimeUiHref: rewrittenKubeviewHref,
+      servicePath: "grafana",
+    })
+    const runtimeUiPrometheusHref = deriveRuntimeUiHrefFromKubeview({
+      kubeviewRuntimeUiHref: rewrittenKubeviewHref,
+      servicePath: "prometheus",
+    })
+    const runtimeUiLangfuseHref = deriveRuntimeUiHrefFromKubeview({
+      kubeviewRuntimeUiHref: rewrittenKubeviewHref,
+      servicePath: "langfuse",
+    })
     const rewrittenOpenclawUrls =
-      wantsLoopbackRewrite && publicHost
+      publicHost
         ? rewriteLoopbackStationUrlMap(runtimeUiOpenclawUrls, publicHost)
         : runtimeUiOpenclawUrls
+    const monitoring = resolveMonitoringCards({
+      selectedShip: hydratedSelectedShipMonitoring,
+      monitoringConfig: rewrittenMonitoringConfig,
+      serviceEnablement: monitoringServiceEnablement,
+      runtimeUiHrefs: {
+        grafana: runtimeUiGrafanaHref,
+        prometheus: runtimeUiPrometheusHref,
+      },
+      forwardedSystemEvents,
+      now: deps.now(),
+    })
     const kubeviewMonitoring = buildKubeviewMonitoringCard({
-      href: selectedShipMonitoringConfig.kubeviewUrl,
+      enabled: monitoringServiceEnablement.kubeview,
+      href: rewrittenMonitoringConfig.kubeviewUrl,
       runtimeUiHref: rewrittenKubeviewHref,
       selectedShip: hydratedSelectedShipMonitoring,
     })
     const langfuseMonitoring = buildLangfuseMonitoringCard({
-      href: selectedShipMonitoringConfig.langfuseUrl,
+      enabled: monitoringServiceEnablement.langfuse,
+      href: rewrittenMonitoringConfig.langfuseUrl,
+      runtimeUiHref: runtimeUiLangfuseHref,
       selectedShip: hydratedSelectedShipMonitoring,
     })
 

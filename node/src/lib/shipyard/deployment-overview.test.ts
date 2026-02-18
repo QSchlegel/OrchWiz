@@ -71,6 +71,28 @@ test("overview includes full USS-K8s observability stack", () => {
   assert.equal(overview.workloads.observabilityPods, 6)
 })
 
+test("lightweight profile keeps only XO bridge agent replicas", () => {
+  const overview = buildShipDeploymentOverview({
+    deploymentProfile: "lightweight_shuttle",
+    provisioningMode: "terraform_ansible",
+    nodeType: "local",
+    infrastructure: LOCAL_INFRA,
+    crewRoles: BRIDGE_CREW_ROLE_ORDER,
+  })
+
+  const componentsById = new Map(overview.topology.components.map((component) => [component.id, component]))
+  assert.equal(componentsById.get("xo")?.replicaCount, 1)
+  assert.equal(componentsById.get("ops")?.replicaCount, 0)
+  assert.equal(componentsById.get("eng")?.replicaCount, 0)
+  assert.equal(componentsById.get("sec")?.replicaCount, 0)
+  assert.equal(componentsById.get("med")?.replicaCount, 0)
+  assert.equal(componentsById.get("cou")?.replicaCount, 0)
+  assert.equal(overview.workloads.bridgeAgentPods, 1)
+  assert.deepEqual(overview.crewPolicy.requiredRoles, ["xo"])
+  assert.deepEqual(overview.crewPolicy.selectedRoles, ["xo"])
+  assert.equal(overview.crewPolicy.compliant, true)
+})
+
 test("overview requirements include auto-generated local secrets and external warnings", () => {
   const overview = buildShipDeploymentOverview({
     deploymentProfile: "local_starship_build",
@@ -145,9 +167,54 @@ test("readShipDeploymentOverview parses valid metadata and rejects malformed pay
   )
 })
 
-test("hasCompleteBridgeCrewCoverage enforces exact six-role coverage", () => {
-  assert.equal(hasCompleteBridgeCrewCoverage(BRIDGE_CREW_ROLE_ORDER), true)
-  assert.equal(hasCompleteBridgeCrewCoverage(["xo", "ops", "eng"]), false)
-  assert.equal(hasCompleteBridgeCrewCoverage(["xo", "ops", "eng", "sec", "med", "cou", "xo"]), true)
-  assert.equal(hasCompleteBridgeCrewCoverage(["xo", "ops", "eng", "sec", "med", "invalid"]), false)
+test("hasCompleteBridgeCrewCoverage enforces profile-aware crew coverage", () => {
+  assert.equal(
+    hasCompleteBridgeCrewCoverage({
+      deploymentProfile: "local_starship_build",
+      crewRoles: BRIDGE_CREW_ROLE_ORDER,
+    }),
+    true,
+  )
+  assert.equal(
+    hasCompleteBridgeCrewCoverage({
+      deploymentProfile: "local_starship_build",
+      crewRoles: ["xo", "ops", "eng"],
+    }),
+    false,
+  )
+  assert.equal(
+    hasCompleteBridgeCrewCoverage({
+      deploymentProfile: "local_starship_build",
+      crewRoles: ["xo", "ops", "eng", "sec", "med", "cou", "xo"],
+    }),
+    true,
+  )
+  assert.equal(
+    hasCompleteBridgeCrewCoverage({
+      deploymentProfile: "local_starship_build",
+      crewRoles: ["xo", "ops", "eng", "sec", "med", "invalid"],
+    }),
+    false,
+  )
+  assert.equal(
+    hasCompleteBridgeCrewCoverage({
+      deploymentProfile: "lightweight_shuttle",
+      crewRoles: ["xo"],
+    }),
+    true,
+  )
+  assert.equal(
+    hasCompleteBridgeCrewCoverage({
+      deploymentProfile: "lightweight_shuttle",
+      crewRoles: ["xo", "ops", "eng"],
+    }),
+    true,
+  )
+  assert.equal(
+    hasCompleteBridgeCrewCoverage({
+      deploymentProfile: "lightweight_shuttle",
+      crewRoles: ["ops"],
+    }),
+    false,
+  )
 })

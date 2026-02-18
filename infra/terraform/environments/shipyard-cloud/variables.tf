@@ -88,6 +88,13 @@ variable "better_auth_secret" {
   sensitive   = true
 }
 
+variable "runtime_jwt_secret" {
+  type        = string
+  description = "ORCHWIZ_RUNTIME_JWT_SECRET value (defaults to better_auth_secret when empty)"
+  sensitive   = true
+  default     = ""
+}
+
 variable "better_auth_url" {
   type        = string
   description = "BETTER_AUTH_URL"
@@ -367,7 +374,7 @@ variable "enable_prometheus" {
 }
 variable "prometheus_chart_version" {
   type    = string
-  default = "31.0.0"
+  default = "28.9.1"
 }
 variable "prometheus_ingress_enabled" {
   type    = bool

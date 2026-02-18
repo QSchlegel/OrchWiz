@@ -1,8 +1,11 @@
+import { execFile as execFileCallback } from "node:child_process"
 import { pathToFileURL } from "node:url"
+import { promisify } from "node:util"
 
 interface CliArgs {
   help: boolean
   verbose: boolean
+  keepCluster: boolean
   baseUrl: string
   pollMs: number
   timeoutMs: number
@@ -64,6 +67,27 @@ interface InspectionResponse {
     message?: string | null
     suggestedCommands?: string[]
   }
+  diagnostics?: {
+    rootCause?: {
+      reasonCode?: string
+      title?: string
+      summary?: string
+      confidence?: string
+      evidence?: string[]
+      suggestedCommands?: string[]
+    } | null
+    kubernetes?: {
+      appName?: string
+      failingPods?: Array<{
+        name?: string
+        phase?: string
+        ready?: string
+        restartCount?: number
+        reasons?: string[]
+      }>
+      appLogHighlights?: string[]
+    } | null
+  }
   logs?: {
     tails?: Array<{
       key?: string
@@ -102,6 +126,9 @@ interface InspectionResponse {
 }
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 60_000
+const KIND_DELETE_TIMEOUT_MS = 120_000
+
+const execFileAsync = promisify(execFileCallback)
 
 function parsePositiveInt(raw: string, label: string): number {
   const parsed = Number.parseInt(raw, 10)
@@ -111,7 +138,7 @@ function parsePositiveInt(raw: string, label: string): number {
   return parsed
 }
 
-function parseArgs(argv: string[]): CliArgs {
+export function parseArgs(argv: string[]): CliArgs {
   let baseUrl = process.env.SHIPYARD_BASE_URL?.trim() || "http://localhost:3000"
   let pollMs = 15_000
   let timeoutMs = 15 * 60 * 1000
@@ -119,6 +146,7 @@ function parseArgs(argv: string[]): CliArgs {
   let namePrefix = "LocalDebugShip"
   let verbose = false
   let help = false
+  let keepCluster = false
 
   for (let idx = 0; idx < argv.length; idx += 1) {
     const arg = argv[idx]
@@ -128,6 +156,10 @@ function parseArgs(argv: string[]): CliArgs {
     }
     if (arg === "--verbose") {
       verbose = true
+      continue
+    }
+    if (arg === "--keep-cluster") {
+      keepCluster = true
       continue
     }
     if (arg.startsWith("--base-url=")) {
@@ -193,6 +225,7 @@ function parseArgs(argv: string[]): CliArgs {
   return {
     help,
     verbose,
+    keepCluster,
     baseUrl: parsedUrl.toString().replace(/\/+$/u, ""),
     pollMs,
     timeoutMs,
@@ -202,7 +235,7 @@ function parseArgs(argv: string[]): CliArgs {
 }
 
 function printHelp(): void {
-  console.log("Usage: npm run shipyard:local:debug -- [--base-url=<url>] [--poll-ms=<ms>] [--timeout-ms=<ms>] [--node-id=<id>] [--name-prefix=<prefix>] [--verbose]")
+  console.log("Usage: npm run shipyard:local:debug -- [--base-url=<url>] [--poll-ms=<ms>] [--timeout-ms=<ms>] [--node-id=<id>] [--name-prefix=<prefix>] [--keep-cluster] [--verbose]")
   console.log("")
   console.log("Required environment variables:")
   console.log("  SHIPYARD_BEARER_TOKEN   Ship Yard user API key")
@@ -212,6 +245,7 @@ function printHelp(): void {
   console.log("  LOCAL_SHIPYARD_KIND_CLUSTER_NAME  kind cluster name reset target (default: orchwiz)")
   console.log("")
   console.log("Optional flags:")
+  console.log("  --keep-cluster          Skip post-run auto teardown of local ship infra and kind cluster")
   console.log("  --verbose               Print launch/status response payloads for debugging")
   console.log("")
   console.log("Exit codes:")
@@ -274,6 +308,94 @@ async function requestJson<T>(args: {
   }
 }
 
+async function runBulkShipCleanup(args: {
+  baseUrl: string
+  token: string
+  namePrefix: string
+  deploymentProfile: "local_starship_build" | "lightweight_shuttle"
+  preserveInfra: boolean
+  verbose: boolean
+}): Promise<void> {
+  const cleanupUrl = new URL(`${args.baseUrl}/api/ship-yard/ships`)
+  cleanupUrl.searchParams.set("confirm", "delete-all")
+  cleanupUrl.searchParams.set("namePrefix", args.namePrefix)
+  cleanupUrl.searchParams.set("deploymentProfile", args.deploymentProfile)
+  cleanupUrl.searchParams.set("preserveInfra", args.preserveInfra ? "true" : "false")
+
+  const cleanup = await requestJson<CleanupResponse>({
+    url: cleanupUrl.toString(),
+    method: "DELETE",
+    token: args.token,
+    timeoutMs: DEFAULT_REQUEST_TIMEOUT_MS,
+  })
+
+  if (args.verbose) {
+    console.log(
+      `[local-debug] cleanup(${args.deploymentProfile}) response=${JSON.stringify(cleanup.json)}`,
+    )
+  }
+
+  if (cleanup.status >= 200 && cleanup.status < 300) {
+    console.log(
+      `[local-debug] cleanup(${args.deploymentProfile}) matched=${cleanup.json.matchedCount ?? 0} deleted=${cleanup.json.deletedCount ?? 0} preserveInfra=${args.preserveInfra}`,
+    )
+    return
+  }
+
+  console.warn(
+    `[local-debug] cleanup(${args.deploymentProfile}) failed status=${cleanup.status} code=${cleanup.json.code || "unknown"} error=${cleanup.json.error || "unknown"}`,
+  )
+}
+
+async function deleteKindClusterBestEffort(clusterName: string): Promise<void> {
+  try {
+    const { stdout, stderr } = await execFileAsync(
+      "kind",
+      ["delete", "cluster", "--name", clusterName],
+      {
+        timeout: KIND_DELETE_TIMEOUT_MS,
+        maxBuffer: 1024 * 1024,
+      },
+    )
+    const tail = [stdout || "", stderr || ""]
+      .join("\n")
+      .trim()
+    if (tail.length > 0) {
+      console.log(`[local-debug] kind delete output: ${tail}`)
+    } else {
+      console.log(`[local-debug] kind cluster delete completed: ${clusterName}`)
+    }
+  } catch (error) {
+    const commandError = error as {
+      stdout?: string
+      stderr?: string
+      message?: string
+      code?: number | string
+    }
+    const combined = [commandError.stdout || "", commandError.stderr || "", commandError.message || ""]
+      .join("\n")
+      .toLowerCase()
+
+    if (
+      combined.includes("no kind clusters found")
+      || combined.includes(`unknown cluster \"${clusterName.toLowerCase()}\"`)
+      || combined.includes("could not find cluster")
+    ) {
+      console.log(`[local-debug] no existing kind cluster to delete: ${clusterName}`)
+      return
+    }
+
+    if (commandError.code === "ENOENT") {
+      console.warn("[local-debug] kind CLI not found; skipping cluster delete")
+      return
+    }
+
+    console.warn(
+      `[local-debug] kind delete cluster failed for '${clusterName}': ${(commandError.message || "unknown error").trim()}`,
+    )
+  }
+}
+
 async function printInspectionReadout(args: {
   baseUrl: string
   deploymentId: string
@@ -306,6 +428,29 @@ async function printInspectionReadout(args: {
       `[local-debug] inspection failure code=${failureCode} message=${failureMessage}`,
     )
 
+    const rootCause = inspection.json.diagnostics?.rootCause
+    if (rootCause) {
+      console.error(
+        `[local-debug] probable root cause=${rootCause.reasonCode || "unknown"} confidence=${rootCause.confidence || "n/a"}`,
+      )
+      if (rootCause.title || rootCause.summary) {
+        console.error(
+          `[local-debug] ${rootCause.title || "diagnostic"}: ${rootCause.summary || ""}`.trim(),
+        )
+      }
+      const evidence = Array.isArray(rootCause.evidence)
+        ? rootCause.evidence
+            .filter((line): line is string => typeof line === "string" && line.trim().length > 0)
+            .slice(0, 4)
+        : []
+      if (evidence.length > 0) {
+        console.error("[local-debug] diagnostic evidence:")
+        for (const line of evidence) {
+          console.error(`  - ${compactReadoutText(line)}`)
+        }
+      }
+    }
+
     const inspectionSuggestions = Array.isArray(inspection.json.failure?.suggestedCommands)
       ? inspection.json.failure?.suggestedCommands
           .filter((command): command is string => typeof command === "string" && command.trim().length > 0)
@@ -314,6 +459,18 @@ async function printInspectionReadout(args: {
     if (inspectionSuggestions.length > 0) {
       console.error("[local-debug] inspection suggested commands:")
       for (const command of inspectionSuggestions) {
+        console.error(`  - ${command}`)
+      }
+    }
+
+    const rootCauseSuggestions = Array.isArray(rootCause?.suggestedCommands)
+      ? rootCause.suggestedCommands
+          .filter((command): command is string => typeof command === "string" && command.trim().length > 0)
+          .slice(0, 6)
+      : []
+    if (rootCauseSuggestions.length > 0) {
+      console.error("[local-debug] root-cause suggested commands:")
+      for (const command of rootCauseSuggestions) {
         console.error(`  - ${command}`)
       }
     }
@@ -362,6 +519,36 @@ async function printInspectionReadout(args: {
       }
     }
 
+    const failingPods = Array.isArray(inspection.json.diagnostics?.kubernetes?.failingPods)
+      ? inspection.json.diagnostics?.kubernetes?.failingPods
+          .filter(
+            (pod): pod is NonNullable<NonNullable<InspectionResponse["diagnostics"]>["kubernetes"]>["failingPods"][number] =>
+              typeof pod?.name === "string" && pod.name.trim().length > 0,
+          )
+          .slice(0, 4)
+      : []
+    if (failingPods.length > 0) {
+      console.error("[local-debug] failing pods:")
+      for (const pod of failingPods) {
+        const reasons = Array.isArray(pod.reasons) ? pod.reasons.join(", ") : "n/a"
+        console.error(
+          `  - ${pod.name}: phase=${pod.phase || "n/a"} ready=${pod.ready || "n/a"} restarts=${pod.restartCount ?? 0} reasons=${reasons}`,
+        )
+      }
+    }
+
+    const appLogHighlights = Array.isArray(inspection.json.diagnostics?.kubernetes?.appLogHighlights)
+      ? inspection.json.diagnostics?.kubernetes?.appLogHighlights
+          .filter((line): line is string => typeof line === "string" && line.trim().length > 0)
+          .slice(0, 4)
+      : []
+    if (appLogHighlights.length > 0) {
+      console.error("[local-debug] app log highlights:")
+      for (const line of appLogHighlights) {
+        console.error(`  - ${compactReadoutText(line)}`)
+      }
+    }
+
     if (inspection.json.runtime) {
       const dockerContext = inspection.json.runtime.docker?.currentContext || "n/a"
       const kubeContext = inspection.json.runtime.kubernetes?.currentContext || "n/a"
@@ -395,150 +582,163 @@ async function main(): Promise<void> {
 
   const clusterName = process.env.LOCAL_SHIPYARD_KIND_CLUSTER_NAME?.trim() || "orchwiz"
 
-  const cleanupUrl = new URL(`${args.baseUrl}/api/ship-yard/ships`)
-  cleanupUrl.searchParams.set("confirm", "delete-all")
-  cleanupUrl.searchParams.set("namePrefix", args.namePrefix)
-  cleanupUrl.searchParams.set("deploymentProfile", "local_starship_build")
-  // Cluster reset tears down local infra, so skip terraform destroy during bulk ship cleanup.
-  cleanupUrl.searchParams.set("preserveInfra", "true")
-
-  console.log(`[local-debug] prelaunch cleanup: prefix=${args.namePrefix}`)
-  const cleanup = await requestJson<CleanupResponse>({
-    url: cleanupUrl.toString(),
-    method: "DELETE",
-    token,
-    timeoutMs: DEFAULT_REQUEST_TIMEOUT_MS,
-  })
-  if (args.verbose) {
-    console.log(`[local-debug] cleanup response=${JSON.stringify(cleanup.json)}`)
-  }
-
-  if (cleanup.status >= 200 && cleanup.status < 300) {
-    console.log(
-      `[local-debug] cleanup matched=${cleanup.json.matchedCount ?? 0} deleted=${cleanup.json.deletedCount ?? 0}`,
-    )
-  } else {
-    console.warn(
-      `[local-debug] cleanup failed status=${cleanup.status} code=${cleanup.json.code || "unknown"} error=${cleanup.json.error || "unknown"}`,
-    )
-    console.warn("[local-debug] continuing to forced cluster reset")
-  }
-
-  console.log(`[local-debug] prelaunch cluster reset: ${clusterName}`)
-  const reset = await requestJson<ClusterResetResponse>({
-    url: `${args.baseUrl}/api/ship-yard/local/cluster/reset`,
-    method: "POST",
-    token,
-    timeoutMs: DEFAULT_REQUEST_TIMEOUT_MS,
-    body: {
-      confirm: "reset-cluster",
-      clusterName,
-    },
-  })
-  if (args.verbose) {
-    console.log(`[local-debug] cluster reset response=${JSON.stringify(reset.json)}`)
-  }
-
-  if (reset.status < 200 || reset.status >= 300) {
-    console.error(
-      `[local-debug] cluster reset failed status=${reset.status} code=${reset.json.code || "unknown"} error=${reset.json.error || "unknown"}`,
-    )
-    process.exitCode = 2
-    return
-  }
-
-  console.log(
-    `[local-debug] cluster reset complete cluster=${reset.json.clusterName || clusterName} context=${reset.json.kubeContext || `kind-${clusterName}`}`,
-  )
-
-  const shipName = `${args.namePrefix}-${nowStamp()}`
-  console.log(`[local-debug] launch request: ${shipName}`)
-  console.log(
-    `[local-debug] launch can stay open while local provisioning runs (up to ${args.timeoutMs}ms)`,
-  )
-
-  const launch = await requestJson<LaunchResponse>({
-    url: `${args.baseUrl}/api/ship-yard/launch`,
-    method: "POST",
-    token,
-    timeoutMs: args.timeoutMs,
-    body: {
-      name: shipName,
-      description: "Ship Yard local debug loop launch",
-      nodeId: args.nodeId,
+  try {
+    console.log(`[local-debug] prelaunch cleanup: prefix=${args.namePrefix}`)
+    await runBulkShipCleanup({
+      baseUrl: args.baseUrl,
+      token,
+      namePrefix: args.namePrefix,
       deploymentProfile: "local_starship_build",
-      provisioningMode: "terraform_ansible",
-      saneBootstrap: true,
-      crewRoles: ["xo", "ops", "eng", "sec", "med", "cou"],
-    },
-  })
+      // Cluster reset tears down local infra, so skip terraform destroy during prelaunch cleanup.
+      preserveInfra: true,
+      verbose: args.verbose,
+    })
+    console.log("[local-debug] continuing to forced cluster reset")
 
-  const deploymentId = launch.json.deployment?.id
-  if (args.verbose) {
-    console.log(`[local-debug] launch response=${JSON.stringify(launch.json)}`)
-  }
-  if (!deploymentId) {
-    console.error(`[local-debug] launch failed without deployment id (status=${launch.status})`)
-    console.error(JSON.stringify(launch.json, null, 2))
-    process.exitCode = 2
-    return
-  }
-
-  console.log(`[local-debug] deployment id: ${deploymentId}`)
-  console.log(`[local-debug] initial launch status=${launch.json.deployment?.status || "unknown"} http=${launch.status}`)
-  if (launch.json.code) {
-    console.log(`[local-debug] launch code=${launch.json.code} error=${launch.json.error || ""}`)
-  }
-
-  const startedAt = Date.now()
-  while (Date.now() - startedAt < args.timeoutMs) {
-    const status = await requestJson<StatusResponse>({
-      url: `${args.baseUrl}/api/ship-yard/status/${deploymentId}`,
-      method: "GET",
+    console.log(`[local-debug] prelaunch cluster reset: ${clusterName}`)
+    const reset = await requestJson<ClusterResetResponse>({
+      url: `${args.baseUrl}/api/ship-yard/local/cluster/reset`,
+      method: "POST",
       token,
       timeoutMs: DEFAULT_REQUEST_TIMEOUT_MS,
+      body: {
+        confirm: "reset-cluster",
+        clusterName,
+      },
+    })
+    if (args.verbose) {
+      console.log(`[local-debug] cluster reset response=${JSON.stringify(reset.json)}`)
+    }
+
+    if (reset.status < 200 || reset.status >= 300) {
+      console.error(
+        `[local-debug] cluster reset failed status=${reset.status} code=${reset.json.code || "unknown"} error=${reset.json.error || "unknown"}`,
+      )
+      process.exitCode = 2
+      return
+    }
+
+    console.log(
+      `[local-debug] cluster reset complete cluster=${reset.json.clusterName || clusterName} context=${reset.json.kubeContext || `kind-${clusterName}`}`,
+    )
+
+    const shipName = `${args.namePrefix}-${nowStamp()}`
+    console.log(`[local-debug] launch request: ${shipName}`)
+    console.log(
+      `[local-debug] launch can stay open while local provisioning runs (up to ${args.timeoutMs}ms)`,
+    )
+
+    const launch = await requestJson<LaunchResponse>({
+      url: `${args.baseUrl}/api/ship-yard/launch`,
+      method: "POST",
+      token,
+      timeoutMs: args.timeoutMs,
+      body: {
+        name: shipName,
+        description: "Ship Yard local debug loop launch",
+        nodeId: args.nodeId,
+        deploymentProfile: "local_starship_build",
+        provisioningMode: "terraform_ansible",
+        saneBootstrap: true,
+        crewRoles: ["xo", "ops", "eng", "sec", "med", "cou"],
+      },
     })
 
-    const deployment = status.json.deployment
-    const state = deployment?.status || "unknown"
-    const health = deployment?.healthStatus || "n/a"
+    const deploymentId = launch.json.deployment?.id
     if (args.verbose) {
-      console.log(`[local-debug] status response=${JSON.stringify(status.json)}`)
+      console.log(`[local-debug] launch response=${JSON.stringify(launch.json)}`)
     }
-    console.log(`[local-debug] poll status=${state} health=${health} http=${status.status}`)
-
-    if (state === "active") {
-      console.log("[local-debug] ship is active")
-      process.exitCode = 0
+    if (!deploymentId) {
+      console.error(`[local-debug] launch failed without deployment id (status=${launch.status})`)
+      console.error(JSON.stringify(launch.json, null, 2))
+      process.exitCode = 2
       return
     }
 
-    if (state === "failed") {
-      console.error(`[local-debug] ship failed code=${deployment?.metadata?.deploymentErrorCode || "unknown"}`)
-      console.error(`[local-debug] failure=${deployment?.metadata?.deploymentError || "unknown"}`)
-      const suggested = deployment?.metadata?.deploymentErrorDetails?.suggestedCommands || []
-      if (suggested.length > 0) {
-        console.error("[local-debug] suggested commands:")
-        for (const command of suggested) {
-          console.error(`  - ${command}`)
-        }
-      }
-      await printInspectionReadout({
-        baseUrl: args.baseUrl,
-        deploymentId,
+    console.log(`[local-debug] deployment id: ${deploymentId}`)
+    console.log(`[local-debug] initial launch status=${launch.json.deployment?.status || "unknown"} http=${launch.status}`)
+    if (launch.json.code) {
+      console.log(`[local-debug] launch code=${launch.json.code} error=${launch.json.error || ""}`)
+    }
+
+    const startedAt = Date.now()
+    while (Date.now() - startedAt < args.timeoutMs) {
+      const status = await requestJson<StatusResponse>({
+        url: `${args.baseUrl}/api/ship-yard/status/${deploymentId}`,
+        method: "GET",
         token,
         timeoutMs: DEFAULT_REQUEST_TIMEOUT_MS,
-        verbose: args.verbose,
       })
-      process.exitCode = 1
-      return
+
+      const deployment = status.json.deployment
+      const state = deployment?.status || "unknown"
+      const health = deployment?.healthStatus || "n/a"
+      if (args.verbose) {
+        console.log(`[local-debug] status response=${JSON.stringify(status.json)}`)
+      }
+      console.log(`[local-debug] poll status=${state} health=${health} http=${status.status}`)
+
+      if (state === "active") {
+        console.log("[local-debug] ship is active")
+        process.exitCode = 0
+        return
+      }
+
+      if (state === "failed") {
+        console.error(`[local-debug] ship failed code=${deployment?.metadata?.deploymentErrorCode || "unknown"}`)
+        console.error(`[local-debug] failure=${deployment?.metadata?.deploymentError || "unknown"}`)
+        const suggested = deployment?.metadata?.deploymentErrorDetails?.suggestedCommands || []
+        if (suggested.length > 0) {
+          console.error("[local-debug] suggested commands:")
+          for (const command of suggested) {
+            console.error(`  - ${command}`)
+          }
+        }
+        await printInspectionReadout({
+          baseUrl: args.baseUrl,
+          deploymentId,
+          token,
+          timeoutMs: DEFAULT_REQUEST_TIMEOUT_MS,
+          verbose: args.verbose,
+        })
+        process.exitCode = 1
+        return
+      }
+
+      await sleep(args.pollMs)
     }
 
-    await sleep(args.pollMs)
-  }
+    console.error(`[local-debug] timeout waiting for terminal status after ${args.timeoutMs}ms`)
+    process.exitCode = 2
+  } finally {
+    if (args.keepCluster) {
+      console.log("[local-debug] post-run teardown skipped (--keep-cluster)")
+    } else {
+      console.log("[local-debug] post-run teardown started")
+      try {
+        await runBulkShipCleanup({
+          baseUrl: args.baseUrl,
+          token,
+          namePrefix: args.namePrefix,
+          deploymentProfile: "local_starship_build",
+          preserveInfra: false,
+          verbose: args.verbose,
+        })
+        await runBulkShipCleanup({
+          baseUrl: args.baseUrl,
+          token,
+          namePrefix: args.namePrefix,
+          deploymentProfile: "lightweight_shuttle",
+          preserveInfra: false,
+          verbose: args.verbose,
+        })
+      } catch (error) {
+        console.warn(`[local-debug] post-run ship cleanup warning: ${(error as Error).message}`)
+      }
 
-  console.error(`[local-debug] timeout waiting for terminal status after ${args.timeoutMs}ms`)
-  process.exitCode = 2
+      await deleteKindClusterBestEffort(clusterName)
+    }
+  }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

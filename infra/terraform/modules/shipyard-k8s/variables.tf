@@ -382,7 +382,7 @@ variable "enable_prometheus" {
 variable "prometheus_chart_version" {
   type        = string
   description = "Prometheus Helm chart version (prometheus-community/prometheus)"
-  default     = "31.0.0"
+  default     = "28.9.1"
 }
 
 variable "prometheus_ingress_enabled" {

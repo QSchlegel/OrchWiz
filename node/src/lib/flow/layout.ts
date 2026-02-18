@@ -47,6 +47,34 @@ export function layoutTimeline<T extends Node>(nodes: T[], spacing = 260, start:
 }
 
 /**
+ * Lay out tiers as centered horizontal rows stacked vertically.
+ * Designed for hierarchical topologies (e.g., anchors → ships → apps).
+ */
+export function layoutHierarchy<T extends Node>(
+  tiers: { key: string; nodes: T[] }[],
+  tierGap = 180,
+  nodeGap = 240,
+  center = 400,
+): T[] {
+  const arranged: T[] = []
+  tiers.forEach((tier, tierIndex) => {
+    const count = tier.nodes.length
+    const totalWidth = (count - 1) * nodeGap
+    const startX = center - totalWidth / 2
+    tier.nodes.forEach((node, colIndex) => {
+      arranged.push({
+        ...node,
+        position: {
+          x: startX + colIndex * nodeGap,
+          y: tierIndex * tierGap,
+        },
+      })
+    })
+  })
+  return arranged
+}
+
+/**
  * Lay out groups as horizontal rows stacked vertically.
  * Each group's nodes are spread along the X axis and centered.
  */

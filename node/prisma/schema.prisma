@@ -36,6 +36,7 @@ model User {
   bridgeCallRounds      BridgeCallRound[]
   observabilityTraces   ObservabilityTrace[]
   agentSyncPreference   AgentSyncPreference?
+  userSetting           UserSetting?
   agentSyncSignals      AgentSyncSignal[]
   agentSyncRuns         AgentSyncRun[]
   agentSyncSuggestions  AgentSyncSuggestion[]
@@ -865,6 +866,21 @@ model AgentSyncPreference {
   updatedAt    DateTime @updatedAt
 
   user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model UserSetting {
+  id                     String   @id @default(cuid())
+  userId                 String   @unique
+  langfuseCloudUrl       String?
+  langfuseCloudProject   String?
+  langfuseCloudPublicKey String?
+  langfuseCloudSecretKey String?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  user                   User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
 }
 
 model AgentSyncSignal {
@@ -2089,6 +2105,7 @@ enum DeploymentType {
 
 enum DeploymentProfile {
   local_starship_build
+  lightweight_shuttle
   cloud_shipyard
 }
 

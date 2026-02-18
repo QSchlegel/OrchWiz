@@ -6,6 +6,8 @@ app_image    = "orchwiz:local-dev"
 
 openclaw_image         = "ghcr.io/openclaw/openclaw:latest"
 openclaw_gateway_token = "orchwiz-openclaw-dev-token"
+# Keep 6 for full bridge station fan-out. Set to 1 for lightweight_shuttle launches.
+# openclaw_station_count = 6
 # Optional: provide dedicated per-station gateway tokens. When omitted, tokens
 # are automatically derived from openclaw_gateway_token (e.g. "<seed>-xo").
 # openclaw_gateway_tokens = {

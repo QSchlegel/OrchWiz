@@ -1062,9 +1062,6 @@ export async function executeSessionPrompt(args: ExecuteSessionPromptArgs): Prom
     throw error
   }
 
-  const bridgeMetadata = asRecord(metadataForRuntime.bridge)
-  const quartermasterMetadata = asRecord(metadataForRuntime.quartermaster)
-  const isQuartermasterChannel = quartermasterMetadata.channel === "ship-quartermaster"
   const quartermasterOutput = isQuartermasterChannel
     ? finalizeQuartermasterRuntimeOutput({
         runtimeResult,

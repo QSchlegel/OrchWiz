@@ -7,7 +7,7 @@ import { normalizeShipMonitoringConfig } from "@/lib/shipyard/monitoring"
 export type NodeType = "local" | "cloud" | "hybrid"
 
 export type DeploymentType = "agent" | "ship"
-export type DeploymentProfile = "local_starship_build" | "cloud_shipyard"
+export type DeploymentProfile = "local_starship_build" | "lightweight_shuttle" | "cloud_shipyard"
 export type ProvisioningMode = "terraform_ansible" | "terraform_only" | "ansible_only"
 export type InfrastructureKind = "kind" | "minikube" | "existing_k8s"
 
@@ -33,7 +33,11 @@ interface NormalizeProfileInput {
   config?: unknown
 }
 
-const DEPLOYMENT_PROFILES: DeploymentProfile[] = ["local_starship_build", "cloud_shipyard"]
+const DEPLOYMENT_PROFILES: DeploymentProfile[] = [
+  "local_starship_build",
+  "lightweight_shuttle",
+  "cloud_shipyard",
+]
 const PROVISIONING_MODES: ProvisioningMode[] = ["terraform_ansible", "terraform_only", "ansible_only"]
 const INFRASTRUCTURE_KINDS: InfrastructureKind[] = ["kind", "minikube", "existing_k8s"]
 const DEPLOYMENT_TYPES: DeploymentType[] = ["agent", "ship"]
@@ -44,6 +48,7 @@ export const DEFAULT_PROVISIONING_MODE: ProvisioningMode = "terraform_ansible"
 
 export const DEPLOYMENT_PROFILE_LABELS: Record<DeploymentProfile, string> = {
   local_starship_build: "Local Starship Build",
+  lightweight_shuttle: "Lightweight Shuttle",
   cloud_shipyard: "Cloud Shipyard",
 }
 
@@ -89,6 +94,22 @@ export function parseDeploymentProfile(value: unknown): DeploymentProfile {
   return DEFAULT_DEPLOYMENT_PROFILE
 }
 
+export function isCloudDeploymentProfile(profile: DeploymentProfile): profile is "cloud_shipyard" {
+  return profile === "cloud_shipyard"
+}
+
+export function isLightweightShuttleProfile(
+  profile: DeploymentProfile,
+): profile is "lightweight_shuttle" {
+  return profile === "lightweight_shuttle"
+}
+
+export function isLocalDeploymentProfile(
+  profile: DeploymentProfile,
+): profile is "local_starship_build" | "lightweight_shuttle" {
+  return profile === "local_starship_build" || profile === "lightweight_shuttle"
+}
+
 export function parseProvisioningMode(value: unknown): ProvisioningMode {
   if (typeof value === "string" && PROVISIONING_MODES.includes(value as ProvisioningMode)) {
     return value as ProvisioningMode
@@ -97,7 +118,7 @@ export function parseProvisioningMode(value: unknown): ProvisioningMode {
 }
 
 export function defaultInfrastructureConfig(profile: DeploymentProfile): InfrastructureConfig {
-  if (profile === "cloud_shipyard") {
+  if (isCloudDeploymentProfile(profile)) {
     return {
       kind: "existing_k8s",
       kubeContext: "existing-cluster",
@@ -132,7 +153,7 @@ function inferInfrastructureKind(
   incomingKind: InfrastructureKind | undefined,
   kubeContext: string | undefined,
 ): InfrastructureKind {
-  if (profile === "cloud_shipyard") {
+  if (isCloudDeploymentProfile(profile)) {
     return "existing_k8s"
   }
 
@@ -178,10 +199,9 @@ export function normalizeInfrastructureInConfig(
 ): { infrastructure: InfrastructureConfig; config: Record<string, unknown> } {
   const config = asRecord(rawConfig)
   const infrastructure = normalizeInfrastructureConfig(profile, asRecord(config.infrastructure))
-  const cloudProvider =
-    profile === "cloud_shipyard"
-      ? normalizeCloudProviderConfig(config.cloudProvider)
-      : undefined
+  const cloudProvider = isCloudDeploymentProfile(profile)
+    ? normalizeCloudProviderConfig(config.cloudProvider)
+    : undefined
   const monitoring = normalizeShipMonitoringConfig(config.monitoring)
 
   return {
@@ -207,7 +227,7 @@ export function deriveNodeTypeFromProfile(
   requestedNodeType?: NodeType,
   allowHybridOverride = false,
 ): NodeType {
-  if (profile === "local_starship_build") {
+  if (isLocalDeploymentProfile(profile)) {
     return "local"
   }
 

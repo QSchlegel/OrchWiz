@@ -177,9 +177,15 @@ test("bootstrapInitialApplicationsForShip returns skipped and does not deploy wh
   const ship = shipTarget()
   ship.config = {
     ...(ship.config as Record<string, unknown>),
-    initialApplications: {
-      n8n: false,
-      dokploy: false,
+    appRegistry: {
+      n8n: { enabled: false },
+      dokploy: { enabled: false },
+      spacebot: {
+        enabled: false,
+        stack: "cloudflare-local",
+        launchRequirement: "require_running",
+        agentRuntimes: [],
+      },
     },
   }
 
@@ -211,6 +217,41 @@ test("bootstrapInitialApplicationsForShip returns skipped and does not deploy wh
   assert.equal(adapterCalls, 0)
   assert.equal(harness.getCreateCount(), 0)
   assert.equal(harness.getUpdateCount(), 0)
+})
+
+test("bootstrapInitialApplicationsForShip keeps n8n enabled by default for lightweight_shuttle profile", async () => {
+  const harness = makePrismaHarness({
+    storedSecrets: n8nSecrets(),
+  })
+
+  const ship = shipTarget()
+  ship.deploymentProfile = "lightweight_shuttle"
+
+  const result = await bootstrapInitialApplicationsForShip(
+    {
+      ownerUserId: "user-1",
+      ship,
+    },
+    {
+      prismaClient: harness.prismaStub as any,
+      runDeploymentAdapterFn: async () => adapterResult("active"),
+      publishShipApplicationUpdatedFn: () => {},
+      resolveShipyardSecretTemplateValuesFn: async () => n8nSecrets(),
+      importCuratedToolForUserFn: async () =>
+        ({
+          run: { id: "run-1" },
+          entry: { id: "tool-n8n" },
+        } as any),
+      ensureShipToolGrantForBootstrapFn: async () =>
+        ({
+          id: "grant-n8n",
+        } as any),
+    },
+  )
+
+  assert.equal(result.n8n.status, "ready")
+  assert.equal(result.n8n.enabled, true)
+  assert.equal(result.n8n.attempted, true)
 })
 
 test("bootstrapInitialApplicationsForShip deploys n8n and grants tool when everything succeeds", async () => {

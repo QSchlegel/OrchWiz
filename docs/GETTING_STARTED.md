@@ -143,14 +143,26 @@ npm run shipyard:local:debug
 Notes:
 
 - For `kind`, local bootstrap uses Docker to build/load `orchwiz:local-dev` from `node/Dockerfile.shipyard` when `saneBootstrap=true`.
+- `LOCAL_SHIPYARD_AUTO_CREATE_KIND_CLUSTER` now defaults to `false`; set it to `true` if you want missing kind clusters to be auto-created during bootstrap.
+- Local bootstrap now defaults to lean observability for resource control. Set `LOCAL_SHIPYARD_ENABLE_OBSERVABILITY_STACK=true` to opt in to full local observability stack provisioning.
 - Debug loop enforces one-ship-at-a-time for debug ships: it deletes prior debug ships by name prefix and recreates the target kind cluster before launching.
-- kind control-plane containers are expected to run in Docker for local kind-based testing.
+- Debug loop auto-tears down local debug infrastructure on exit by default (ship cleanup with `preserveInfra=false` + best-effort `kind delete cluster`).
+- Use `npm run shipyard:local:debug -- --keep-cluster` when you want to keep the cluster for manual inspection.
 - First run can take several minutes, and launch can be quiet while Terraform/Ansible runs inline.
 - On `failed` status, the loop automatically calls `/api/ship-yard/status/<deploymentId>/inspection?includeRuntime=true&deliveriesTake=6` and prints curated failure/readout diagnostics.
 - Terminal exit code:
   - `0`: ship reached `active`
   - `1`: ship reached `failed`
   - `2`: preflight/runtime failure
+
+Optional manual cooldown:
+
+```bash
+cd /path/to/OrchWiz/node
+npm run shipyard:local:cooldown
+```
+
+Docker Desktop resource target for local Ship Yard work: `4 CPU / 8 GiB` VM budget.
 
 Detailed controls and local bootstrap variables are documented in:
 [Ship Yard Local Launch (Sane Bootstrap)](../node/README.md#ship-yard-local-launch-sane-bootstrap).
@@ -271,6 +283,7 @@ After login, verify these paths:
 
 - `Prisma can't connect`: check `DATABASE_URL` points to port `5435` and Postgres is running.
 - Postgres crash-looping with `No space left on device`: free Docker disk space (`docker image prune -f`, `docker builder prune -f`, optionally `docker volume prune -f`) or increase Docker Desktop’s disk allocation, then restart Postgres (`cd dev-local && docker compose restart postgres`).
+- Docker host pressure is high during local infra runs: set Docker Desktop VM budget to `4 CPU / 8 GiB` and keep heavy stacks opt-in.
 - `BETTER_AUTH_SECRET` errors: ensure it is set and non-empty.
 - Wallet enclave errors (`WALLET_ENCLAVE_DISABLED`/`WALLET_ENCLAVE_UNREACHABLE`):
   - Start wallet-enclave, or disable enclave-required flags in local `.env`.

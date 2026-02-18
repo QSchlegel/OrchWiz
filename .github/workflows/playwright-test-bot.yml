@@ -1,0 +1,102 @@
+name: Playwright Test Bot
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - node/**
+      - .github/workflows/playwright-test-bot.yml
+  push:
+    branches:
+      - main
+    paths:
+      - node/**
+      - .github/workflows/playwright-test-bot.yml
+
+permissions:
+  contents: read
+
+jobs:
+  test-bot:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: node
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: node/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browsers
+        run: npx playwright install chromium
+
+      - name: Run test bot against local app
+        env:
+          ORCHWIZ_BOT_BASE_URL: http://127.0.0.1:3000
+          PW_REPORT_DIR: /home/runner/work/orchwiz/orchwiz/node/output/playwright
+          NODE_ENV: production
+        run: |
+          if [ -f .env.example ]; then
+            cp .env.example .env
+          fi
+
+          npm run build >/tmp/orchwiz-build.log 2>&1
+
+          (npm run start >/tmp/orchwiz-app.log 2>&1 & echo $! > /tmp/orchwiz-app.pid)
+          APP_PID=$(cat /tmp/orchwiz-app.pid)
+          APP_READY=0
+
+          for attempt in $(seq 1 90); do
+            if curl -fsS "$ORCHWIZ_BOT_BASE_URL" >/dev/null; then
+              APP_READY=1
+              break
+            fi
+            if [ ! -d /proc/$APP_PID ]; then
+              echo "app process exited before it became ready"
+              cat /tmp/orchwiz-app.log
+              exit 1
+            fi
+            sleep 2
+          done
+
+          if [ "$APP_READY" != "1" ]; then
+            echo "app did not become ready before timeout"
+            cat /tmp/orchwiz-app.log
+            kill $APP_PID || true
+            wait $APP_PID || true
+            exit 1
+          fi
+
+          if [ ! -d /proc/$APP_PID ]; then
+            echo "app process exited before it became ready"
+            cat /tmp/orchwiz-app.log
+            exit 1
+          fi
+
+          if ! npm run test:bot:ci; then
+            BOT_EXIT_CODE=$?
+          else
+            BOT_EXIT_CODE=0
+          fi
+
+          kill $APP_PID || true
+          wait $APP_PID || true
+          exit ${BOT_EXIT_CODE:-1}
+        timeout-minutes: 30
+
+      - name: Upload Playwright artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-test-bot-artifacts
+          path: node/output/playwright/
+          if-no-files-found: error

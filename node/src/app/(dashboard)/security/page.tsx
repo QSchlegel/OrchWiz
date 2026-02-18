@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react"
 import Link from "next/link"
 import { EmptyState, InlineNotice, PageLayout, SurfaceCard } from "@/components/dashboard/PageLayout"
+import { ISO27001UtilityCard } from "@/components/security/ISO27001UtilityCard"
 import { SeverityBar } from "@/components/security/SeverityBar"
 import { TrendingDown, TrendingUp } from "lucide-react"
 
@@ -614,6 +615,8 @@ export default function SecurityPage() {
             </ul>
           </SurfaceCard>
         ) : null}
+
+        {!isLoading ? <ISO27001UtilityCard /> : null}
 
         {!isLoading && !audit && !automatedAudit ? (
           <EmptyState

@@ -143,6 +143,7 @@ const COMMON_SHIPYARD_SECRET_FIELDS: ShipyardSecretFieldKey[] = [
 
 const PROFILE_SPECIFIC_FIELDS: Record<DeploymentProfile, ShipyardSecretFieldKey[]> = {
   local_starship_build: ["postgres_password"],
+  lightweight_shuttle: ["postgres_password"],
   cloud_shipyard: ["database_url"],
 }
 
@@ -202,7 +203,7 @@ function profileAllowsField(profile: DeploymentProfile, field: ShipyardSecretFie
 }
 
 function tfvarsDbFieldForProfile(profile: DeploymentProfile): ShipyardSecretFieldKey {
-  return profile === "local_starship_build" ? "postgres_password" : "database_url"
+  return profile === "cloud_shipyard" ? "database_url" : "postgres_password"
 }
 
 function maskSecret(value: string): string {

@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
 import { NextRequest, NextResponse } from "next/server"
-import type { Prisma } from "@prisma/client"
+import type { DeploymentProfile, Prisma } from "@prisma/client"
 import { prisma } from "@/lib/prisma"
 import type { RunCommandFn } from "@/lib/shipyard/cluster-database-url"
 import { publishRealtimeEvent } from "@/lib/realtime/events"
@@ -13,6 +13,8 @@ import {
 import { runShipyardLocalLaunch } from "@/lib/deployment/shipyard-local-launch"
 import { runLocalBootstrap } from "@/lib/deployment/local-bootstrap"
 import {
+  DEPLOYMENT_PROFILE_LABELS,
+  isLocalDeploymentProfile,
   normalizeDeploymentProfileInput,
   type InfrastructureConfig,
 } from "@/lib/deployment/profile"
@@ -23,6 +25,7 @@ import {
   BRIDGE_CREW_ROLE_ORDER,
   bridgeCrewTemplateForRole,
   isBridgeCrewRole,
+  requiredBridgeCrewRolesForDeploymentProfile,
   type BridgeCrewRole,
 } from "@/lib/shipyard/bridge-crew"
 import { estimateShipBaseRequirements } from "@/lib/shipyard/resource-estimation"
@@ -54,7 +57,10 @@ import { requireShipyardRequestActor } from "@/lib/shipyard/request-actor"
 import {
   bootstrapInitialApplicationsForShipFailOpen,
 } from "@/lib/shipyard/initial-applications"
+import { withSanitizedShipAppRegistryConfig } from "@/lib/shipyard/app-registry"
 import { SHIP_LATEST_VERSION } from "@/lib/shipyard/versions"
+import { withLangfuseCloudSettingsInConfig } from "@/lib/shipyard/monitoring"
+import { readUserLangfuseCloudSettings } from "@/lib/settings/langfuse-cloud"
 import {
   publishShipLaunchLog,
   createCloudBootstrapLoggingRuntime,
@@ -154,6 +160,22 @@ function parseCrewOverrides(input: unknown): CrewOverrides {
   return result
 }
 
+export function withSanitizedAppRegistryLaunchConfig(args: {
+  config: Record<string, unknown>
+  deploymentProfile: DeploymentProfile
+  rawAppRegistry?: unknown
+  rawInitialApplications?: unknown
+  rawSpacebot?: unknown
+}): Record<string, unknown> {
+  return withSanitizedShipAppRegistryConfig({
+    config: args.config,
+    deploymentProfile: args.deploymentProfile,
+    rawAppRegistry: args.rawAppRegistry,
+    rawInitialApplications: args.rawInitialApplications,
+    rawSpacebot: args.rawSpacebot,
+  })
+}
+
 export async function POST(request: NextRequest) {
   try {
     const body = asRecord(await request.json())
@@ -225,25 +247,7 @@ export async function POST(request: NextRequest) {
       stage: "validating_crew",
       message: "Validating crew",
     })
-    const crewRoles = uniqueCrewRoles(body?.crewRoles)
-    if (crewRoles.length === 0) {
-      return NextResponse.json(
-        { error: "At least one bridge crew role is required" },
-        { status: 400 },
-      )
-    }
-    if (!hasCompleteBridgeCrewCoverage(crewRoles)) {
-      return NextResponse.json(
-        {
-          error: "Ship launch requires all six bridge crew roles (XO, OPS, ENG, SEC, MED, COU).",
-          details: {
-            requiredCrewRoles: BRIDGE_CREW_ROLE_ORDER,
-            receivedCrewRoles: crewRoles,
-          },
-        },
-        { status: 400 },
-      )
-    }
+    const requestedCrewRoles = uniqueCrewRoles(body?.crewRoles)
 
     emitLaunchProgress({
       percent: 5,
@@ -258,12 +262,28 @@ export async function POST(request: NextRequest) {
 
     const crewOverrides = parseCrewOverrides(body?.crewOverrides)
 
+    const rawConfig = asRecord(body?.config)
+    let rawConfigWithSettings = rawConfig
+    try {
+      const langfuseCloudSettings = await readUserLangfuseCloudSettings(ownerUserId)
+      rawConfigWithSettings = withLangfuseCloudSettingsInConfig(rawConfig, langfuseCloudSettings)
+    } catch (error) {
+      console.error("Failed to load Langfuse Cloud settings for launch defaults:", error)
+    }
+
     const normalizedProfile = normalizeDeploymentProfileInput({
       deploymentProfile: body?.deploymentProfile,
       provisioningMode: body?.provisioningMode,
       nodeType: body?.nodeType,
       advancedNodeTypeOverride: body?.advancedNodeTypeOverride,
-      config: body?.config,
+      config: rawConfigWithSettings,
+    })
+    const launchConfig = withSanitizedAppRegistryLaunchConfig({
+      config: asRecord(normalizedProfile.config),
+      deploymentProfile: normalizedProfile.deploymentProfile,
+      rawAppRegistry: rawConfig.appRegistry,
+      rawInitialApplications: rawConfig.initialApplications,
+      rawSpacebot: rawConfig.spacebot,
     })
 
     emitLaunchProgress({
@@ -271,22 +291,43 @@ export async function POST(request: NextRequest) {
       stage: "profile_ready",
       message: "Preparing launch profile",
     })
+    const requiredCrewRoles =
+      requiredBridgeCrewRolesForDeploymentProfile(normalizedProfile.deploymentProfile)
+    const crewRoles = requiredCrewRoles.filter((role) => requestedCrewRoles.includes(role))
+    if (requestedCrewRoles.length === 0 || !hasCompleteBridgeCrewCoverage({
+      deploymentProfile: normalizedProfile.deploymentProfile,
+      crewRoles,
+    })) {
+      const requiredCrewRoleLabels = requiredCrewRoles.map((role) => role.toUpperCase()).join(", ")
+      return NextResponse.json(
+        {
+          error: `Ship launch requires bridge agent role coverage for: ${requiredCrewRoleLabels}.`,
+          details: {
+            requiredCrewRoles,
+            receivedCrewRoles: requestedCrewRoles,
+          },
+        },
+        { status: 400 },
+      )
+    }
+
+    const localProfile = isLocalDeploymentProfile(normalizedProfile.deploymentProfile)
 
     if (
-      normalizedProfile.deploymentProfile === "local_starship_build"
+      localProfile
       && isCloudDeployOnlyEnabled()
     ) {
       return NextResponse.json(
         {
           error:
-            "Local Starship Build launches are disabled because CLOUD_DEPLOY_ONLY=true. Use Cloud Shipyard instead.",
+            "Local Ship Yard launches are disabled because CLOUD_DEPLOY_ONLY=true. Use Cloud Shipyard instead.",
           code: "CLOUD_DEPLOY_ONLY",
           details: {
-            blockedDeploymentProfile: "local_starship_build",
+            blockedDeploymentProfile: normalizedProfile.deploymentProfile,
             requiredDeploymentProfile: "cloud_shipyard",
             suggestedCommands: [
               "Set deploymentProfile to cloud_shipyard and retry launch.",
-              "Unset CLOUD_DEPLOY_ONLY to re-enable local starship launches.",
+              "Unset CLOUD_DEPLOY_ONLY to re-enable local launches.",
             ],
           },
         },
@@ -295,7 +336,7 @@ export async function POST(request: NextRequest) {
     }
 
     const saneBootstrap =
-      normalizedProfile.deploymentProfile === "local_starship_build"
+      localProfile
         ? (asBoolean(body?.saneBootstrap) ?? true)
         : false
     const baseRequirementsEstimate = estimateShipBaseRequirements({
@@ -331,7 +372,7 @@ export async function POST(request: NextRequest) {
           nodeUrl: asString(body?.nodeUrl),
           shipVersion: SHIP_LATEST_VERSION,
           shipVersionUpdatedAt: new Date(),
-          config: normalizedProfile.config as Prisma.InputJsonValue,
+          config: launchConfig as Prisma.InputJsonValue,
           metadata: {
             shipYard: true,
             bridgeCrewRoles: crewRoles,
@@ -344,7 +385,7 @@ export async function POST(request: NextRequest) {
               requestedUserId: actor.requestedUserId || actor.userId,
               impersonated: actor.impersonated === true,
             },
-            ...(normalizedProfile.deploymentProfile === "local_starship_build"
+            ...(localProfile
               ? { saneBootstrap }
               : {}),
           },
@@ -584,7 +625,8 @@ export async function POST(request: NextRequest) {
     }
 
     let adapterResult: DeploymentAdapterResult
-    if (created.deployment.deploymentProfile === "local_starship_build") {
+    if (isLocalDeploymentProfile(created.deployment.deploymentProfile)) {
+      const localProfileLabel = DEPLOYMENT_PROFILE_LABELS[created.deployment.deploymentProfile]
       emitLaunchProgress({
         percent: 36,
         stage: "checking_tools",
@@ -594,16 +636,17 @@ export async function POST(request: NextRequest) {
       emitLaunchProgress({
         percent: 42,
         stage: "launching_local",
-        message: "Bootstrapping local Starship build",
+        message: `Bootstrapping ${localProfileLabel}`,
         deploymentId: created.deployment.id,
       })
       emitLaunchLog({
         level: "info",
         source: "ship-yard",
-        lines: ["Bootstrapping local Starship build"],
+        lines: [`Bootstrapping ${localProfileLabel}`],
       })
 
       const launchResult = await runShipyardLocalLaunch({
+        deploymentProfile: created.deployment.deploymentProfile,
         provisioningMode: created.deployment.provisioningMode,
         infrastructure: normalizedProfile.infrastructure as InfrastructureConfig,
         saneBootstrap,

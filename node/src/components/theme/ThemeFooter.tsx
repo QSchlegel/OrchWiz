@@ -173,8 +173,13 @@ export function ThemeFooter() {
     return `/uss-k8s?${params.toString()}`
   }, [selectedShipDeploymentId])
 
+  const quartermasterShipDeploymentId = useMemo(
+    () => selectedShipDeploymentId || ships[0]?.id || null,
+    [selectedShipDeploymentId, ships],
+  )
+
   const loadShips = useCallback(async () => {
-    if (!shipSelectorAvailable) {
+    if (!shipSelectorAvailable && !agentChatAvailable) {
       setShips([])
       return
     }
@@ -210,7 +215,7 @@ export function ThemeFooter() {
     } finally {
       setIsLoadingShips(false)
     }
-  }, [selectedShipDeploymentId, setSelectedShipDeploymentId, shipSelectorAvailable])
+  }, [agentChatAvailable, selectedShipDeploymentId, setSelectedShipDeploymentId, shipSelectorAvailable])
 
   useEffect(() => {
     void loadShips()
@@ -246,7 +251,7 @@ export function ThemeFooter() {
                 <AgentChatPasskeyLockCard timeoutMs={lockTimeoutMs} onUnlocked={handleAgentChatUnlocked} />
               ) : (
                 <ShipQuartermasterPanel
-                  shipDeploymentId={selectedShipDeploymentId}
+                  shipDeploymentId={quartermasterShipDeploymentId}
                   className="shadow-[0_16px_44px_rgba(15,23,42,0.3)]"
                   compact
                   autoFocusPrompt

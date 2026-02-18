@@ -3,6 +3,8 @@ services:
     image: postgres:15-alpine
     container_name: orchwiz-postgres-dev-local
     restart: unless-stopped
+    mem_limit: 512m
+    cpus: "0.50"
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-orchwiz}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-orchwiz_dev}
@@ -22,6 +24,8 @@ services:
       context: ../services/agent-lightning-store
     container_name: orchwiz-agent-lightning-store-dev-local
     restart: unless-stopped
+    mem_limit: 768m
+    cpus: "1.00"
     ports:
       - "4747:4747"
 
@@ -30,6 +34,8 @@ services:
       context: ../services/wallet-enclave
     container_name: orchwiz-wallet-enclave-dev-local
     restart: unless-stopped
+    mem_limit: 512m
+    cpus: "0.50"
     ports:
       - "127.0.0.1:3377:3377"
     env_file:
@@ -59,6 +65,8 @@ services:
       target: slim
     container_name: orchwiz-spacebot-dev-local
     restart: unless-stopped
+    mem_limit: 512m
+    cpus: "0.50"
     environment:
       WEBHOOK_ENABLED: "true"
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}

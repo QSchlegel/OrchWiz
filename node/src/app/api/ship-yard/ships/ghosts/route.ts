@@ -17,6 +17,7 @@ export const runtime = "nodejs"
 
 const DEPLOYMENT_PROFILE_VALUES = new Set<DeploymentProfile>([
   "local_starship_build",
+  "lightweight_shuttle",
   "cloud_shipyard",
 ])
 
@@ -203,7 +204,7 @@ function parseProfileFilter(raw: string | null): { ok: true; profiles: Deploymen
   if (!profile) {
     return {
       ok: false,
-      error: "deploymentProfile must be one of: local_starship_build, cloud_shipyard",
+      error: "deploymentProfile must be one of: local_starship_build, lightweight_shuttle, cloud_shipyard",
     }
   }
 

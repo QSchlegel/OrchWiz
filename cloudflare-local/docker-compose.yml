@@ -5,6 +5,8 @@ services:
     image: postgres:15-alpine
     container_name: orchwiz-postgres
     restart: unless-stopped
+    mem_limit: 512m
+    cpus: "0.50"
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-orchwiz}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
@@ -26,6 +28,8 @@ services:
       context: ../services/agent-lightning-store
     container_name: orchwiz-agent-lightning-store
     restart: unless-stopped
+    mem_limit: 768m
+    cpus: "1.00"
     networks:
       - orchwiz-network
 
@@ -35,6 +39,8 @@ services:
       target: slim
     container_name: orchwiz-spacebot
     restart: unless-stopped
+    mem_limit: 512m
+    cpus: "0.50"
     environment:
       WEBHOOK_ENABLED: "true"
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
@@ -51,6 +57,8 @@ services:
     image: orchwiz-control-plane:latest
     container_name: orchwiz-nextjs
     restart: unless-stopped
+    mem_limit: 1536m
+    cpus: "1.50"
     depends_on:
       postgres:
         condition: service_healthy
@@ -83,6 +91,8 @@ services:
     image: cloudflare/cloudflared:latest
     container_name: orchwiz-cloudflared
     restart: unless-stopped
+    mem_limit: 128m
+    cpus: "0.25"
     depends_on:
       - nextjs
     command: tunnel --config /etc/cloudflared/config.yml run

@@ -3,6 +3,8 @@ services:
     image: neo4j:5.26-community
     container_name: orchwiz-neo4j-ingest
     restart: unless-stopped
+    mem_limit: 1536m
+    cpus: "1.50"
     environment:
       NEO4J_AUTH: ${LGB_NEO4J_USERNAME:-neo4j}/${LGB_NEO4J_PASSWORD:-llm_graph_builder_dev}
       NEO4J_PLUGINS: '["apoc"]'
@@ -27,6 +29,8 @@ services:
       dockerfile: Dockerfile
     container_name: orchwiz-llm-graph-builder-backend
     restart: unless-stopped
+    mem_limit: 768m
+    cpus: "0.75"
     depends_on:
       neo4j-ingest:
         condition: service_healthy

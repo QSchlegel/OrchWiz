@@ -16,6 +16,7 @@ import { BRIDGE_CREW_ROLE_ORDER } from "@/lib/shipyard/bridge-crew"
 import {
   buildBridgeInspectionSummary,
   buildDeliveryMessagePreview,
+  extractInspectionDiagnosticsFromMetadata,
   extractInspectionFailureFromMetadata,
   extractInspectionLogTailsFromMetadata,
 } from "@/lib/shipyard/inspection"
@@ -269,12 +270,18 @@ export async function handleGetShipyardStatusInspection(
       metadata,
       deploymentStatus: deployment.status,
     })
+    const diagnostics = extractInspectionDiagnosticsFromMetadata({
+      metadata,
+      failure,
+    })
 
     const logs = {
       tails: extractInspectionLogTailsFromMetadata(metadata),
       saneBootstrap: asBooleanOrNull(metadata.saneBootstrap),
       localProvisioning: asRecordOrNull(metadata.localProvisioning),
       openClawContextInjection: asRecordOrNull(metadata.openClawContextInjection),
+      observability: asRecordOrNull(metadata.observability),
+      runtimeUi: asRecordOrNull(metadata.runtimeUi),
       shipUpgrade: asRecordOrNull(metadata.shipUpgrade),
     }
 
@@ -326,6 +333,7 @@ export async function handleGetShipyardStatusInspection(
         updatedAt: deployment.updatedAt.toISOString(),
       },
       failure,
+      diagnostics,
       logs,
       bridgeReadout,
       bridgeCrew: sortedBridgeCrew,

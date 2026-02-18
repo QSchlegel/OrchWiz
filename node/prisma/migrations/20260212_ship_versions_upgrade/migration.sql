@@ -1,3 +1,3 @@
 ALTER TABLE "AgentDeployment"
-  ADD COLUMN "shipVersion" TEXT NOT NULL DEFAULT 'v1',
-  ADD COLUMN "shipVersionUpdatedAt" TIMESTAMP(3);
+  ADD COLUMN IF NOT EXISTS "shipVersion" TEXT NOT NULL DEFAULT 'v1',
+  ADD COLUMN IF NOT EXISTS "shipVersionUpdatedAt" TIMESTAMP(3);

@@ -85,9 +85,9 @@ function joinPaths(base: string, suffix: string): string {
   return `${nextBase}/${nextSuffix}`.replace(/\/{2,}/gu, "/")
 }
 
-function parseCookieHeader(value: string | null): Record<string, string> {
-  if (!value) return {}
-  const out: Record<string, string> = {}
+function parseCookieHeaderValues(value: string | null): Array<{ name: string; value: string }> {
+  if (!value) return []
+  const out: Array<{ name: string; value: string }> = []
   for (const part of value.split(";")) {
     const trimmed = part.trim()
     if (!trimmed) continue
@@ -95,8 +95,8 @@ function parseCookieHeader(value: string | null): Record<string, string> {
     if (eqIndex <= 0) continue
     const name = trimmed.slice(0, eqIndex).trim()
     const cookieValue = trimmed.slice(eqIndex + 1).trim()
-    if (!name) continue
-    out[name] = cookieValue
+    if (!name || !cookieValue) continue
+    out.push({ name, value: cookieValue })
   }
   return out
 }
@@ -120,21 +120,32 @@ function authenticateRequest(req: http.IncomingMessage): { ok: true; userId: str
   const audience = asString(process.env.ORCHWIZ_RUNTIME_JWT_AUDIENCE) || "orchwiz-runtime-edge"
 
   const bearer = extractBearerToken(typeof req.headers.authorization === "string" ? req.headers.authorization : null)
-  const cookies = parseCookieHeader(typeof req.headers.cookie === "string" ? req.headers.cookie : null)
-  const token = bearer || cookies[ORCHWIZ_RUNTIME_JWT_COOKIE_NAME] || null
-  const verified = token
-    ? verifyRuntimeJwt(token, {
-        secret,
-        issuer,
-        audience,
-      })
-    : { ok: false as const, error: "Missing runtime auth token." }
+  const cookieValues = parseCookieHeaderValues(typeof req.headers.cookie === "string" ? req.headers.cookie : null)
+    .filter((cookie) => cookie.name === ORCHWIZ_RUNTIME_JWT_COOKIE_NAME)
+    .map((cookie) => cookie.value)
+  const tokenCandidates = [
+    ...(bearer ? [bearer] : []),
+    ...cookieValues,
+  ]
 
-  if (!verified.ok) {
-    return { ok: false, error: verified.error }
+  if (tokenCandidates.length === 0) {
+    return { ok: false, error: "Missing runtime auth token." }
   }
 
-  return { ok: true, userId: verified.payload.sub }
+  let lastError = "Invalid runtime auth token."
+  for (const token of tokenCandidates) {
+    const verified = verifyRuntimeJwt(token, {
+      secret,
+      issuer,
+      audience,
+    })
+    if (verified.ok) {
+      return { ok: true, userId: verified.payload.sub }
+    }
+    lastError = verified.error
+  }
+
+  return { ok: false, error: lastError }
 }
 
 function isBridgeStationKey(value: unknown): value is "xo" | "ops" | "eng" | "sec" | "med" | "cou" {
@@ -260,6 +271,27 @@ type RuntimeTarget =
       publicBasePath: string
       upstreamPathSuffix: string
     }
+  | {
+      kind: "langfuse"
+      upstreamBaseUrl: string
+      publicBaseUrl: string
+      publicBasePath: string
+      upstreamPathSuffix: string
+    }
+  | {
+      kind: "grafana"
+      upstreamBaseUrl: string
+      publicBaseUrl: string
+      publicBasePath: string
+      upstreamPathSuffix: string
+    }
+  | {
+      kind: "prometheus"
+      upstreamBaseUrl: string
+      publicBaseUrl: string
+      publicBasePath: string
+      upstreamPathSuffix: string
+    }
 
 function resolveRequestOrigin(req: http.IncomingMessage): { proto: "http" | "https"; host: string } {
   const host = (typeof req.headers["x-forwarded-host"] === "string" ? req.headers["x-forwarded-host"] : null)
@@ -273,12 +305,27 @@ function resolveRequestOrigin(req: http.IncomingMessage): { proto: "http" | "htt
   return { proto: "http", host }
 }
 
+function resolveLangfuseUpstreamBaseUrl(): string {
+  const namespace = asString(process.env.ORCHWIZ_MONITORING_NAMESPACE) || "monitoring"
+  return `http://langfuse-web.${namespace}.svc.cluster.local:3000`
+}
+
+function resolveGrafanaUpstreamBaseUrl(): string {
+  const namespace = asString(process.env.ORCHWIZ_MONITORING_NAMESPACE) || "monitoring"
+  return `http://grafana.${namespace}.svc.cluster.local:3000`
+}
+
+function resolvePrometheusUpstreamBaseUrl(): string {
+  const namespace = asString(process.env.ORCHWIZ_MONITORING_NAMESPACE) || "monitoring"
+  return `http://prometheus-server.${namespace}.svc.cluster.local:80`
+}
+
 function resolveRuntimeTarget(req: http.IncomingMessage, url: URL): RuntimeTarget | null {
   const { proto, host } = resolveRequestOrigin(req)
   const origin = `${proto}://${host}`
   const hostName = host.split(":")[0]?.trim().toLowerCase() || ""
 
-  // Cloud (host-based): openclaw-xo.<domain>, kubeview.<domain>
+  // Cloud (host-based): openclaw-xo.<domain>, kubeview.<domain>, langfuse.<domain>, grafana.<domain>, prometheus.<domain>
   if (hostName.startsWith("openclaw-")) {
     const stationKey = hostName.slice("openclaw-".length).split(".")[0]?.trim().toLowerCase() || ""
     if (isBridgeStationKey(stationKey)) {
@@ -316,7 +363,49 @@ function resolveRuntimeTarget(req: http.IncomingMessage, url: URL): RuntimeTarge
     }
   }
 
-  // Local (path-based): /openclaw/:stationKey/*, /kubeview/*
+  if (hostName.startsWith("langfuse.")) {
+    const publicBaseUrl = `${origin}`
+    const publicBasePath = "/"
+    const upstreamBaseUrl = resolveLangfuseUpstreamBaseUrl()
+    const upstreamPathSuffix = url.pathname.replace(/^\/+/u, "")
+    return {
+      kind: "langfuse",
+      upstreamBaseUrl,
+      publicBaseUrl,
+      publicBasePath,
+      upstreamPathSuffix,
+    }
+  }
+
+  if (hostName.startsWith("grafana.")) {
+    const publicBaseUrl = `${origin}`
+    const publicBasePath = "/"
+    const upstreamBaseUrl = resolveGrafanaUpstreamBaseUrl()
+    const upstreamPathSuffix = url.pathname.replace(/^\/+/u, "")
+    return {
+      kind: "grafana",
+      upstreamBaseUrl,
+      publicBaseUrl,
+      publicBasePath,
+      upstreamPathSuffix,
+    }
+  }
+
+  if (hostName.startsWith("prometheus.")) {
+    const publicBaseUrl = `${origin}`
+    const publicBasePath = "/"
+    const upstreamBaseUrl = resolvePrometheusUpstreamBaseUrl()
+    const upstreamPathSuffix = url.pathname.replace(/^\/+/u, "")
+    return {
+      kind: "prometheus",
+      upstreamBaseUrl,
+      publicBaseUrl,
+      publicBasePath,
+      upstreamPathSuffix,
+    }
+  }
+
+  // Local (path-based): /openclaw/:stationKey/*, /kubeview/*, /langfuse/*, /grafana/*, /prometheus/*
   const parts = url.pathname.split("/").filter(Boolean)
   if (parts[0] === "openclaw" && isBridgeStationKey(parts[1])) {
     const stationKey = parts[1]
@@ -346,6 +435,48 @@ function resolveRuntimeTarget(req: http.IncomingMessage, url: URL): RuntimeTarge
     const upstreamPathSuffix = parts.slice(1).join("/")
     return {
       kind: "kubeview",
+      upstreamBaseUrl,
+      publicBaseUrl,
+      publicBasePath,
+      upstreamPathSuffix,
+    }
+  }
+
+  if (parts[0] === "langfuse") {
+    const publicBasePath = "/langfuse"
+    const publicBaseUrl = `${origin}${publicBasePath}`
+    const upstreamBaseUrl = resolveLangfuseUpstreamBaseUrl()
+    const upstreamPathSuffix = parts.slice(1).join("/")
+    return {
+      kind: "langfuse",
+      upstreamBaseUrl,
+      publicBaseUrl,
+      publicBasePath,
+      upstreamPathSuffix,
+    }
+  }
+
+  if (parts[0] === "grafana") {
+    const publicBasePath = "/grafana"
+    const publicBaseUrl = `${origin}${publicBasePath}`
+    const upstreamBaseUrl = resolveGrafanaUpstreamBaseUrl()
+    const upstreamPathSuffix = parts.slice(1).join("/")
+    return {
+      kind: "grafana",
+      upstreamBaseUrl,
+      publicBaseUrl,
+      publicBasePath,
+      upstreamPathSuffix,
+    }
+  }
+
+  if (parts[0] === "prometheus") {
+    const publicBasePath = "/prometheus"
+    const publicBaseUrl = `${origin}${publicBasePath}`
+    const upstreamBaseUrl = resolvePrometheusUpstreamBaseUrl()
+    const upstreamPathSuffix = parts.slice(1).join("/")
+    return {
+      kind: "prometheus",
       upstreamBaseUrl,
       publicBaseUrl,
       publicBasePath,
@@ -717,4 +848,3 @@ async function main() {
 main().catch((error) => {
   console.error("Failed to start runtime-edge:", error)
 })
-

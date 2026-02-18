@@ -1,4 +1,7 @@
-import type { DeploymentProfile } from "@/lib/deployment/profile"
+import {
+  isLocalDeploymentProfile,
+  type DeploymentProfile,
+} from "@/lib/deployment/profile"
 import type { ShipyardSecretTemplateValues } from "@/lib/shipyard/secret-vault"
 
 export interface N8NBootstrapDefaultContext {
@@ -50,7 +53,7 @@ export function buildLocalDefaultN8NDatabaseUrl(args: {
   namespace?: string | null
   postgresPassword?: string | null
 }): string | null {
-  if (args.deploymentProfile !== "local_starship_build") {
+  if (!isLocalDeploymentProfile(args.deploymentProfile)) {
     return null
   }
 
@@ -92,7 +95,7 @@ export function buildDefaultN8NDatabaseUrl(args: {
 }
 
 export function defaultN8NPublicBaseUrlFallback(profile: DeploymentProfile): string {
-  return profile === "local_starship_build"
+  return isLocalDeploymentProfile(profile)
     ? LOCAL_N8N_PUBLIC_BASE_URL_FALLBACK
     : CLOUD_N8N_PUBLIC_BASE_URL_FALLBACK
 }

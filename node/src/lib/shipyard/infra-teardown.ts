@@ -3,9 +3,12 @@ import { accessSync, constants, existsSync, statSync } from "node:fs"
 import { rm } from "node:fs/promises"
 import { delimiter, join, resolve } from "node:path"
 import { promisify } from "node:util"
-import type { DeploymentProfile } from "@/lib/deployment/profile"
-import type { InfrastructureKind } from "@/lib/deployment/profile"
-import { normalizeInfrastructureInConfig } from "@/lib/deployment/profile"
+import {
+  isLocalDeploymentProfile,
+  normalizeInfrastructureInConfig,
+  type DeploymentProfile,
+  type InfrastructureKind,
+} from "@/lib/deployment/profile"
 import type { ManagedTunnelRuntimeMetadata } from "@/lib/shipyard/cloud/tunnel-manager"
 import { stopManagedTunnel, tunnelDirectory } from "@/lib/shipyard/cloud/tunnel-manager"
 import { prisma } from "@/lib/prisma"
@@ -225,7 +228,7 @@ async function destroyLocalClusterBestEffort(args: {
   if (!commandExecutionEnabled(process.env)) {
     return
   }
-  if (args.deploymentProfile !== "local_starship_build") {
+  if (!isLocalDeploymentProfile(args.deploymentProfile)) {
     return
   }
 
@@ -610,7 +613,7 @@ export async function cleanupFailedLocalLaunch(args: CleanupFailedLocalLaunchArg
   if (!commandExecutionEnabled(process.env)) {
     return
   }
-  if (args.deploymentProfile !== "local_starship_build") {
+  if (!isLocalDeploymentProfile(args.deploymentProfile)) {
     return
   }
 

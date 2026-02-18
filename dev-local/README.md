@@ -56,6 +56,19 @@ cd ../node && npx prisma generate && npx prisma db push
 
 The control plane image is built from `node/Dockerfile` and uses the same image name as the cloudflare-local stack (`orchwiz-control-plane:latest`).
 
+## Resource Governance Defaults
+
+- Local compose services now include CPU/RAM limits to keep Docker host usage contained.
+- Ship Yard local bootstrap defaults to lean observability (`LOCAL_SHIPYARD_ENABLE_OBSERVABILITY_STACK=false`).
+- Recommended Docker Desktop VM budget for this repo: **4 CPU / 8 GiB**.
+
+To opt in to full local observability stack provisioning for Ship Yard launches:
+
+```bash
+cd ../node
+export LOCAL_SHIPYARD_ENABLE_OBSERVABILITY_STACK=true
+```
+
 ## Commands
 
 ### Start database (and sidecars)
@@ -82,6 +95,12 @@ docker compose exec postgres psql -U orchwiz -d orchis
 ```bash
 docker compose down -v
 docker compose up -d
+```
+
+### Ship Yard local cooldown (best effort)
+```bash
+cd ../node
+npm run shipyard:local:cooldown
 ```
 
 ## Troubleshooting

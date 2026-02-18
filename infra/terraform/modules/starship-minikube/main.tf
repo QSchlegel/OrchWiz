@@ -4,14 +4,15 @@ locals {
   kubeview_chart_archive = "${path.module}/../../../vendor/kubeview/deploy/helm/kubeview-${var.kubeview_chart_version}.tgz"
   kubeview_ingress_host  = trimspace(var.kubeview_ingress_host) != "" ? trimspace(var.kubeview_ingress_host) : "kubeview.${var.namespace}.localhost"
   kubeview_ingress_path  = trimspace(var.kubeview_ingress_path) != "" ? trimspace(var.kubeview_ingress_path) : "/kubeview"
-  openclaw_station_keys  = ["xo", "ops", "eng", "sec", "med", "cou"]
+  openclaw_station_order = ["xo", "ops", "eng", "sec", "med", "cou"]
+  openclaw_station_keys  = slice(local.openclaw_station_order, 0, var.openclaw_station_count)
   runtime_edge_name      = "${var.app_name}-runtime-edge"
   runtime_jwt_secret     = trimspace(var.runtime_jwt_secret) != "" ? var.runtime_jwt_secret : var.better_auth_secret
   openclaw_gateway_tokens = merge(
     { for station in local.openclaw_station_keys : station => "${var.openclaw_gateway_token}-${station}" },
     { for station, token in var.openclaw_gateway_tokens : station => token if contains(local.openclaw_station_keys, station) },
   )
-  spacebot_name            = "${var.app_name}-spacebot"
+  spacebot_name           = "${var.app_name}-spacebot"
   provider_proxy_name     = "${var.app_name}-provider-proxy"
   provider_proxy_base_url = "http://${local.provider_proxy_name}:${var.provider_proxy_port}"
   kubeview_ingress_annotations = merge(
@@ -44,16 +45,16 @@ locals {
       OPENCLAW_GATEWAY_URL_TEMPLATE = "http://openclaw-{stationKey}:18789"
       # Expose the per-station gateway tokens to the OrchWiz app so the embedded OpenClaw Control UI can
       # auto-configure auth without relying on the (deprecated) websocket proxy.
-      OPENCLAW_GATEWAY_TOKENS      = jsonencode(local.openclaw_gateway_tokens)
-      CODEX_PROVIDER_PROXY_URL     = local.provider_proxy_base_url
-      CODEX_PROVIDER_PROXY_API_KEY = var.provider_proxy_api_key
-      RUNTIME_ADAPTER_REGISTRY_ENABLED = "false"
-      BRIDGE_DISPATCH_REGISTRY_ENABLED = "false"
+      OPENCLAW_GATEWAY_TOKENS             = jsonencode(local.openclaw_gateway_tokens)
+      CODEX_PROVIDER_PROXY_URL            = local.provider_proxy_base_url
+      CODEX_PROVIDER_PROXY_API_KEY        = var.provider_proxy_api_key
+      RUNTIME_ADAPTER_REGISTRY_ENABLED    = "false"
+      BRIDGE_DISPATCH_REGISTRY_ENABLED    = "false"
       TOOLCHAIN_PROTOCOL_REGISTRY_ENABLED = "false"
-      SPACEBOT_CONNECTOR_ENABLED = "false"
-      NODE_ENV                     = "production"
-      ENABLE_FORWARDING_INGEST     = "true"
-      ENABLE_SSE_EVENTS            = "true"
+      SPACEBOT_CONNECTOR_ENABLED          = "false"
+      NODE_ENV                            = "production"
+      ENABLE_FORWARDING_INGEST            = "true"
+      ENABLE_SSE_EVENTS                   = "true"
     },
     trimspace(var.security_audit_cron_token) != "" ? {
       SECURITY_AUDIT_CRON_TOKEN = var.security_audit_cron_token
@@ -643,6 +644,9 @@ resource "kubernetes_deployment_v1" "runtime_edge" {
           app                      = local.runtime_edge_name
           "app.kubernetes.io/name" = "runtime-edge"
         }
+        annotations = {
+          "orchwiz/runtime-jwt-secret-hash" = sha256(local.runtime_jwt_secret)
+        }
       }
 
       spec {
@@ -674,6 +678,11 @@ resource "kubernetes_deployment_v1" "runtime_edge" {
           env {
             name  = "HOSTNAME"
             value = "0.0.0.0"
+          }
+
+          env {
+            name  = "ORCHWIZ_MONITORING_NAMESPACE"
+            value = var.monitoring_namespace
           }
 
           command = ["npm"]
@@ -787,6 +796,9 @@ resource "kubernetes_deployment_v1" "app" {
       metadata {
         labels = {
           app = var.app_name
+        }
+        annotations = {
+          "orchwiz/runtime-jwt-secret-hash" = sha256(local.runtime_jwt_secret)
         }
       }
 
@@ -1021,6 +1033,7 @@ resource "helm_release" "grafana" {
   chart      = "grafana"
   version    = var.grafana_chart_version
   namespace  = kubernetes_namespace_v1.monitoring[0].metadata[0].name
+  timeout    = 900
 
   set {
     name  = "fullnameOverride"
@@ -1077,6 +1090,7 @@ resource "helm_release" "prometheus" {
   chart      = "prometheus"
   version    = var.prometheus_chart_version
   namespace  = kubernetes_namespace_v1.monitoring[0].metadata[0].name
+  timeout    = 900
 
   set {
     name  = "server.fullnameOverride"
@@ -1223,6 +1237,7 @@ resource "helm_release" "langfuse" {
   chart      = "langfuse"
   version    = var.langfuse_chart_version
   namespace  = kubernetes_namespace_v1.monitoring[0].metadata[0].name
+  timeout    = 1800
 
   set {
     name  = "fullnameOverride"
@@ -1241,15 +1256,15 @@ resource "helm_release" "langfuse" {
   }
   set_sensitive {
     name  = "langfuse.salt.value"
-    value = trimspace(var.langfuse_salt) != "" ? var.langfuse_salt : "replace-with-openssl-rand-base64-32"
+    value = trimspace(var.langfuse_salt) != "" ? var.langfuse_salt : "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
   }
   set_sensitive {
     name  = "langfuse.nextauth.secret.value"
-    value = trimspace(var.langfuse_nextauth_secret) != "" ? var.langfuse_nextauth_secret : "replace-with-openssl-rand-hex-32"
+    value = trimspace(var.langfuse_nextauth_secret) != "" ? var.langfuse_nextauth_secret : "9f88c4048f2d171ef74f14ea61c95cde3d458f38244fdd4fbed9f4e71e74c407"
   }
   set_sensitive {
     name  = "langfuse.encryptionKey.value"
-    value = trimspace(var.langfuse_encryption_key) != "" ? var.langfuse_encryption_key : "replace-with-openssl-rand-hex-32"
+    value = trimspace(var.langfuse_encryption_key) != "" ? var.langfuse_encryption_key : "e4c7f4dc723173fbd2f5f94f5d4a4d98229d6bd76ddd30cd88f9225a4a9de5d3"
   }
   set_sensitive {
     name  = "postgresql.auth.password"

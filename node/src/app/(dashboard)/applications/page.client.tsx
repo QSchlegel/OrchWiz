@@ -17,16 +17,21 @@ import {
   ExternalLink,
   FileCode,
   GitBranch,
+  GitFork,
   HardDrive,
   Hash,
   Info,
   Layers,
+  LayoutGrid,
   Network,
   Package,
+  Plus,
   Play,
   RefreshCw,
   Search,
   Settings2,
+  Orbit,
+  Star,
   Square,
   Trash2,
   X,
@@ -38,8 +43,14 @@ import { OrchestrationSurface } from "@/components/orchestration/OrchestrationSu
 import { UseCaseBadge, NodeInfoCard } from "@/components/orchestration/NodeInfoCard"
 import { FlowCanvas } from "@/components/flow/FlowCanvas"
 import { ApplicationNode, SystemNode } from "@/components/flow/nodes"
-import { layoutColumns } from "@/lib/flow/layout"
-import { buildEdgesToAnchors, mapAnchorsToNodes, mapApplicationsToNodes } from "@/lib/flow/mappers"
+import { layoutColumns, layoutHierarchy, layoutRadial } from "@/lib/flow/layout"
+import {
+  buildApplicationTopologyEdges,
+  mapAnchorsToNodes,
+  mapApplicationsToNodes,
+  type AppEdgeType,
+  type AppTopologyEdgeInput,
+} from "@/lib/flow/mappers"
 import { useEventStream } from "@/lib/realtime/useEventStream"
 import {
   parseRuntimeNodeMetricsPayload,
@@ -47,6 +58,12 @@ import {
   type RuntimeNodeMetricsPayload,
 } from "@/lib/runtime/realtime-node-metrics"
 import { useShipSelection } from "@/lib/shipyard/useShipSelection"
+import {
+  APP_REGISTRY_STORAGE_KEY,
+  parseAppRegistryEntries,
+  type AppRegistryApplicationType,
+  type AppRegistryEntry,
+} from "@/lib/applications/registry"
 import {
   computeApplicationSummary,
   filterApplications,
@@ -146,6 +163,21 @@ interface Notice {
   type: "success" | "error" | "info"
   text: string
 }
+
+interface AppRegistryDraft {
+  name: string
+  description: string
+  applicationType: AppRegistryApplicationType
+  image: string
+  repository: string
+  branch: string
+  buildCommand: string
+  startCommand: string
+  port: number
+  version: string
+}
+
+const APP_SELECTION_STORAGE_KEY = "apps-selected-application"
 
 const deploymentProfileLabels: Record<DeploymentProfile, string> = {
   local_starship_build: "Local Starship Build",
@@ -308,6 +340,44 @@ const DEPLOY_APP_TYPE_ORDER: Application["applicationType"][] = [
 
 const NODE_TYPE_FILTER_VALUES: Array<"all" | NodeType> = ["all", "local", "cloud", "hybrid"]
 
+function defaultPortForApplicationType(applicationType: AppRegistryApplicationType): number {
+  if (applicationType === "n8n") {
+    return 5678
+  }
+
+  return 3000
+}
+
+function createDefaultAppRegistryDraft(): AppRegistryDraft {
+  return {
+    name: "",
+    description: "",
+    applicationType: "docker",
+    image: "",
+    repository: "",
+    branch: "main",
+    buildCommand: "",
+    startCommand: "",
+    port: defaultPortForApplicationType("docker"),
+    version: "",
+  }
+}
+
+function normalizeRegistryPort(value: unknown, applicationType: AppRegistryApplicationType): number {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return Math.floor(value)
+  }
+
+  if (typeof value === "string") {
+    const parsed = Number.parseInt(value, 10)
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed
+    }
+  }
+
+  return defaultPortForApplicationType(applicationType)
+}
+
 function isInfrastructureKind(value: unknown): value is InfrastructureKind {
   return value === "kind" || value === "minikube" || value === "existing_k8s"
 }
@@ -433,6 +503,33 @@ function asApplicationListItem(application: Application): ApplicationListItem {
   }
 }
 
+function buildQuartermasterAutoWirePrompt(args: {
+  shipName: string | null
+  application: Pick<
+    Application,
+    "name" | "applicationType" | "nodeId" | "nodeUrl" | "repository" | "image" | "port" | "version"
+  >
+}): string {
+  const lines = [
+    "A new application has been deployed.",
+    `Ship: ${args.shipName || "Selected ship"}`,
+    `Application: ${args.application.name}`,
+    `Type: ${args.application.applicationType}`,
+    `Node: ${args.application.nodeId}`,
+    `Node URL: ${args.application.nodeUrl || "unavailable"}`,
+    `Port: ${args.application.port || "n/a"}`,
+    `Image: ${args.application.image || "n/a"}`,
+    `Repository: ${args.application.repository || "n/a"}`,
+    `Version: ${args.application.version || "n/a"}`,
+    "",
+    "Please auto-wire this app into ship operations by doing the following:",
+    "1. Confirm runtime reachability assumptions and any missing prerequisites.",
+    "2. Suggest bridge/crew tool wiring needed for this app.",
+    "3. Provide the exact next operator actions in a short checklist.",
+  ]
+  return lines.join("\n")
+}
+
 type DetailTab = "overview" | "infrastructure"
 
 export default function ApplicationsPage() {
@@ -451,6 +548,9 @@ export default function ApplicationsPage() {
   const [showCreateForm, setShowCreateForm] = useState(false)
   const [wizardStep, setWizardStep] = useState<1 | 2 | 3>(1)
   const [showTopology, setShowTopology] = useState(true)
+  const [topoViewMode, setTopoViewMode] = useState<"hierarchy" | "radial" | "columns">("hierarchy")
+  const [topoEdgeFilter, setTopoEdgeFilter] = useState<Set<AppEdgeType>>(() => new Set(["deployment", "health", "data"]))
+  const [topoHighlightNode, setTopoHighlightNode] = useState<string | null>(null)
   const [showAdvancedDeployConfig, setShowAdvancedDeployConfig] = useState(false)
   const [detailTab, setDetailTab] = useState<DetailTab>("overview")
 
@@ -465,6 +565,13 @@ export default function ApplicationsPage() {
   const [notice, setNotice] = useState<Notice | null>(null)
   const [pendingAction, setPendingAction] = useState<{ id: string; type: "status" | "delete" } | null>(null)
   const [runtimeMetrics, setRuntimeMetrics] = useState<RuntimeNodeMetricsPayload | null>(null)
+  const [autoWireWithQuartermaster, setAutoWireWithQuartermaster] = useState(true)
+  const [registryEntries, setRegistryEntries] = useState<AppRegistryEntry[]>([])
+  const [registryDraft, setRegistryDraft] = useState<AppRegistryDraft>(createDefaultAppRegistryDraft())
+  const [registryLoaded, setRegistryLoaded] = useState(false)
+  const [showRegistryComposer, setShowRegistryComposer] = useState(false)
+  const [isSavingRegistryEntry, setIsSavingRegistryEntry] = useState(false)
+  const [deployingRegistryEntryId, setDeployingRegistryEntryId] = useState<string | null>(null)
 
   const [formData, setFormData] = useState<ApplicationFormData>({
     name: "",
@@ -699,19 +806,33 @@ export default function ApplicationsPage() {
   }, [applyShipToForm, selectedShipDeploymentId, setSelectedShipDeploymentId, ships])
 
   useEffect(() => {
-    const saved = localStorage.getItem("apps-selected-application")
+    const saved = localStorage.getItem(APP_SELECTION_STORAGE_KEY)
     if (saved) setSelectedApplicationId(saved)
   }, [])
 
   useEffect(() => {
-    if (selectedApplicationId) localStorage.setItem("apps-selected-application", selectedApplicationId)
-    else localStorage.removeItem("apps-selected-application")
+    if (selectedApplicationId) localStorage.setItem(APP_SELECTION_STORAGE_KEY, selectedApplicationId)
+    else localStorage.removeItem(APP_SELECTION_STORAGE_KEY)
   }, [selectedApplicationId])
+
+  useEffect(() => {
+    const saved = parseAppRegistryEntries(localStorage.getItem(APP_REGISTRY_STORAGE_KEY))
+    setRegistryEntries(saved)
+    setRegistryLoaded(true)
+  }, [])
+
+  useEffect(() => {
+    if (!registryLoaded) {
+      return
+    }
+    localStorage.setItem(APP_REGISTRY_STORAGE_KEY, JSON.stringify(registryEntries))
+  }, [registryEntries, registryLoaded])
 
   useEffect(() => {
     setSelectedApplicationId((current) => resolveSelectedApplicationId(filteredApplications, current))
   }, [filteredApplications])
 
+  // ── Topology: build nodes (anchors + ships + apps) ──────────────────
   const topologyNodes = useMemo(() => {
     const appInputs = filteredApplications.map((application) => {
       const infrastructure = extractInfrastructureConfig(application.config, application.deploymentProfile)
@@ -725,59 +846,165 @@ export default function ApplicationsPage() {
         deploymentProfile: application.deploymentProfile,
         provisioningMode: application.provisioningMode,
         infrastructureKind: infrastructure?.kind,
+        healthStatus: application.healthStatus ?? undefined,
+        version: application.version ?? undefined,
+        port: application.port ?? undefined,
+        deployedAt: application.deployedAt ?? undefined,
       }
     })
 
-    const localInputs = appInputs.filter((item) => item.nodeType === "local")
-    const cloudInputs = appInputs.filter((item) => item.nodeType === "cloud")
-    const hybridInputs = appInputs.filter((item) => item.nodeType === "hybrid")
+    // Group apps by nodeType for anchors
+    const localApps = appInputs.filter((a) => a.nodeType === "local")
+    const cloudApps = appInputs.filter((a) => a.nodeType === "cloud")
+    const hybridApps = appInputs.filter((a) => a.nodeType === "hybrid")
+
+    // Infrastructure anchors with health-aware status
+    const anchorStatus = (apps: typeof appInputs) =>
+      apps.some((a) => a.status === "failed") ? "warning" as const : "nominal" as const
 
     const anchorInputs = [
-      {
-        id: "anchor-local",
-        label: "Local Nodes",
-        status: "nominal" as const,
-        detail: `${localInputs.length} apps`,
-      },
-      {
-        id: "anchor-cloud",
-        label: "Cloud Nodes",
-        status: "nominal" as const,
-        detail: `${cloudInputs.length} apps`,
-      },
-      {
-        id: "anchor-hybrid",
-        label: "Hybrid Nodes",
-        status: "nominal" as const,
-        detail: `${hybridInputs.length} apps`,
-      },
+      { id: "anchor-local", label: "Local", status: anchorStatus(localApps), detail: `${localApps.length} apps` },
+      { id: "anchor-cloud", label: "Cloud", status: anchorStatus(cloudApps), detail: `${cloudApps.length} apps` },
+      { id: "anchor-hybrid", label: "Hybrid", status: anchorStatus(hybridApps), detail: `${hybridApps.length} apps` },
     ]
+    const anchorNodes = mapAnchorsToNodes(anchorInputs)
 
-    const [localAnchor, cloudAnchor, hybridAnchor] = mapAnchorsToNodes(anchorInputs)
+    // Extract unique ships as intermediate tier
+    const shipMap = new Map<string, { id: string; name: string; status: string; nodeType: string; appCount: number }>()
+    for (const app of filteredApplications) {
+      if (app.ship && app.shipDeploymentId) {
+        const existing = shipMap.get(app.shipDeploymentId)
+        if (existing) {
+          existing.appCount++
+        } else {
+          shipMap.set(app.shipDeploymentId, {
+            id: `ship-${app.shipDeploymentId}`,
+            name: app.ship.name,
+            status: app.ship.status,
+            nodeType: app.ship.nodeType,
+            appCount: 1,
+          })
+        }
+      }
+    }
 
-    const localNodes = mapApplicationsToNodes(localInputs, selectedApplicationId || undefined)
-    const cloudNodes = mapApplicationsToNodes(cloudInputs, selectedApplicationId || undefined)
-    const hybridNodes = mapApplicationsToNodes(hybridInputs, selectedApplicationId || undefined)
-
-    return layoutColumns(
-      [
-        { key: "local", nodes: [localAnchor, ...localNodes] },
-        { key: "cloud", nodes: [cloudAnchor, ...cloudNodes] },
-        { key: "hybrid", nodes: [hybridAnchor, ...hybridNodes] },
-      ],
-      260,
-      150,
+    const shipAnchors = mapAnchorsToNodes(
+      Array.from(shipMap.values()).map((s) => ({
+        id: s.id,
+        label: s.name,
+        status: s.status === "failed" ? "critical" as const : s.status === "active" ? "nominal" as const : "warning" as const,
+        detail: `${s.appCount} app${s.appCount !== 1 ? "s" : ""}`,
+      })),
     )
-  }, [filteredApplications, selectedApplicationId])
 
-  const topologyEdges = useMemo(() => {
-    const edgeItems = filteredApplications.map((application) => ({
-      id: application.id,
-      status: application.status,
-      anchorId: `anchor-${application.nodeType}`,
-    }))
-    return buildEdgesToAnchors(edgeItems)
+    // Unattached apps anchor
+    const unattachedApps = appInputs.filter((a) => {
+      const app = filteredApplications.find((fa) => fa.id === a.id)
+      return !app?.shipDeploymentId
+    })
+    const unattachedAnchor = unattachedApps.length > 0
+      ? mapAnchorsToNodes([{ id: "anchor-unattached", label: "Unattached", status: "warning" as const, detail: `${unattachedApps.length} apps` }])
+      : []
+
+    const appNodes = mapApplicationsToNodes(appInputs, selectedApplicationId || undefined)
+
+    // Layout based on view mode
+    if (topoViewMode === "radial") {
+      const centerNodes = [...anchorNodes, ...shipAnchors, ...unattachedAnchor]
+      return [
+        ...layoutRadial({ x: 400, y: 300 }, centerNodes, 100),
+        ...layoutRadial({ x: 400, y: 300 }, appNodes, 300),
+      ]
+    }
+
+    if (topoViewMode === "columns") {
+      return layoutColumns(
+        [
+          { key: "local", nodes: [...anchorNodes.filter((_, i) => i === 0), ...mapApplicationsToNodes(localApps, selectedApplicationId || undefined)] },
+          { key: "cloud", nodes: [...anchorNodes.filter((_, i) => i === 1), ...mapApplicationsToNodes(cloudApps, selectedApplicationId || undefined)] },
+          { key: "hybrid", nodes: [...anchorNodes.filter((_, i) => i === 2), ...mapApplicationsToNodes(hybridApps, selectedApplicationId || undefined)] },
+        ],
+        260,
+        150,
+      )
+    }
+
+    // Default: hierarchy layout (anchors → ships → apps)
+    return layoutHierarchy(
+      [
+        { key: "anchors", nodes: anchorNodes },
+        { key: "ships", nodes: [...shipAnchors, ...unattachedAnchor] },
+        { key: "apps", nodes: appNodes },
+      ],
+      180,
+      240,
+      400,
+    )
+  }, [filteredApplications, selectedApplicationId, topoViewMode])
+
+  // ── Topology: build edges ──────────────────────────────────────────
+  const topologyRawEdges = useMemo(() => {
+    const edges: AppTopologyEdgeInput[] = []
+
+    // Collect ships
+    const shipMap = new Map<string, { nodeType: string }>()
+    for (const app of filteredApplications) {
+      if (app.ship && app.shipDeploymentId) {
+        shipMap.set(app.shipDeploymentId, { nodeType: app.ship.nodeType })
+      }
+    }
+
+    // Anchor → ship deployment edges
+    for (const [shipId, ship] of shipMap) {
+      edges.push({
+        id: `edge-anchor-ship-${shipId}`,
+        source: `anchor-${ship.nodeType}`,
+        target: `ship-${shipId}`,
+        edgeType: "deployment",
+        label: ship.nodeType,
+      })
+    }
+
+    // Ship → app deployment edges
+    for (const app of filteredApplications) {
+      if (app.shipDeploymentId) {
+        edges.push({
+          id: `edge-ship-app-${app.id}`,
+          source: `ship-${app.shipDeploymentId}`,
+          target: app.id,
+          edgeType: "deployment",
+          animated: app.status === "deploying" || app.status === "updating",
+        })
+      } else {
+        // Unattached app → anchor directly
+        edges.push({
+          id: `edge-anchor-app-${app.id}`,
+          source: "anchor-unattached",
+          target: app.id,
+          edgeType: "deployment",
+          animated: app.status === "deploying",
+        })
+      }
+
+      // Health edges for apps with health data
+      if (app.healthStatus) {
+        edges.push({
+          id: `edge-health-${app.id}`,
+          source: app.id,
+          target: app.shipDeploymentId ? `ship-${app.shipDeploymentId}` : `anchor-${app.nodeType}`,
+          edgeType: "health",
+          label: app.healthStatus === "healthy" ? undefined : app.healthStatus ?? undefined,
+        })
+      }
+    }
+
+    return edges
   }, [filteredApplications])
+
+  const topologyEdges = useMemo(
+    () => buildApplicationTopologyEdges(topologyRawEdges, topoEdgeFilter, topoHighlightNode),
+    [topologyRawEdges, topoEdgeFilter, topoHighlightNode],
+  )
 
   const handleTopologyNodeClick = useCallback((_: unknown, node: Node) => {
     if (node.type === "applicationNode") {
@@ -785,7 +1012,25 @@ export default function ApplicationsPage() {
     }
   }, [])
 
+  const handleTopoNodeMouseEnter = useCallback((_: unknown, node: Node) => {
+    setTopoHighlightNode(node.id)
+  }, [])
+
+  const handleTopoNodeMouseLeave = useCallback(() => {
+    setTopoHighlightNode(null)
+  }, [])
+
+  const toggleEdgeType = useCallback((edgeType: AppEdgeType) => {
+    setTopoEdgeFilter((prev) => {
+      const next = new Set(prev)
+      if (next.has(edgeType)) next.delete(edgeType)
+      else next.add(edgeType)
+      return next
+    })
+  }, [])
+
   const resetCreateForm = useCallback(() => {
+    setWizardStep(1)
     setShowAdvancedDeployConfig(false)
 
     setFormData((current) => {
@@ -840,6 +1085,83 @@ export default function ApplicationsPage() {
     })
   }, [])
 
+  const createApplicationDeployment = useCallback(
+    async (input: {
+      name: string
+      description: string
+      applicationType: Application["applicationType"]
+      image: string
+      repository: string
+      branch: string
+      buildCommand: string
+      startCommand: string
+      port: number
+      shipDeploymentId: string
+      version: string
+      infrastructure: InfrastructureConfig
+    }): Promise<Application> => {
+      const response = await fetch("/api/applications", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          name: input.name,
+          description: input.description,
+          applicationType: input.applicationType,
+          image: input.image,
+          repository: input.repository,
+          branch: input.branch,
+          buildCommand: input.buildCommand,
+          startCommand: input.startCommand,
+          port: input.port || null,
+          environment: {},
+          shipDeploymentId: input.shipDeploymentId,
+          version: input.version || null,
+          config: {
+            infrastructure: input.infrastructure,
+          },
+        }),
+      })
+
+      if (!response.ok) {
+        throw new Error(await readResponseError(response, "Failed to deploy application."))
+      }
+
+      return (await response.json()) as Application
+    },
+    [],
+  )
+
+  const autoWireApplicationWithQuartermaster = useCallback(
+    async (application: Application, shipDeploymentId: string): Promise<string | null> => {
+      try {
+        const shipName = ships.find((ship) => ship.id === shipDeploymentId)?.name || application.ship?.name || null
+        const response = await fetch(`/api/ships/${shipDeploymentId}/quartermaster`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            prompt: buildQuartermasterAutoWirePrompt({
+              shipName,
+              application,
+            }),
+          }),
+        })
+
+        if (!response.ok) {
+          return await readResponseError(response, "Quartermaster auto-wire failed.")
+        }
+
+        return null
+      } catch (error) {
+        return error instanceof Error ? error.message : "Quartermaster auto-wire failed."
+      }
+    },
+    [ships],
+  )
+
   const handleCreate = useCallback(
     async (event: React.FormEvent) => {
       event.preventDefault()
@@ -853,41 +1175,48 @@ export default function ApplicationsPage() {
       setNotice(null)
 
       try {
-        const response = await fetch("/api/applications", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            name: formData.name,
-            description: formData.description,
-            applicationType: formData.applicationType,
-            image: formData.image,
-            repository: formData.repository,
-            branch: formData.branch,
-            buildCommand: formData.buildCommand,
-            startCommand: formData.startCommand,
-            port: formData.port || null,
-            environment: formData.environment || {},
-            shipDeploymentId: formData.shipDeploymentId,
-            version: formData.version || null,
-            config: {
-              infrastructure: formData.infrastructure,
-            },
-          }),
+        const created = await createApplicationDeployment({
+          name: formData.name,
+          description: formData.description,
+          applicationType: formData.applicationType,
+          image: formData.image,
+          repository: formData.repository,
+          branch: formData.branch,
+          buildCommand: formData.buildCommand,
+          startCommand: formData.startCommand,
+          port: formData.port,
+          shipDeploymentId: formData.shipDeploymentId,
+          version: formData.version,
+          infrastructure: formData.infrastructure,
         })
 
-        if (!response.ok) {
-          throw new Error(await readResponseError(response, "Failed to deploy application."))
+        let autoWireError: string | null = null
+        if (autoWireWithQuartermaster) {
+          autoWireError = await autoWireApplicationWithQuartermaster(created, formData.shipDeploymentId)
         }
 
-        const created = (await response.json()) as Application
         setShowCreateForm(false)
         resetCreateForm()
         if (created?.id) {
           setSelectedApplicationId(created.id)
         }
-        setNotice({ type: "success", text: `Deployment created for ${formData.name}.` })
+
+        if (autoWireWithQuartermaster) {
+          setNotice(
+            autoWireError
+              ? {
+                  type: "info",
+                  text: `Deployment created for ${formData.name}, but Quartermaster auto-wire failed: ${autoWireError}`,
+                }
+              : {
+                  type: "success",
+                  text: `Deployment created for ${formData.name}. Quartermaster auto-wire queued.`,
+                },
+          )
+        } else {
+          setNotice({ type: "success", text: `Deployment created for ${formData.name}.` })
+        }
+
         await fetchApplications()
       } catch (error) {
         console.error("Error creating application:", error)
@@ -899,7 +1228,153 @@ export default function ApplicationsPage() {
         setIsCreating(false)
       }
     },
-    [fetchApplications, formData, resetCreateForm],
+    [autoWireApplicationWithQuartermaster, autoWireWithQuartermaster, createApplicationDeployment, fetchApplications, formData, resetCreateForm],
+  )
+
+  const handleAddRegistryEntry = useCallback(() => {
+    const trimmedName = registryDraft.name.trim()
+    if (!trimmedName) {
+      setNotice({ type: "error", text: "Registry entry name is required." })
+      return
+    }
+
+    setIsSavingRegistryEntry(true)
+    try {
+      const entry: AppRegistryEntry = {
+        id: crypto.randomUUID(),
+        name: trimmedName,
+        description: registryDraft.description.trim(),
+        applicationType: registryDraft.applicationType,
+        image: registryDraft.image.trim(),
+        repository: registryDraft.repository.trim(),
+        branch: registryDraft.branch.trim() || "main",
+        buildCommand: registryDraft.buildCommand.trim(),
+        startCommand: registryDraft.startCommand.trim(),
+        port: normalizeRegistryPort(registryDraft.port, registryDraft.applicationType),
+        version: registryDraft.version.trim(),
+        createdAt: new Date().toISOString(),
+        showInLaunchWizard: false,
+        system: false,
+      }
+      setRegistryEntries((current) => [entry, ...current])
+      setRegistryDraft(createDefaultAppRegistryDraft())
+      setNotice({ type: "success", text: `Added "${entry.name}" to app registry.` })
+    } finally {
+      setIsSavingRegistryEntry(false)
+    }
+  }, [registryDraft])
+
+  const handleRemoveRegistryEntry = useCallback((entryId: string) => {
+    setRegistryEntries((current) => current.filter((entry) => entry.id !== entryId))
+  }, [])
+
+  const handleToggleRegistryLaunchStar = useCallback((entryId: string) => {
+    setRegistryEntries((current) =>
+      current.map((entry) =>
+        entry.id === entryId ? { ...entry, showInLaunchWizard: !entry.showInLaunchWizard } : entry),
+    )
+  }, [])
+
+  const handleUseRegistryEntry = useCallback(
+    (entry: AppRegistryEntry) => {
+      setFormData((current) => ({
+        ...current,
+        name: entry.name,
+        description: entry.description,
+        applicationType: entry.applicationType,
+        image: entry.image,
+        repository: entry.repository,
+        branch: entry.branch,
+        buildCommand: entry.buildCommand,
+        startCommand: entry.startCommand,
+        port: normalizeRegistryPort(entry.port, entry.applicationType),
+        version: entry.version,
+      }))
+      setWizardStep(1)
+      setShowCreateForm(true)
+      setNotice({ type: "info", text: `Loaded registry blueprint "${entry.name}" into deploy wizard.` })
+    },
+    [],
+  )
+
+  const handleDeployRegistryEntry = useCallback(
+    async (entry: AppRegistryEntry) => {
+      const shipDeploymentId = formData.shipDeploymentId || selectedShipDeploymentId || ships[0]?.id || ""
+      if (!shipDeploymentId) {
+        setNotice({ type: "error", text: "Select a ship before deploying a registry app." })
+        return
+      }
+
+      setDeployingRegistryEntryId(entry.id)
+      setNotice(null)
+
+      try {
+        const ship = ships.find((item) => item.id === shipDeploymentId) || null
+        const resolvedInfrastructure = ship
+          ? (extractInfrastructureConfig(ship.config, ship.deploymentProfile) || defaultInfrastructure(ship.deploymentProfile))
+          : formData.infrastructure
+
+        const created = await createApplicationDeployment({
+          name: entry.name,
+          description: entry.description,
+          applicationType: entry.applicationType,
+          image: entry.image,
+          repository: entry.repository,
+          branch: entry.branch,
+          buildCommand: entry.buildCommand,
+          startCommand: entry.startCommand,
+          port: normalizeRegistryPort(entry.port, entry.applicationType),
+          shipDeploymentId,
+          version: entry.version,
+          infrastructure: resolvedInfrastructure,
+        })
+
+        let autoWireError: string | null = null
+        if (autoWireWithQuartermaster) {
+          autoWireError = await autoWireApplicationWithQuartermaster(created, shipDeploymentId)
+        }
+
+        if (created?.id) {
+          setSelectedApplicationId(created.id)
+        }
+
+        if (autoWireWithQuartermaster) {
+          setNotice(
+            autoWireError
+              ? {
+                  type: "info",
+                  text: `Deployed "${entry.name}" from registry, but Quartermaster auto-wire failed: ${autoWireError}`,
+                }
+              : {
+                  type: "success",
+                  text: `Deployed "${entry.name}" from registry. Quartermaster auto-wire queued.`,
+                },
+          )
+        } else {
+          setNotice({ type: "success", text: `Deployed "${entry.name}" from registry.` })
+        }
+
+        await fetchApplications()
+      } catch (error) {
+        console.error("Error deploying registry application:", error)
+        setNotice({
+          type: "error",
+          text: error instanceof Error ? error.message : "Failed to deploy registry application.",
+        })
+      } finally {
+        setDeployingRegistryEntryId(null)
+      }
+    },
+    [
+      autoWireApplicationWithQuartermaster,
+      autoWireWithQuartermaster,
+      createApplicationDeployment,
+      fetchApplications,
+      formData.infrastructure,
+      formData.shipDeploymentId,
+      selectedShipDeploymentId,
+      ships,
+    ],
   )
 
   const handleDelete = useCallback(
@@ -1084,6 +1559,221 @@ export default function ApplicationsPage() {
         </header>
 
         <div className="mb-4 rounded-xl border border-slate-300/70 bg-white/70 p-3 dark:border-white/10 dark:bg-white/[0.03] animate-fade-up stagger-1">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">App Registry</h2>
+              <p className="mt-0.5 text-xs text-slate-600 dark:text-slate-300">
+                Save reusable app blueprints and deploy them quickly on the selected ship.
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="inline-flex items-center gap-2 rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-3 py-1.5 text-xs text-cyan-700 dark:text-cyan-200">
+                <input
+                  type="checkbox"
+                  checked={autoWireWithQuartermaster}
+                  onChange={(event) => setAutoWireWithQuartermaster(event.target.checked)}
+                />
+                Auto-wire via Quartermaster
+              </label>
+              <button
+                type="button"
+                onClick={() => setShowRegistryComposer((open) => !open)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300/70 bg-white/70 px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-100 dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-200 dark:hover:bg-white/[0.1]"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                {showRegistryComposer ? "Close" : "Add Registry App"}
+              </button>
+            </div>
+          </div>
+
+          {showRegistryComposer && (
+            <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-4">
+              <input
+                type="text"
+                value={registryDraft.name}
+                onChange={(event) => setRegistryDraft((current) => ({ ...current, name: event.target.value }))}
+                placeholder="Blueprint name"
+                className={inputCls}
+              />
+              <select
+                value={registryDraft.applicationType}
+                onChange={(event) => {
+                  const nextType = event.target.value as AppRegistryApplicationType
+                  setRegistryDraft((current) => {
+                    const previousDefault = defaultPortForApplicationType(current.applicationType)
+                    const nextDefault = defaultPortForApplicationType(nextType)
+                    return {
+                      ...current,
+                      applicationType: nextType,
+                      port: current.port === previousDefault ? nextDefault : current.port,
+                    }
+                  })
+                }}
+                className={selectCls}
+              >
+                {DEPLOY_APP_TYPE_ORDER.map((type) => (
+                  <option key={type} value={type}>
+                    {appTypeConfig[type].label}
+                  </option>
+                ))}
+              </select>
+              <input
+                type="text"
+                value={registryDraft.image}
+                onChange={(event) => setRegistryDraft((current) => ({ ...current, image: event.target.value }))}
+                placeholder="Image (optional)"
+                className={inputCls}
+              />
+              <input
+                type="url"
+                value={registryDraft.repository}
+                onChange={(event) => setRegistryDraft((current) => ({ ...current, repository: event.target.value }))}
+                placeholder="Repository URL (optional)"
+                className={inputCls}
+              />
+              <input
+                type="text"
+                value={registryDraft.branch}
+                onChange={(event) => setRegistryDraft((current) => ({ ...current, branch: event.target.value }))}
+                placeholder="Branch"
+                className={inputCls}
+              />
+              <input
+                type="text"
+                value={registryDraft.buildCommand}
+                onChange={(event) => setRegistryDraft((current) => ({ ...current, buildCommand: event.target.value }))}
+                placeholder="Build command (optional)"
+                className={inputCls}
+              />
+              <input
+                type="text"
+                value={registryDraft.startCommand}
+                onChange={(event) => setRegistryDraft((current) => ({ ...current, startCommand: event.target.value }))}
+                placeholder="Start command (optional)"
+                className={inputCls}
+              />
+              <input
+                type="number"
+                value={registryDraft.port}
+                onChange={(event) =>
+                  setRegistryDraft((current) => ({
+                    ...current,
+                    port: normalizeRegistryPort(event.target.value, current.applicationType),
+                  }))}
+                placeholder="Port"
+                className={inputCls}
+              />
+              <input
+                type="text"
+                value={registryDraft.version}
+                onChange={(event) => setRegistryDraft((current) => ({ ...current, version: event.target.value }))}
+                placeholder="Version (optional)"
+                className={inputCls}
+              />
+              <textarea
+                value={registryDraft.description}
+                onChange={(event) => setRegistryDraft((current) => ({ ...current, description: event.target.value }))}
+                rows={2}
+                placeholder="Description (optional)"
+                className={`${inputCls} md:col-span-2 xl:col-span-3`}
+              />
+              <button
+                type="button"
+                onClick={handleAddRegistryEntry}
+                disabled={isSavingRegistryEntry}
+                className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-gradient-to-r from-blue-600 to-cyan-600 px-3 py-2 text-xs font-medium text-white transition-all hover:brightness-110 disabled:opacity-60"
+              >
+                {isSavingRegistryEntry ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
+                Add Blueprint
+              </button>
+            </div>
+          )}
+
+          <div className="mt-3">
+            {registryEntries.length === 0 ? (
+              <p className="rounded-lg border border-dashed border-slate-300/70 bg-white/50 px-3 py-2 text-xs text-slate-500 dark:border-white/15 dark:bg-white/[0.03] dark:text-slate-400">
+                No registry entries available.
+              </p>
+            ) : (
+              <div className="grid grid-cols-1 gap-2 xl:grid-cols-2">
+                {registryEntries.map((entry) => (
+                  <div
+                    key={entry.id}
+                    className="rounded-lg border border-slate-300/70 bg-white/70 p-3 dark:border-white/12 dark:bg-white/[0.03]"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">{entry.name}</p>
+                        <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                          {appTypeConfig[entry.applicationType].label} · port {entry.port}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        {entry.system && (
+                          <span className="rounded-full border border-cyan-500/35 bg-cyan-500/12 px-2 py-0.5 text-[10px] text-cyan-700 dark:text-cyan-200">
+                            System app
+                          </span>
+                        )}
+                        <span className="rounded-full border border-slate-300/70 bg-white/60 px-2 py-0.5 text-[10px] text-slate-600 dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-300">
+                          {entry.branch || "main"}
+                        </span>
+                      </div>
+                    </div>
+                    {entry.description ? (
+                      <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">{entry.description}</p>
+                    ) : null}
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {entry.system ? (
+                        <button
+                          type="button"
+                          onClick={() => handleToggleRegistryLaunchStar(entry.id)}
+                          className="inline-flex items-center gap-1 rounded-md border border-amber-500/35 bg-amber-500/12 px-2.5 py-1 text-xs text-amber-700 transition-colors hover:bg-amber-500/20 dark:border-amber-300/35 dark:text-amber-200"
+                        >
+                          <Star className={`h-3.5 w-3.5 ${entry.showInLaunchWizard ? "fill-current" : ""}`} />
+                          {entry.showInLaunchWizard ? "In Launch Wizard" : "Add to Launch Wizard"}
+                        </button>
+                      ) : (
+                        <span className="rounded-md border border-slate-300/70 bg-white/60 px-2.5 py-1 text-xs text-slate-600 dark:border-white/12 dark:bg-white/[0.04] dark:text-slate-300">
+                          Deploy blueprint only
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => handleUseRegistryEntry(entry)}
+                        className="rounded-md border border-slate-300/70 bg-white/70 px-2.5 py-1 text-xs text-slate-700 transition-colors hover:bg-slate-100 dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-200"
+                      >
+                        Use in Deploy
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleDeployRegistryEntry(entry)}
+                        disabled={deployingRegistryEntryId === entry.id || ships.length === 0}
+                        className="inline-flex items-center gap-1 rounded-md border border-cyan-500/35 bg-cyan-500/12 px-2.5 py-1 text-xs text-cyan-700 transition-colors hover:bg-cyan-500/20 disabled:opacity-60 dark:border-cyan-300/35 dark:text-cyan-200"
+                      >
+                        {deployingRegistryEntryId === entry.id ? (
+                          <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Play className="h-3.5 w-3.5" />
+                        )}
+                        Deploy Now
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveRegistryEntry(entry.id)}
+                        disabled={entry.system}
+                        className="rounded-md border border-rose-500/35 bg-rose-500/12 px-2.5 py-1 text-xs text-rose-700 transition-colors hover:bg-rose-500/20 disabled:opacity-50 dark:border-rose-300/35 dark:text-rose-200"
+                      >
+                        {entry.system ? "System app" : "Delete"}
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="mb-4 rounded-xl border border-slate-300/70 bg-white/70 p-3 dark:border-white/10 dark:bg-white/[0.03] animate-fade-up stagger-1">
           <div className="grid grid-cols-1 gap-2 lg:grid-cols-[minmax(0,1fr)_repeat(3,minmax(0,170px))_auto]">
             <label className="flex items-center gap-2 rounded-lg border border-slate-300/70 bg-white/70 px-3 py-2 dark:border-white/15 dark:bg-white/[0.04]">
               <Search className="h-4 w-4 text-slate-400 dark:text-slate-500" />
@@ -1164,7 +1854,7 @@ export default function ApplicationsPage() {
           <div className="flex items-center justify-between">
             <div>
               <h2 className="text-lg font-semibold text-slate-900 dark:text-white">Application Topology</h2>
-              <p className="text-xs text-slate-500 dark:text-gray-400">Interactive runtime map</p>
+              <p className="text-xs text-slate-500 dark:text-gray-400">Ship-centric deployment hierarchy</p>
             </div>
             <button
               type="button"
@@ -1172,19 +1862,79 @@ export default function ApplicationsPage() {
               className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300/70 bg-white/70 px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-100 dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-300 dark:hover:bg-white/[0.12]"
             >
               {showTopology ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
-              {showTopology ? "Hide topology" : "Show topology"}
+              {showTopology ? "Hide" : "Show"}
             </button>
           </div>
 
           {showTopology ? (
-            <div className="mt-4">
+            <div className="mt-4 space-y-3">
+              {/* Topology controls */}
+              <div className="flex flex-wrap items-center gap-3">
+                {/* View mode toggle */}
+                <div className="flex items-center rounded-lg border border-slate-300/50 dark:border-white/10">
+                  {(
+                    [
+                      { mode: "hierarchy" as const, icon: GitFork, tip: "Hierarchy" },
+                      { mode: "radial" as const, icon: Orbit, tip: "Radial" },
+                      { mode: "columns" as const, icon: LayoutGrid, tip: "Columns" },
+                    ] as const
+                  ).map(({ mode, icon: Icon, tip }) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() => setTopoViewMode(mode)}
+                      title={tip}
+                      className={`px-2 py-1.5 transition-colors ${
+                        topoViewMode === mode
+                          ? "bg-cyan-500/15 text-cyan-600 dark:text-cyan-300"
+                          : "text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
+                      }`}
+                    >
+                      <Icon className="h-3.5 w-3.5" />
+                    </button>
+                  ))}
+                </div>
+
+                {/* Edge filter chips */}
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Edges:</span>
+                  {(
+                    [
+                      { type: "deployment" as AppEdgeType, label: "Deploy", color: "cyan" },
+                      { type: "health" as AppEdgeType, label: "Health", color: "emerald" },
+                      { type: "data" as AppEdgeType, label: "Data", color: "slate" },
+                    ] as const
+                  ).map(({ type, label, color }) => (
+                    <button
+                      key={type}
+                      type="button"
+                      onClick={() => toggleEdgeType(type)}
+                      className={`rounded-full border px-2.5 py-0.5 text-[10px] font-medium transition-all ${
+                        topoEdgeFilter.has(type)
+                          ? `border-${color}-500/40 bg-${color}-500/15 text-${color}-700 dark:text-${color}-300`
+                          : "border-slate-300/40 bg-transparent text-slate-400 dark:border-white/10 dark:text-slate-500"
+                      }`}
+                    >
+                      <span
+                        className={`mr-1.5 inline-block h-1.5 w-1.5 rounded-full ${
+                          topoEdgeFilter.has(type) ? `bg-${color}-500` : "bg-slate-400 dark:bg-slate-600"
+                        }`}
+                      />
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               <FlowCanvas
                 nodes={topologyNodes}
                 edges={topologyEdges}
                 nodeTypes={nodeTypes}
                 onNodeClick={handleTopologyNodeClick}
+                onNodeMouseEnter={handleTopoNodeMouseEnter}
+                onNodeMouseLeave={handleTopoNodeMouseLeave}
                 showMiniMap
-                className="h-[360px]"
+                className="h-[480px]"
               />
             </div>
           ) : null}
@@ -1278,7 +2028,7 @@ export default function ApplicationsPage() {
                     <button
                       key={application.id}
                       type="button"
-                      onClick={() => { setSelectedApplicationId(application.id); setDetailTab("overview") }}
+                      onClick={() => { setSelectedApplicationId(application.id) }}
                       className={`animate-fade-up group relative w-full rounded-xl border text-left transition-all duration-200 ${
                         selected
                           ? "glass-elevated border-cyan-500/30 dark:border-cyan-400/30 surface-glow-cyan"
@@ -1808,6 +2558,20 @@ export default function ApplicationsPage() {
                       </div>
                     )}
                   </div>
+
+                  <div className="rounded-lg border border-cyan-500/30 bg-cyan-500/8 p-3 dark:border-cyan-300/35">
+                    <label className="inline-flex items-center gap-2 text-sm font-medium text-cyan-700 dark:text-cyan-200">
+                      <input
+                        type="checkbox"
+                        checked={autoWireWithQuartermaster}
+                        onChange={(event) => setAutoWireWithQuartermaster(event.target.checked)}
+                      />
+                      Auto-wire with Quartermaster after deploy
+                    </label>
+                    <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
+                      Quartermaster will receive a post-deploy wiring prompt for this app and ship context.
+                    </p>
+                  </div>
                 </div>
               )}
 
@@ -1871,6 +2635,8 @@ function ApplicationDetailPanel({
   onCopyNodeId,
   onDelete,
   onStatusUpdate,
+  tab,
+  onTab,
 }: {
   application: Application
   runtimeMetrics: RuntimeNodeMetricsPayload | null
@@ -1878,6 +2644,8 @@ function ApplicationDetailPanel({
   onCopyNodeId: (nodeId: string) => void
   onDelete: (application: Application) => void
   onStatusUpdate: (application: Application, status: Application["status"]) => void
+  tab: DetailTab
+  onTab: (t: DetailTab) => void
 }) {
   const statusInfo = statusConfig[application.status]
   const appTypeInfo = appTypeConfig[application.applicationType]
@@ -1903,7 +2671,9 @@ function ApplicationDetailPanel({
   }, [application.id, patchUiUrl])
 
   return (
-    <div className="glass-elevated overflow-hidden rounded-2xl">
+    <div className="glass-elevated animate-slide-in overflow-hidden rounded-2xl relative">
+      {/* Gradient accent line */}
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-[2px] bg-gradient-to-r from-transparent via-cyan-500/40 to-transparent" />
       <div className="border-b border-slate-200/60 px-6 py-5 dark:border-white/10">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0 flex-1">
@@ -2022,170 +2792,201 @@ function ApplicationDetailPanel({
         </div>
       </div>
 
-      <div className="space-y-5 p-6">
-        {application.description && (
-          <p className="text-sm leading-relaxed text-slate-600 dark:text-slate-300">{application.description}</p>
-        )}
+      {/* Tab bar */}
+      <div className="flex border-b border-slate-200/60 dark:border-white/10 bg-slate-50/50 dark:bg-transparent">
+        {([
+          { key: "overview" as const, icon: Info, label: "Overview" },
+          { key: "infrastructure" as const, icon: Settings2, label: "Infrastructure" },
+        ]).map((t) => (
+          <button
+            key={t.key}
+            type="button"
+            onClick={() => onTab(t.key)}
+            className={`relative flex items-center gap-1.5 px-5 py-3 text-sm font-medium transition-colors ${
+              tab === t.key
+                ? "text-cyan-700 dark:text-cyan-300"
+                : "text-slate-500 dark:text-gray-500 hover:text-slate-700 dark:hover:text-gray-300"
+            }`}
+          >
+            <t.icon className="h-3.5 w-3.5" />
+            {t.label}
+            {tab === t.key && (
+              <span className="absolute inset-x-0 -bottom-px h-[2px] bg-gradient-to-r from-cyan-500/0 via-cyan-500 to-cyan-500/0" />
+            )}
+          </button>
+        ))}
+      </div>
 
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
-          {application.image && (
-            <div className="glass rounded-lg px-3 py-2 text-xs text-slate-600 dark:text-slate-300">
-              <div className="mb-1 flex items-center gap-1.5 text-slate-500 dark:text-gray-500">
-                <Container className="h-3.5 w-3.5" />
-                Image
-              </div>
-              <code className="break-all font-tactical text-[11px]">{application.image}</code>
-            </div>
-          )}
+      <div className="p-6">
+        {tab === "overview" ? (
+          <div className="animate-slide-in space-y-5">
+            {application.description && (
+              <p className="text-sm leading-relaxed text-slate-600 dark:text-slate-300">{application.description}</p>
+            )}
 
-          {application.repository && (
-            <div className="glass rounded-lg px-3 py-2 text-xs text-slate-600 dark:text-slate-300">
-              <div className="mb-1 flex items-center gap-1.5 text-slate-500 dark:text-gray-500">
-                <GitBranch className="h-3.5 w-3.5" />
-                Repository
-              </div>
-              <div className="break-all font-tactical text-[11px]">{application.repository}</div>
-              {application.branch && (
-                <span className="mt-1 inline-flex rounded bg-violet-500/12 px-1.5 py-0.5 text-[10px] text-violet-700 dark:text-violet-300">
-                  {application.branch}
-                </span>
-              )}
-            </div>
-          )}
-
-          {application.port && (
-            <div className="glass rounded-lg px-3 py-2 text-xs text-slate-600 dark:text-slate-300">
-              <div className="mb-1 flex items-center gap-1.5 text-slate-500 dark:text-gray-500">
-                <Hash className="h-3.5 w-3.5" />
-                Port
-              </div>
-              <div className="font-tactical text-[11px]">:{application.port}</div>
-            </div>
-          )}
-
-          {application.version && (
-            <div className="glass rounded-lg px-3 py-2 text-xs text-slate-600 dark:text-slate-300">
-              <div className="mb-1 flex items-center gap-1.5 text-slate-500 dark:text-gray-500">
-                <Layers className="h-3.5 w-3.5" />
-                Version
-              </div>
-              <div className="font-tactical text-[11px]">{application.version}</div>
-            </div>
-          )}
-
-          {application.deployedAt && application.status === "active" && (
-            <div className="glass rounded-lg px-3 py-2 text-xs text-slate-600 dark:text-slate-300">
-              <div className="mb-1 flex items-center gap-1.5 text-slate-500 dark:text-gray-500">
-                <CheckCircle2 className="h-3.5 w-3.5" />
-                Uptime
-              </div>
-              <div className="font-tactical text-[11px]">{formatUptime(new Date(application.deployedAt))}</div>
-            </div>
-          )}
-        </div>
-
-        {(application.buildCommand || application.startCommand) && (
-          <div className="rounded-xl border border-slate-300/70 bg-white/70 p-3 dark:border-white/12 dark:bg-white/[0.03]">
-            <h3 className="mb-2 text-sm font-semibold text-slate-700 dark:text-slate-200">Build & Runtime Commands</h3>
-            <div className="space-y-2 text-xs">
-              {application.buildCommand && (
-                <div>
-                  <div className="readout text-slate-500 dark:text-gray-500">BUILD</div>
-                  <code className="font-tactical text-orange-700 dark:text-orange-300">{application.buildCommand}</code>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              {application.image && (
+                <div className="glass rounded-lg px-3 py-2 text-xs text-slate-600 dark:text-slate-300">
+                  <div className="mb-1 flex items-center gap-1.5 text-slate-500 dark:text-gray-500">
+                    <Container className="h-3.5 w-3.5" />
+                    Image
+                  </div>
+                  <code className="break-all font-tactical text-[11px]">{application.image}</code>
                 </div>
               )}
-              {application.startCommand && (
-                <div>
-                  <div className="readout text-slate-500 dark:text-gray-500">START</div>
-                  <code className="font-tactical text-emerald-700 dark:text-emerald-300">{application.startCommand}</code>
+
+              {application.repository && (
+                <div className="glass rounded-lg px-3 py-2 text-xs text-slate-600 dark:text-slate-300">
+                  <div className="mb-1 flex items-center gap-1.5 text-slate-500 dark:text-gray-500">
+                    <GitBranch className="h-3.5 w-3.5" />
+                    Repository
+                  </div>
+                  <div className="break-all font-tactical text-[11px]">{application.repository}</div>
+                  {application.branch && (
+                    <span className="mt-1 inline-flex rounded bg-violet-500/12 px-1.5 py-0.5 text-[10px] text-violet-700 dark:text-violet-300">
+                      {application.branch}
+                    </span>
+                  )}
+                </div>
+              )}
+
+              {application.port && (
+                <div className="glass rounded-lg px-3 py-2 text-xs text-slate-600 dark:text-slate-300">
+                  <div className="mb-1 flex items-center gap-1.5 text-slate-500 dark:text-gray-500">
+                    <Hash className="h-3.5 w-3.5" />
+                    Port
+                  </div>
+                  <div className="font-tactical text-[11px]">:{application.port}</div>
+                </div>
+              )}
+
+              {application.version && (
+                <div className="glass rounded-lg px-3 py-2 text-xs text-slate-600 dark:text-slate-300">
+                  <div className="mb-1 flex items-center gap-1.5 text-slate-500 dark:text-gray-500">
+                    <Layers className="h-3.5 w-3.5" />
+                    Version
+                  </div>
+                  <div className="font-tactical text-[11px]">{application.version}</div>
+                </div>
+              )}
+
+              {application.deployedAt && application.status === "active" && (
+                <div className="glass rounded-lg px-3 py-2 text-xs text-slate-600 dark:text-slate-300">
+                  <div className="mb-1 flex items-center gap-1.5 text-slate-500 dark:text-gray-500">
+                    <CheckCircle2 className="h-3.5 w-3.5" />
+                    Uptime
+                  </div>
+                  <div className="font-tactical text-[11px]">{formatUptime(new Date(application.deployedAt))}</div>
                 </div>
               )}
             </div>
-          </div>
-        )}
 
-        <div className="rounded-xl border border-cyan-400/35 bg-cyan-500/8 p-3 dark:border-cyan-300/35">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <p className="readout text-cyan-700 dark:text-cyan-300">Patch UI</p>
-              <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
-                Open the runtime patch surface inside Applications for quick config edits.
-              </p>
-            </div>
-
-            {!capability.isForwarded && patchUiUrl && (
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setShowPatchUi((current) => !current)}
-                  className="inline-flex items-center gap-1.5 rounded-md border border-cyan-500/45 bg-cyan-500/12 px-3 py-1.5 text-xs font-medium text-cyan-700 dark:border-cyan-300/45 dark:text-cyan-200"
-                >
-                  {showPatchUi ? "Hide Patch UI" : "Open Patch UI"}
-                </button>
-                <a
-                  href={patchUiUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1.5 rounded-md border border-slate-300/70 bg-white/70 px-3 py-1.5 text-xs font-medium text-slate-700 dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-300"
-                >
-                  <ExternalLink className="h-3.5 w-3.5" />
-                  Open in new tab
-                </a>
+            {(application.buildCommand || application.startCommand) && (
+              <div className="rounded-xl border border-slate-300/70 bg-white/70 p-3 dark:border-white/12 dark:bg-white/[0.03]">
+                <h3 className="mb-2 text-sm font-semibold text-slate-700 dark:text-slate-200">Build & Runtime Commands</h3>
+                <div className="space-y-2 text-xs">
+                  {application.buildCommand && (
+                    <div>
+                      <div className="readout text-slate-500 dark:text-gray-500">BUILD</div>
+                      <code className="font-tactical text-orange-700 dark:text-orange-300">{application.buildCommand}</code>
+                    </div>
+                  )}
+                  {application.startCommand && (
+                    <div>
+                      <div className="readout text-slate-500 dark:text-gray-500">START</div>
+                      <code className="font-tactical text-emerald-700 dark:text-emerald-300">{application.startCommand}</code>
+                    </div>
+                  )}
+                </div>
               </div>
             )}
           </div>
-
-          {capability.isForwarded ? (
-            <p className="mt-2 text-xs text-slate-600 dark:text-slate-300">
-              Patch UI is disabled for forwarded applications.
-            </p>
-          ) : !patchUiUrl ? (
-            <p className="mt-2 text-xs text-amber-700 dark:text-amber-200">
-              No patch URL detected. For n8n, set <code>N8N_EDITOR_BASE_URL</code> or <code>N8N_PUBLIC_BASE_URL</code>;
-              otherwise provide a valid application node URL.
-            </p>
-          ) : (
-            <>
-              {showPatchUi && (
-                <div className="mt-2 overflow-hidden rounded-lg border border-slate-300/70 bg-white dark:border-white/12 dark:bg-slate-900/70">
-                  <iframe
-                    key={patchUiUrl}
-                    src={patchUiUrl}
-                    title={`${application.name} patch ui`}
-                    className="h-[560px] w-full bg-white"
-                  />
+        ) : (
+          <div className="animate-slide-in space-y-5">
+            <div className="rounded-xl border border-cyan-400/35 bg-cyan-500/8 p-3 dark:border-cyan-300/35">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <p className="readout text-cyan-700 dark:text-cyan-300">Patch UI</p>
+                  <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
+                    Open the runtime patch surface inside Applications for quick config edits.
+                  </p>
                 </div>
-              )}
-              <p className="mt-2 text-xs text-slate-600 dark:text-slate-300">
-                If embedding is blocked by browser or app security headers, use <span className="font-medium">Open in new tab</span>.
-              </p>
-            </>
-          )}
-        </div>
 
-        <NodeInfoCard
-          nodeType={application.nodeType}
-          nodeId={application.nodeId}
-          nodeUrl={application.nodeUrl}
-          healthStatus={application.healthStatus}
-          deployedAt={application.deployedAt}
-          deploymentProfile={application.deploymentProfile}
-          provisioningMode={application.provisioningMode}
-          infrastructure={extractInfrastructureConfig(application.config, application.deploymentProfile)}
-          showCapabilities
-          showConfig
-          showSecurity
-          showUseCases={false}
-          metrics={
-            application.status === "active"
-              ? {
-                  uptime: application.deployedAt ? formatUptime(new Date(application.deployedAt)) : undefined,
-                  cpu: runtimeMetrics?.signals.cpuPercent,
-                  memory: runtimeMetrics?.signals.heapPressurePercent,
-                }
-              : undefined
-          }
-        />
+                {!capability.isForwarded && patchUiUrl && (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowPatchUi((current) => !current)}
+                      className="inline-flex items-center gap-1.5 rounded-md border border-cyan-500/45 bg-cyan-500/12 px-3 py-1.5 text-xs font-medium text-cyan-700 dark:border-cyan-300/45 dark:text-cyan-200"
+                    >
+                      {showPatchUi ? "Hide Patch UI" : "Open Patch UI"}
+                    </button>
+                    <a
+                      href={patchUiUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 rounded-md border border-slate-300/70 bg-white/70 px-3 py-1.5 text-xs font-medium text-slate-700 dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-300"
+                    >
+                      <ExternalLink className="h-3.5 w-3.5" />
+                      Open in new tab
+                    </a>
+                  </div>
+                )}
+              </div>
+
+              {capability.isForwarded ? (
+                <p className="mt-2 text-xs text-slate-600 dark:text-slate-300">
+                  Patch UI is disabled for forwarded applications.
+                </p>
+              ) : !patchUiUrl ? (
+                <p className="mt-2 text-xs text-amber-700 dark:text-amber-200">
+                  No patch URL detected. For n8n, set <code>N8N_EDITOR_BASE_URL</code> or <code>N8N_PUBLIC_BASE_URL</code>;
+                  otherwise provide a valid application node URL.
+                </p>
+              ) : (
+                <>
+                  {showPatchUi && (
+                    <div className="mt-2 overflow-hidden rounded-lg border border-slate-300/70 bg-white dark:border-white/12 dark:bg-slate-900/70">
+                      <iframe
+                        key={patchUiUrl}
+                        src={patchUiUrl}
+                        title={`${application.name} patch ui`}
+                        className="h-[560px] w-full bg-white"
+                      />
+                    </div>
+                  )}
+                  <p className="mt-2 text-xs text-slate-600 dark:text-slate-300">
+                    If embedding is blocked by browser or app security headers, use <span className="font-medium">Open in new tab</span>.
+                  </p>
+                </>
+              )}
+            </div>
+
+            <NodeInfoCard
+              nodeType={application.nodeType}
+              nodeId={application.nodeId}
+              nodeUrl={application.nodeUrl}
+              healthStatus={application.healthStatus}
+              deployedAt={application.deployedAt}
+              deploymentProfile={application.deploymentProfile}
+              provisioningMode={application.provisioningMode}
+              infrastructure={extractInfrastructureConfig(application.config, application.deploymentProfile)}
+              showCapabilities
+              showConfig
+              showSecurity
+              showUseCases={false}
+              metrics={
+                application.status === "active"
+                  ? {
+                      uptime: application.deployedAt ? formatUptime(new Date(application.deployedAt)) : undefined,
+                      cpu: runtimeMetrics?.signals.cpuPercent,
+                      memory: runtimeMetrics?.signals.heapPressurePercent,
+                    }
+                  : undefined
+              }
+            />
+          </div>
+        )}
       </div>
     </div>
   )

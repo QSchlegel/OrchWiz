@@ -1,17 +1,17 @@
 locals {
-  postgres_release_name     = "${var.app_name}-postgres"
-  in_cluster_database_url   = "postgresql://${var.postgres_user}:${var.postgres_password}@${local.postgres_release_name}-postgresql.${var.namespace}.svc.cluster.local:5432/${var.postgres_db}?schema=public"
-  effective_database_url    = var.enable_in_cluster_postgres ? local.in_cluster_database_url : var.database_url
-  create_database_secret    = length(trimspace(local.effective_database_url)) > 0
-  kubeview_chart_archive = "${path.module}/../../../vendor/kubeview/deploy/helm/kubeview-${var.kubeview_chart_version}.tgz"
-  openclaw_station_keys  = ["xo", "ops", "eng", "sec", "med", "cou"]
-  runtime_edge_name      = "${var.app_name}-runtime-edge"
-  runtime_jwt_secret     = trimspace(var.runtime_jwt_secret) != "" ? var.runtime_jwt_secret : var.better_auth_secret
+  postgres_release_name   = "${var.app_name}-postgres"
+  in_cluster_database_url = "postgresql://${var.postgres_user}:${var.postgres_password}@${local.postgres_release_name}-postgresql.${var.namespace}.svc.cluster.local:5432/${var.postgres_db}?schema=public"
+  effective_database_url  = var.enable_in_cluster_postgres ? local.in_cluster_database_url : var.database_url
+  create_database_secret  = length(trimspace(local.effective_database_url)) > 0
+  kubeview_chart_archive  = "${path.module}/../../../vendor/kubeview/deploy/helm/kubeview-${var.kubeview_chart_version}.tgz"
+  openclaw_station_keys   = ["xo", "ops", "eng", "sec", "med", "cou"]
+  runtime_edge_name       = "${var.app_name}-runtime-edge"
+  runtime_jwt_secret      = trimspace(var.runtime_jwt_secret) != "" ? var.runtime_jwt_secret : var.better_auth_secret
   openclaw_gateway_tokens = merge(
     { for station in local.openclaw_station_keys : station => "${var.openclaw_gateway_token}-${station}" },
     { for station, token in var.openclaw_gateway_tokens : station => token if contains(local.openclaw_station_keys, station) },
   )
-  spacebot_name            = "${var.app_name}-spacebot"
+  spacebot_name           = "${var.app_name}-spacebot"
   provider_proxy_name     = "${var.app_name}-provider-proxy"
   provider_proxy_base_url = "http://${local.provider_proxy_name}:${var.provider_proxy_port}"
   kubeview_ingress_host = (
@@ -55,15 +55,15 @@ locals {
         ? ".${trimspace(var.ingress_host)}"
         : ""
       )
-      GITHUB_CLIENT_ID         = var.github_client_id
-      GITHUB_CLIENT_SECRET     = var.github_client_secret
-      RUNTIME_ADAPTER_REGISTRY_ENABLED = "false"
-      BRIDGE_DISPATCH_REGISTRY_ENABLED = "false"
+      GITHUB_CLIENT_ID                    = var.github_client_id
+      GITHUB_CLIENT_SECRET                = var.github_client_secret
+      RUNTIME_ADAPTER_REGISTRY_ENABLED    = "false"
+      BRIDGE_DISPATCH_REGISTRY_ENABLED    = "false"
       TOOLCHAIN_PROTOCOL_REGISTRY_ENABLED = "false"
-      SPACEBOT_CONNECTOR_ENABLED = "false"
-      NODE_ENV                 = "production"
-      ENABLE_FORWARDING_INGEST = "true"
-      ENABLE_SSE_EVENTS        = "true"
+      SPACEBOT_CONNECTOR_ENABLED          = "false"
+      NODE_ENV                            = "production"
+      ENABLE_FORWARDING_INGEST            = "true"
+      ENABLE_SSE_EVENTS                   = "true"
     },
     var.enable_openclaw ? {
       # Prefer per-station routing (xo/ops/eng/sec/med/cou) when OpenClaw is deployed as 6 services.
@@ -81,7 +81,7 @@ locals {
     } : {},
     var.enable_langfuse ? {
       # In-cluster URL so OrchWiz proxy and Langfuse client talk to Langfuse over cluster network.
-      LANGFUSE_BASE_URL = "http://langfuse.${var.monitoring_namespace}.svc.cluster.local:3000"
+      LANGFUSE_BASE_URL   = "http://langfuse.${var.monitoring_namespace}.svc.cluster.local:3000"
       LANGFUSE_PUBLIC_KEY = var.langfuse_public_key
       LANGFUSE_SECRET_KEY = var.langfuse_secret_key
     } : {},
@@ -696,6 +696,9 @@ resource "kubernetes_deployment_v1" "runtime_edge" {
           app                      = local.runtime_edge_name
           "app.kubernetes.io/name" = "runtime-edge"
         }
+        annotations = {
+          "orchwiz/runtime-jwt-secret-hash" = sha256(local.runtime_jwt_secret)
+        }
       }
 
       spec {
@@ -730,6 +733,11 @@ resource "kubernetes_deployment_v1" "runtime_edge" {
           env {
             name  = "HOSTNAME"
             value = "0.0.0.0"
+          }
+
+          env {
+            name  = "ORCHWIZ_MONITORING_NAMESPACE"
+            value = var.monitoring_namespace
           }
 
           command = ["npm"]
@@ -899,6 +907,9 @@ resource "kubernetes_deployment_v1" "app" {
       metadata {
         labels = {
           app = var.app_name
+        }
+        annotations = {
+          "orchwiz/runtime-jwt-secret-hash" = sha256(local.runtime_jwt_secret)
         }
       }
 
@@ -1202,6 +1213,7 @@ resource "helm_release" "grafana" {
   chart      = "grafana"
   version    = var.grafana_chart_version
   namespace  = kubernetes_namespace_v1.monitoring[0].metadata[0].name
+  timeout    = 900
 
   set {
     name  = "fullnameOverride"
@@ -1258,6 +1270,7 @@ resource "helm_release" "prometheus" {
   chart      = "prometheus"
   version    = var.prometheus_chart_version
   namespace  = kubernetes_namespace_v1.monitoring[0].metadata[0].name
+  timeout    = 900
 
   set {
     name  = "server.fullnameOverride"
@@ -1404,6 +1417,7 @@ resource "helm_release" "langfuse" {
   chart      = "langfuse"
   version    = var.langfuse_chart_version
   namespace  = kubernetes_namespace_v1.monitoring[0].metadata[0].name
+  timeout    = 1800
 
   set {
     name  = "fullnameOverride"
@@ -1422,15 +1436,15 @@ resource "helm_release" "langfuse" {
   }
   set_sensitive {
     name  = "langfuse.salt.value"
-    value = trimspace(var.langfuse_salt) != "" ? var.langfuse_salt : "replace-with-openssl-rand-base64-32"
+    value = trimspace(var.langfuse_salt) != "" ? var.langfuse_salt : "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
   }
   set_sensitive {
     name  = "langfuse.nextauth.secret.value"
-    value = trimspace(var.langfuse_nextauth_secret) != "" ? var.langfuse_nextauth_secret : "replace-with-openssl-rand-hex-32"
+    value = trimspace(var.langfuse_nextauth_secret) != "" ? var.langfuse_nextauth_secret : "9f88c4048f2d171ef74f14ea61c95cde3d458f38244fdd4fbed9f4e71e74c407"
   }
   set_sensitive {
     name  = "langfuse.encryptionKey.value"
-    value = trimspace(var.langfuse_encryption_key) != "" ? var.langfuse_encryption_key : "replace-with-openssl-rand-hex-32"
+    value = trimspace(var.langfuse_encryption_key) != "" ? var.langfuse_encryption_key : "e4c7f4dc723173fbd2f5f94f5d4a4d98229d6bd76ddd30cd88f9225a4a9de5d3"
   }
   set_sensitive {
     name  = "postgresql.auth.password"
