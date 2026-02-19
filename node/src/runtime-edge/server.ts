@@ -35,6 +35,22 @@ function parseBooleanEnv(value: unknown): boolean | null {
   return null
 }
 
+function parseBooleanFlag(value: string | null): boolean {
+  if (!value) {
+    return false
+  }
+
+  const normalized = value.trim().toLowerCase()
+  return normalized === "true" || normalized === "1" || normalized === "yes" || normalized === "on"
+}
+
+function resolveWsDirectTerminalPassthrough(url: URL): boolean {
+  if (parseBooleanFlag(url.searchParams.get("directWs"))) {
+    return true
+  }
+  return parseBooleanEnv(process.env.ORCHWIZ_RUNTIME_EDGE_DIRECT_TERMINAL_PASSTHROUGH) === true
+}
+
 function parseCliArgs(argv: string[]) {
   const args: Record<string, string> = {}
   for (let index = 0; index < argv.length; index += 1) {
@@ -782,6 +798,7 @@ async function handleWsProxyConnection(downstream: WebSocket, req: http.Incoming
     }
 
     const requestUrl = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`)
+    const directTerminalPassthrough = resolveWsDirectTerminalPassthrough(requestUrl)
     const target = resolveRuntimeTarget(req, requestUrl)
     if (!target || target.kind !== "openclaw") {
       downstream.close(1008, "Unknown runtime websocket target.")
@@ -795,7 +812,18 @@ async function handleWsProxyConnection(downstream: WebSocket, req: http.Incoming
       upstreamHeaders.authorization = authz
     }
 
+    const downstreamOrigin = asString(typeof req.headers.origin === "string" ? req.headers.origin : null)
     const upstreamOrigin = (() => {
+      if (directTerminalPassthrough) {
+        if (!downstreamOrigin) {
+          return undefined
+        }
+        try {
+          return new URL(downstreamOrigin).origin
+        } catch {
+          return undefined
+        }
+      }
       try {
         // OpenClaw validates websocket Origin against control UI allowed origins.
         // Use the public gateway origin so proxied sessions match expected gateway host checks.
@@ -804,6 +832,14 @@ async function handleWsProxyConnection(downstream: WebSocket, req: http.Incoming
         return undefined
       }
     })()
+
+    log("upstream connect", {
+      upstreamUrl: target.wsUpstreamUrl,
+      publicBaseUrl: target.publicBaseUrl,
+      downstreamOrigin,
+      upstreamOrigin,
+      directTerminalPassthrough,
+    })
 
     upstream = new WebSocket(target.wsUpstreamUrl, {
       perMessageDeflate: false,

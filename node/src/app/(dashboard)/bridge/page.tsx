@@ -233,6 +233,15 @@ function buildOpenClawRuntimeUiProxyHref(args: {
   return `${base}?${query.toString()}`
 }
 
+function appendQueryParamToHref(href: string, key: string, value: string): string {
+  const [withoutHash, hash = ""] = href.split("#", 2)
+  const [basePath, rawQuery = ""] = withoutHash.split("?", 2)
+  const query = new URLSearchParams(rawQuery)
+  query.set(key, value)
+  const rebuilt = query.size > 0 ? `${basePath}?${query.toString()}` : basePath
+  return hash ? `${rebuilt}#${hash}` : rebuilt
+}
+
 function extractBridgeSessionRef(session: SessionListItem): BridgeSessionRef | null {
   const metadata = asRecord(session.metadata)
   const bridge = asRecord(metadata.bridge)
@@ -401,6 +410,7 @@ export default function BridgePage() {
     BRIDGE_DISPATCH_FALLBACK_RUNTIME_DESCRIPTORS,
   )
   const [showRuntimeIframe, setShowRuntimeIframe] = useState(false)
+  const [openClawDirectWsDebug, setOpenClawDirectWsDebug] = useState(false)
   const [connectionOptions, setConnectionOptions] = useState<BridgeConnectionOption[]>([])
   const [selectedConnectionIds, setSelectedConnectionIds] = useState<string[]>([])
 
@@ -443,6 +453,19 @@ export default function BridgePage() {
 
     return openClawRuntimeUi.instances[0]
   }, [openClawRuntimeUi.instances, selectedStation?.stationKey])
+
+  const selectedOpenClawRuntimeIframeHref = useMemo(() => {
+    const href = selectedOpenClawRuntimeInstance?.href
+    if (!href) {
+      return null
+    }
+
+    if (!openClawDirectWsDebug) {
+      return href
+    }
+
+    return appendQueryParamToHref(href, "directWs", "1")
+  }, [openClawDirectWsDebug, selectedOpenClawRuntimeInstance?.href])
 
   const selectedShip = useMemo(() => {
     if (!selectedShipDeploymentId) {
@@ -1967,11 +1990,21 @@ export default function BridgePage() {
                           Runtime source: {selectedOpenClawRuntimeInstance.source}
                         </p>
                       )}
-                      {showRuntimeIframe && selectedOpenClawRuntimeInstance?.href && (
+                      {selectedOpenClawRuntimeInstance?.href && (
+                        <label className="mt-1 inline-flex items-center gap-2 text-[11px] text-slate-600 dark:text-slate-300">
+                          <input
+                            type="checkbox"
+                            checked={openClawDirectWsDebug}
+                            onChange={(event) => setOpenClawDirectWsDebug(event.target.checked)}
+                          />
+                          Direct terminal passthrough (debug)
+                        </label>
+                      )}
+                      {showRuntimeIframe && selectedOpenClawRuntimeIframeHref && (
                         <div className="mt-2 overflow-hidden rounded-lg border border-slate-300/70 bg-white dark:border-white/12 dark:bg-slate-900/70">
                           <iframe
-                            src={selectedOpenClawRuntimeInstance.href}
-                            title={selectedOpenClawRuntimeInstance.label}
+                            src={selectedOpenClawRuntimeIframeHref}
+                            title={selectedOpenClawRuntimeInstance?.label || "OpenClaw Runtime UI"}
                             className="h-[420px] w-full bg-white"
                           />
                         </div>

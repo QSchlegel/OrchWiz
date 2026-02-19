@@ -34,6 +34,15 @@ function asString(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null
 }
 
+function parseBooleanFlag(value: string | null): boolean {
+  if (!value) {
+    return false
+  }
+
+  const normalized = value.trim().toLowerCase()
+  return normalized === "true" || normalized === "1" || normalized === "yes" || normalized === "on"
+}
+
 function asRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return {}
@@ -175,7 +184,7 @@ function buildUpstreamUrl(args: {
 
   const nextSearch = new URLSearchParams(args.searchParams)
   nextSearch.delete("shipDeploymentId")
-  // Deprecated: older Bridge links used this query param to toggle websocket proxying.
+  // Keep this as a local proxy debug toggle; never forward it to OpenClaw HTTP upstream.
   nextSearch.delete("directWs")
   upstream.search = nextSearch.toString()
 
@@ -197,6 +206,16 @@ function wsUrlForHttpBase(value: string): string | null {
     return parsed.toString()
   } catch {
     return null
+  }
+}
+
+function appendUrlQueryParam(value: string, key: string, paramValue: string): string {
+  try {
+    const parsed = new URL(value)
+    parsed.searchParams.set(key, paramValue)
+    return parsed.toString()
+  } catch {
+    return value
   }
 }
 
@@ -327,6 +346,7 @@ async function handleRuntimeUiProxy(
     return NextResponse.json({ error: "Unknown bridge station." }, { status: 400 })
   }
 
+  const directWs = parseBooleanFlag(request.nextUrl.searchParams.get("directWs"))
   const shipDeploymentId = asString(request.nextUrl.searchParams.get("shipDeploymentId"))
   const selectedShip = await selectShipForRuntimeUi({
     userId: session.user.id,
@@ -443,8 +463,8 @@ async function handleRuntimeUiProxy(
   const contentType = responseHeaders.get("content-type") || ""
   if (request.method === "GET" && contentType.toLowerCase().includes("text/html")) {
     const gatewayBaseUrl = metadataRuntimeUiUrl || upstreamBaseUrl
-    const gatewayUrl = wsUrlForHttpBase(gatewayBaseUrl)
-    if (!gatewayUrl) {
+    const wsGatewayBaseUrl = wsUrlForHttpBase(gatewayBaseUrl)
+    if (!wsGatewayBaseUrl) {
       return NextResponse.json(
         {
           error: "OpenClaw runtime websocket URL is invalid.",
@@ -459,6 +479,9 @@ async function handleRuntimeUiProxy(
         { status: 500 },
       )
     }
+    const gatewayUrl = directWs
+      ? appendUrlQueryParam(wsGatewayBaseUrl, "directWs", "1")
+      : wsGatewayBaseUrl
     const stationTokenKey = `OPENCLAW_GATEWAY_TOKEN_${params.stationKey.toUpperCase()}`
     const gatewayToken =
       asString(process.env[stationTokenKey])

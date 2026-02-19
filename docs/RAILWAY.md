@@ -16,9 +16,11 @@ Create these services in a Railway project:
 
 ## 2) Set each service Root Directory
 
-- `orchwiz-node` -> `node`
-- `orchwiz-data-core` -> `services/data-core`
-- `orchwiz-provider-proxy` -> `services/provider-proxy`
+Use monorepo root directories so each service builds from its own folder:
+
+- `orchwiz-node` -> `/node`
+- `orchwiz-data-core` -> `/services/data-core`
+- `orchwiz-provider-proxy` -> `/services/provider-proxy`
 
 ## 3) Set Config-as-Code path for each service
 
@@ -48,6 +50,21 @@ Create these services in a Railway project:
 
 - Node -> Data Core: `DATA_CORE_BASE_URL`
 - Node -> Provider Proxy: `CODEX_PROVIDER_PROXY_URL`
+
+## Troubleshooting
+
+### `Dockerfile \`Dockerfile\` does not exist`
+
+If Railway shows this build error, the service is usually building from the repository root instead of the service directory.
+
+Fix checklist:
+
+1. Open service `Settings` -> `Source` in Railway.
+2. Confirm `Root Directory` is set to the correct folder (`/node`, `/services/data-core`, or `/services/provider-proxy`).
+3. Confirm `Config as Code` path points to the matching manifest (`/node/railway.toml`, `/services/data-core/railway.toml`, `/services/provider-proxy/railway.toml`).
+4. Redeploy the latest commit.
+
+Reference: [Railway Config as Code docs](https://docs.railway.com/config-as-code)
 
 ## Scope and defaults
 
