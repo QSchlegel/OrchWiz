@@ -216,6 +216,7 @@ async function handleRuntimeUiProxy(
       method: request.method,
       headers: {
         Accept: request.headers.get("accept") || "*/*",
+        "Accept-Encoding": "identity",
         "User-Agent": request.headers.get("user-agent") || "OrchWiz-Bridge-KubeViewProxy",
       },
       redirect: "manual",
@@ -237,6 +238,7 @@ async function handleRuntimeUiProxy(
   const responseHeaders = new Headers(upstream.headers)
   responseHeaders.delete("content-security-policy")
   responseHeaders.delete("x-frame-options")
+  responseHeaders.delete("content-encoding")
   responseHeaders.delete("content-length")
   responseHeaders.set("cache-control", "no-store")
 

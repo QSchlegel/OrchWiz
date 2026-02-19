@@ -91,6 +91,7 @@ interface RuntimeUiInstanceCard {
   callsign: string
   label: string
   href: string | null
+  directHref: string | null
   source: string
 }
 
@@ -216,6 +217,20 @@ function asStationKey(value: unknown): BridgeStationKey | null {
 
   const normalized = value.trim().toLowerCase() as BridgeStationKey
   return STATION_KEYS.has(normalized) ? normalized : null
+}
+
+function buildOpenClawRuntimeUiProxyHref(args: {
+  stationKey: BridgeStationKey
+  shipDeploymentId: string | null
+}): string {
+  const base = `/api/bridge/runtime-ui/openclaw/${args.stationKey}`
+  if (!args.shipDeploymentId) {
+    return base
+  }
+
+  const query = new URLSearchParams()
+  query.set("shipDeploymentId", args.shipDeploymentId)
+  return `${base}?${query.toString()}`
 }
 
 function extractBridgeSessionRef(session: SessionListItem): BridgeSessionRef | null {
@@ -613,6 +628,9 @@ export default function BridgePage() {
         ),
       }
 
+      const resolvedShipDeploymentId =
+        typeof payload?.selectedShipDeploymentId === "string" ? payload.selectedShipDeploymentId : null
+
       const runtimeUiPayload = asRecord(payload?.runtimeUi)
       const runtimeUiOpenClawPayload = asRecord(runtimeUiPayload.openclaw)
       const runtimeUiOpenClawInstances = Array.isArray(runtimeUiOpenClawPayload.instances)
@@ -624,6 +642,11 @@ export default function BridgePage() {
                 return null
               }
 
+              const directHref =
+                typeof record.href === "string" && record.href.trim().length > 0
+                  ? record.href
+                  : null
+
               return {
                 stationKey,
                 callsign:
@@ -634,10 +657,13 @@ export default function BridgePage() {
                   typeof record.label === "string" && record.label.trim().length > 0
                     ? record.label
                     : `${stationKey.toUpperCase()} OpenClaw UI`,
-                href:
-                  typeof record.href === "string" && record.href.trim().length > 0
-                    ? record.href
-                    : null,
+                href: directHref
+                  ? buildOpenClawRuntimeUiProxyHref({
+                      stationKey,
+                      shipDeploymentId: resolvedShipDeploymentId,
+                    })
+                  : null,
+                directHref,
                 source:
                   typeof record.source === "string" && record.source.trim().length > 0
                     ? record.source
@@ -646,19 +672,19 @@ export default function BridgePage() {
             })
             .filter((entry: RuntimeUiInstanceCard | null): entry is RuntimeUiInstanceCard => entry !== null)
         : []
+      const preferredOpenClawRuntimeInstance =
+        runtimeUiOpenClawInstances.find((entry) => entry.href) || runtimeUiOpenClawInstances[0] || null
       const nextOpenClawRuntimeUi: RuntimeUiCard = {
         label:
           typeof runtimeUiOpenClawPayload.label === "string" && runtimeUiOpenClawPayload.label.trim().length > 0
             ? runtimeUiOpenClawPayload.label
             : "OpenClaw Runtime UI",
-        href:
-          typeof runtimeUiOpenClawPayload.href === "string" && runtimeUiOpenClawPayload.href.trim().length > 0
-            ? runtimeUiOpenClawPayload.href
-            : null,
+        href: preferredOpenClawRuntimeInstance?.href || null,
         source:
-          typeof runtimeUiOpenClawPayload.source === "string" && runtimeUiOpenClawPayload.source.trim().length > 0
-            ? runtimeUiOpenClawPayload.source
-            : "unconfigured",
+          preferredOpenClawRuntimeInstance?.source
+            || (typeof runtimeUiOpenClawPayload.source === "string" && runtimeUiOpenClawPayload.source.trim().length > 0
+              ? runtimeUiOpenClawPayload.source
+              : "unconfigured"),
         instances: runtimeUiOpenClawInstances,
       }
 
@@ -718,8 +744,6 @@ export default function BridgePage() {
         return nextStations[0]?.stationKey || null
       })
 
-      const resolvedShipDeploymentId =
-        typeof payload?.selectedShipDeploymentId === "string" ? payload.selectedShipDeploymentId : null
       if (resolvedShipDeploymentId !== selectedShipDeploymentId) {
         setSelectedShipDeploymentId(resolvedShipDeploymentId)
       }
@@ -1914,7 +1938,9 @@ export default function BridgePage() {
                             void (async () => {
                               if (!selectedOpenClawRuntimeInstance?.href) return
                               if (!showRuntimeIframe) {
-                                const ok = await ensureRuntimeEdgeAvailable(selectedOpenClawRuntimeInstance.href)
+                                const ok = await ensureRuntimeEdgeAvailable(
+                                  selectedOpenClawRuntimeInstance.directHref || selectedOpenClawRuntimeInstance.href,
+                                )
                                 if (!ok) return
                               }
 

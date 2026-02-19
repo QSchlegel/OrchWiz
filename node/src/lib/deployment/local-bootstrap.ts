@@ -26,10 +26,14 @@ const BASE_REQUIRED_COMMANDS = ["terraform", "kubectl", "ansible-playbook"] as c
 const MAX_OUTPUT_CHARS = 8000
 const CONTEXT_CHECK_TIMEOUT_MS = 60_000
 const KIND_CREATE_CLUSTER_TIMEOUT_MS = 300_000
+const KIND_DELETE_CLUSTER_TIMEOUT_MS = 180_000
 const DEFAULT_LOCAL_INFRA_TIMEOUT_MS = 1_200_000
 const DEFAULT_LOCAL_SHIPYARD_APP_IMAGE = "orchwiz:local-dev"
 const DEFAULT_LOCAL_SHIPYARD_DOCKERFILE = "node/Dockerfile.shipyard"
 const DEFAULT_LOCAL_SHIPYARD_DOCKER_CONTEXT = "node"
+const DEFAULT_LOCAL_PROVIDER_PROXY_IMAGE = "orchwiz-provider-proxy:local-dev"
+const DEFAULT_LOCAL_PROVIDER_PROXY_DOCKERFILE = "services/provider-proxy/Dockerfile"
+const DEFAULT_LOCAL_PROVIDER_PROXY_DOCKER_CONTEXT = "services/provider-proxy"
 
 interface InstallPackageNames {
   brew: string
@@ -1128,9 +1132,12 @@ function suggestedContextCommands(kind: InfrastructureConfig["kind"], context: s
     ]
   }
 
+  const clusterName = kindClusterNameFromContext(context)
+
   return [
     "kubectl config get-contexts -o name",
-    "kind create cluster --name orchwiz",
+    `kind export kubeconfig --name ${clusterName}`,
+    `kind create cluster --name ${clusterName}`,
     `kubectl config use-context ${context}`,
   ]
 }
@@ -1306,6 +1313,17 @@ function localShipyardAutoBuildEnabled(input: LocalBootstrapInput, runtime: Loca
   return parseBooleanEnv(runtime.env.LOCAL_SHIPYARD_AUTO_BUILD_APP_IMAGE, true)
 }
 
+function localShipyardAutoBuildProviderProxyEnabled(
+  input: LocalBootstrapInput,
+  runtime: LocalBootstrapRuntime,
+): boolean {
+  if (!localShipyardAutoBuildEnabled(input, runtime)) {
+    return false
+  }
+
+  return parseBooleanEnv(runtime.env.LOCAL_SHIPYARD_AUTO_BUILD_PROVIDER_PROXY_IMAGE, true)
+}
+
 function localShipyardAutoCreateKindClusterEnabled(
   input: LocalBootstrapInput,
   runtime: LocalBootstrapRuntime,
@@ -1318,7 +1336,7 @@ function localShipyardAutoCreateKindClusterEnabled(
     return false
   }
 
-  return parseBooleanEnv(runtime.env.LOCAL_SHIPYARD_AUTO_CREATE_KIND_CLUSTER, false)
+  return parseBooleanEnv(runtime.env.LOCAL_SHIPYARD_AUTO_CREATE_KIND_CLUSTER, true)
 }
 
 function localShipyardObservabilityStackEnabled(
@@ -1340,6 +1358,23 @@ function localShipyardForceRebuildEnabled(runtime: LocalBootstrapRuntime): boole
 function isKindMissingClusterError(result: LocalBootstrapCommandResult): boolean {
   const raw = [result.stdout, result.stderr, result.error || ""].join("\n").toLowerCase()
   return raw.includes("no nodes found for cluster")
+}
+
+function isKindNodesAlreadyExistError(result: LocalBootstrapCommandResult): boolean {
+  const raw = [result.stdout, result.stderr, result.error || ""].join("\n").toLowerCase()
+  return raw.includes("node(s) already exist for a cluster with the name")
+}
+
+function isKindDeleteNoClusterError(result: LocalBootstrapCommandResult): boolean {
+  const raw = [result.stdout, result.stderr, result.error || ""].join("\n").toLowerCase()
+  return raw.includes("no kind clusters found")
+}
+
+function parseKubeContextNames(output: string): string[] {
+  return output
+    .split("\n")
+    .map((entry) => entry.trim())
+    .filter(Boolean)
 }
 
 function kindClusterNameFromContext(kubeContext: string): string {
@@ -1861,6 +1896,153 @@ async function prepareLocalKindAppImage(args: {
   }
 }
 
+async function prepareLocalKindProviderProxyImage(args: {
+  input: LocalBootstrapInput
+  paths: ResolvedInfrastructurePaths
+  runtime: LocalBootstrapRuntime
+  timeoutMs: number
+}): Promise<{ ok: true; image: string; metadata: Record<string, unknown> } | LocalBootstrapFailure> {
+  const configuredImage = asNonEmptyString(args.runtime.env.TF_VAR_provider_proxy_image)
+  if (configuredImage && configuredImage.includes("/")) {
+    return {
+      ok: true,
+      image: configuredImage,
+      metadata: {
+        imageTag: configuredImage,
+        source: "configured_remote_image",
+        built: false,
+        loaded: false,
+      },
+    }
+  }
+
+  const imageTag = configuredImage
+    || args.runtime.env.LOCAL_SHIPYARD_PROVIDER_PROXY_IMAGE?.trim()
+    || DEFAULT_LOCAL_PROVIDER_PROXY_IMAGE
+  const dockerfilePath = resolvePathFromRepoRoot(
+    args.paths.repoRoot,
+    args.runtime.env.LOCAL_SHIPYARD_PROVIDER_PROXY_DOCKERFILE || DEFAULT_LOCAL_PROVIDER_PROXY_DOCKERFILE,
+  )
+  const dockerContextPath = resolvePathFromRepoRoot(
+    args.paths.repoRoot,
+    args.runtime.env.LOCAL_SHIPYARD_PROVIDER_PROXY_DOCKER_CONTEXT || DEFAULT_LOCAL_PROVIDER_PROXY_DOCKER_CONTEXT,
+  )
+
+  if (!args.runtime.commandExists("docker")) {
+    return toFailure(
+      "LOCAL_BOOTSTRAP_TOOLS_MISSING",
+      "Docker CLI is required to build the local provider-proxy image.",
+      {
+        details: {
+          missingCommands: ["docker"],
+          suggestedCommands: ["Install 'docker' and retry launch."],
+        },
+      },
+    )
+  }
+
+  if (!args.runtime.fileExists(dockerfilePath) || !args.runtime.isDirectory(dockerContextPath)) {
+    return toFailure(
+      "LOCAL_BOOTSTRAP_CONFIG_MISSING",
+      "Local provider-proxy docker build configuration is missing.",
+      {
+        details: {
+          missingFiles: [
+            ...(args.runtime.fileExists(dockerfilePath) ? [] : [dockerfilePath]),
+            ...(args.runtime.isDirectory(dockerContextPath) ? [] : [dockerContextPath]),
+          ],
+          suggestedCommands: [
+            "Ensure services/provider-proxy/Dockerfile exists and LOCAL_SHIPYARD_PROVIDER_PROXY_DOCKER_CONTEXT points to a valid directory.",
+          ],
+        },
+      },
+    )
+  }
+
+  args.runtime.onProgress?.(54, "building_provider_proxy", "Building provider-proxy image")
+  if (isVerboseOrResourceUsageEnabled(args.runtime.env)) {
+    args.runtime.emitLaunchLog?.({
+      level: "debug",
+      source: "local-bootstrap",
+      lines: ["[local-bootstrap] Provider-proxy Docker build started"],
+    })
+  }
+
+  const forceRebuild = localShipyardForceRebuildEnabled(args.runtime)
+  const buildArgs = ["build", "-f", dockerfilePath, "-t", imageTag]
+  if (forceRebuild) {
+    buildArgs.push("--no-cache")
+  }
+  buildArgs.push(dockerContextPath)
+  const buildResult = await args.runtime.runCommand("docker", buildArgs, {
+    cwd: args.paths.repoRoot,
+    timeoutMs: args.timeoutMs,
+  })
+
+  if (!buildResult.ok) {
+    return toFailure(
+      "LOCAL_PROVISIONING_FAILED",
+      "Failed to build local provider-proxy image for kind launch.",
+      {
+        details: {
+          suggestedCommands: [
+            `docker build -f ${dockerfilePath} -t ${imageTag} ${dockerContextPath}`,
+          ],
+        },
+        metadata: {
+          providerProxyImageBuildOutputTail: outputTail(buildResult),
+        },
+      },
+    )
+  }
+
+  const clusterName = args.runtime.env.LOCAL_SHIPYARD_KIND_CLUSTER_NAME?.trim()
+    || kindClusterNameFromContext(args.input.infrastructure.kubeContext)
+  args.runtime.onProgress?.(60, "loading_provider_proxy_image", "Loading provider-proxy image into cluster")
+  const loadResult = await args.runtime.runCommand(
+    "kind",
+    ["load", "docker-image", imageTag, "--name", clusterName],
+    { timeoutMs: args.timeoutMs },
+  )
+
+  if (!loadResult.ok) {
+    const suggestedCommands = [
+      `kind load docker-image ${imageTag} --name ${clusterName}`,
+    ]
+    if (isKindMissingClusterError(loadResult)) {
+      suggestedCommands.unshift(`kubectl config use-context kind-${clusterName}`)
+      suggestedCommands.unshift(`kind create cluster --name ${clusterName}`)
+    }
+    return toFailure(
+      "LOCAL_PROVISIONING_FAILED",
+      "Failed to load local provider-proxy image into kind cluster.",
+      {
+        details: {
+          suggestedCommands,
+        },
+        metadata: {
+          providerProxyImageLoadOutputTail: outputTail(loadResult),
+        },
+      },
+    )
+  }
+
+  return {
+    ok: true,
+    image: imageTag,
+    metadata: {
+      imageTag,
+      source: "local_build",
+      built: true,
+      loaded: true,
+      dockerfilePath,
+      dockerContextPath,
+      clusterName,
+      forceRebuild,
+    },
+  }
+}
+
 function derivedProvisioningSuggestions(args: {
   baseCommand: string
   infrastructure: InfrastructureConfig
@@ -2081,11 +2263,20 @@ export async function runLocalBootstrap(
     )
   }
 
-  const contexts = contextResult.stdout
-    .split("\n")
-    .map((entry) => entry.trim())
-    .filter(Boolean)
-  let contextSet = new Set(contexts)
+  let contextSet = new Set(parseKubeContextNames(contextResult.stdout))
+  const refreshContexts = async (metadataKey: string): Promise<boolean> => {
+    const recheckResult = await runtime.runCommand(
+      "kubectl",
+      ["config", "get-contexts", "-o", "name"],
+      { timeoutMs: CONTEXT_CHECK_TIMEOUT_MS },
+    )
+    if (!recheckResult.ok) {
+      installMetadata[metadataKey] = outputTail(recheckResult)
+      return false
+    }
+    contextSet = new Set(parseKubeContextNames(recheckResult.stdout))
+    return true
+  }
 
   if (!contextSet.has(input.infrastructure.kubeContext)) {
     const canAutoCreateKind =
@@ -2101,28 +2292,53 @@ export async function runLocalBootstrap(
         runtime.emitLaunchLog?.({
           level: "info",
           source: "local-bootstrap",
-          lines: [`[local-bootstrap] Creating Kind cluster '${clusterName}' (context ${input.infrastructure.kubeContext})`],
+          lines: [`[local-bootstrap] Ensuring Kind context '${input.infrastructure.kubeContext}'`],
         })
       }
-      runtime.onProgress?.(66, "creating_kind_cluster", "Creating Kind cluster (this may take a moment)")
-      const createResult = await runtime.runCommand(
+
+      const exportResult = await runtime.runCommand(
         "kind",
-        ["create", "cluster", "--name", clusterName],
-        { timeoutMs: KIND_CREATE_CLUSTER_TIMEOUT_MS },
+        ["export", "kubeconfig", "--name", clusterName],
+        { timeoutMs: CONTEXT_CHECK_TIMEOUT_MS },
       )
-      if (createResult.ok) {
-        const recheckResult = await runtime.runCommand(
-          "kubectl",
-          ["config", "get-contexts", "-o", "name"],
-          { timeoutMs: CONTEXT_CHECK_TIMEOUT_MS },
+      if (exportResult.ok) {
+        installMetadata.kindClusterContextExported = true
+        await refreshContexts("contextRecheckOutputTail")
+      } else {
+        installMetadata.kindClusterExportOutputTail = outputTail(exportResult)
+      }
+
+      if (!contextSet.has(input.infrastructure.kubeContext)) {
+        runtime.onProgress?.(66, "creating_kind_cluster", "Creating Kind cluster (this may take a moment)")
+        let createResult = await runtime.runCommand(
+          "kind",
+          ["create", "cluster", "--name", clusterName],
+          { timeoutMs: KIND_CREATE_CLUSTER_TIMEOUT_MS },
         )
-        if (recheckResult.ok) {
-          const newContexts = recheckResult.stdout
-            .split("\n")
-            .map((entry) => entry.trim())
-            .filter(Boolean)
-          contextSet = new Set(newContexts)
+
+        if (!createResult.ok && isKindNodesAlreadyExistError(createResult)) {
+          installMetadata.kindClusterCreateOutputTailBeforeRecreate = outputTail(createResult)
+          const deleteResult = await runtime.runCommand(
+            "kind",
+            ["delete", "cluster", "--name", clusterName],
+            { timeoutMs: KIND_DELETE_CLUSTER_TIMEOUT_MS },
+          )
+          if (deleteResult.ok || isKindDeleteNoClusterError(deleteResult)) {
+            createResult = await runtime.runCommand(
+              "kind",
+              ["create", "cluster", "--name", clusterName],
+              { timeoutMs: KIND_CREATE_CLUSTER_TIMEOUT_MS },
+            )
+          } else {
+            installMetadata.kindClusterDeleteOutputTail = outputTail(deleteResult)
+          }
+        }
+
+        if (createResult.ok) {
           installMetadata.kindClusterAutoCreated = true
+          await refreshContexts("contextRecheckOutputTail")
+        } else {
+          installMetadata.kindClusterCreateOutputTail = outputTail(createResult)
         }
       }
     }
@@ -2181,6 +2397,25 @@ export async function runLocalBootstrap(
     installMetadata.localAppImage = imagePreparation.metadata
   }
 
+  if (localShipyardAutoBuildProviderProxyEnabled(input, runtime)) {
+    const providerProxyImagePreparation = await prepareLocalKindProviderProxyImage({
+      input,
+      paths,
+      runtime,
+      timeoutMs,
+    })
+    if (!providerProxyImagePreparation.ok) {
+      return {
+        ...providerProxyImagePreparation,
+        metadata: {
+          ...(providerProxyImagePreparation.metadata || {}),
+          ...installMetadata,
+        },
+      }
+    }
+    installMetadata.localProviderProxyImage = providerProxyImagePreparation.metadata
+  }
+
   const provisionEnv: NodeJS.ProcessEnv = {
     ...runtime.env,
     TF_DIR: paths.terraformEnvDirAbsolute,
@@ -2216,6 +2451,12 @@ export async function runLocalBootstrap(
     ...(installMetadata.localAppImage
       ? {
           TF_VAR_app_image: (installMetadata.localAppImage as { imageTag?: string }).imageTag || "",
+        }
+      : {}),
+    ...(installMetadata.localProviderProxyImage
+      ? {
+          TF_VAR_provider_proxy_image:
+            (installMetadata.localProviderProxyImage as { imageTag?: string }).imageTag || "",
         }
       : {}),
   }
@@ -2263,7 +2504,7 @@ export async function runLocalBootstrap(
         output: provisionOutput,
       }),
     ]).filter((command) => command.length > 0)
-    const baseCommand = `TF_DIR=${paths.terraformEnvDirAbsolute} INFRASTRUCTURE_KIND=${input.infrastructure.kind} KUBE_CONTEXT=${input.infrastructure.kubeContext} ORCHWIZ_NAMESPACE=${input.infrastructure.namespace} ORCHWIZ_APP_NAME=${runtime.env.ORCHWIZ_APP_NAME || "orchwiz"}${provisionEnv.TF_VAR_openclaw_station_count ? ` TF_VAR_openclaw_station_count=${provisionEnv.TF_VAR_openclaw_station_count}` : ""}${provisionEnv.TF_VAR_app_image ? ` TF_VAR_app_image=${provisionEnv.TF_VAR_app_image}` : ""}${provisionEnv.TF_VAR_app_env ? ` TF_VAR_app_env='${provisionEnv.TF_VAR_app_env}'` : ""}${provisionEnv.TF_VAR_enable_grafana ? ` TF_VAR_enable_grafana=${provisionEnv.TF_VAR_enable_grafana}` : ""}${provisionEnv.TF_VAR_enable_prometheus ? ` TF_VAR_enable_prometheus=${provisionEnv.TF_VAR_enable_prometheus}` : ""}${provisionEnv.TF_VAR_enable_loki ? ` TF_VAR_enable_loki=${provisionEnv.TF_VAR_enable_loki}` : ""}${provisionEnv.TF_VAR_enable_clickhouse ? ` TF_VAR_enable_clickhouse=${provisionEnv.TF_VAR_enable_clickhouse}` : ""}${provisionEnv.TF_VAR_enable_langfuse ? ` TF_VAR_enable_langfuse=${provisionEnv.TF_VAR_enable_langfuse}` : ""} ansible-playbook -i ${paths.ansibleInventoryAbsolute} ${paths.ansiblePlaybookAbsolute}`
+    const baseCommand = `TF_DIR=${paths.terraformEnvDirAbsolute} INFRASTRUCTURE_KIND=${input.infrastructure.kind} KUBE_CONTEXT=${input.infrastructure.kubeContext} ORCHWIZ_NAMESPACE=${input.infrastructure.namespace} ORCHWIZ_APP_NAME=${runtime.env.ORCHWIZ_APP_NAME || "orchwiz"}${provisionEnv.TF_VAR_openclaw_station_count ? ` TF_VAR_openclaw_station_count=${provisionEnv.TF_VAR_openclaw_station_count}` : ""}${provisionEnv.TF_VAR_app_image ? ` TF_VAR_app_image=${provisionEnv.TF_VAR_app_image}` : ""}${provisionEnv.TF_VAR_provider_proxy_image ? ` TF_VAR_provider_proxy_image=${provisionEnv.TF_VAR_provider_proxy_image}` : ""}${provisionEnv.TF_VAR_app_env ? ` TF_VAR_app_env='${provisionEnv.TF_VAR_app_env}'` : ""}${provisionEnv.TF_VAR_enable_grafana ? ` TF_VAR_enable_grafana=${provisionEnv.TF_VAR_enable_grafana}` : ""}${provisionEnv.TF_VAR_enable_prometheus ? ` TF_VAR_enable_prometheus=${provisionEnv.TF_VAR_enable_prometheus}` : ""}${provisionEnv.TF_VAR_enable_loki ? ` TF_VAR_enable_loki=${provisionEnv.TF_VAR_enable_loki}` : ""}${provisionEnv.TF_VAR_enable_clickhouse ? ` TF_VAR_enable_clickhouse=${provisionEnv.TF_VAR_enable_clickhouse}` : ""}${provisionEnv.TF_VAR_enable_langfuse ? ` TF_VAR_enable_langfuse=${provisionEnv.TF_VAR_enable_langfuse}` : ""} ansible-playbook -i ${paths.ansibleInventoryAbsolute} ${paths.ansiblePlaybookAbsolute}`
     const suggestedCommands = uniqueNonEmptyCommands([
       ...mergedSuggestedCommands.filter((entry) => entry !== ""),
       baseCommand,

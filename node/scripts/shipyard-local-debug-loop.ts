@@ -1,6 +1,7 @@
 import { execFile as execFileCallback } from "node:child_process"
 import { pathToFileURL } from "node:url"
 import { promisify } from "node:util"
+import { Agent } from "undici"
 
 interface CliArgs {
   help: boolean
@@ -127,6 +128,12 @@ interface InspectionResponse {
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 60_000
 const KIND_DELETE_TIMEOUT_MS = 120_000
+const DEFAULT_LAUNCH_TIMEOUT_MS = 30 * 60 * 1000
+const CLUSTER_RESET_REQUEST_TIMEOUT_MS = 10 * 60 * 1000
+const fetchDispatcher = new Agent({
+  headersTimeout: 0,
+  bodyTimeout: 0,
+})
 
 const execFileAsync = promisify(execFileCallback)
 
@@ -141,7 +148,11 @@ function parsePositiveInt(raw: string, label: string): number {
 export function parseArgs(argv: string[]): CliArgs {
   let baseUrl = process.env.SHIPYARD_BASE_URL?.trim() || "http://localhost:3000"
   let pollMs = 15_000
-  let timeoutMs = 15 * 60 * 1000
+  let timeoutMs = DEFAULT_LAUNCH_TIMEOUT_MS
+  const timeoutFromEnv = process.env.SHIPYARD_LAUNCH_TIMEOUT_MS?.trim()
+  if (timeoutFromEnv) {
+    timeoutMs = parsePositiveInt(timeoutFromEnv, "SHIPYARD_LAUNCH_TIMEOUT_MS")
+  }
   let nodeId = "local-node"
   let namePrefix = "LocalDebugShip"
   let verbose = false
@@ -242,6 +253,7 @@ function printHelp(): void {
   console.log("")
   console.log("Optional environment variables:")
   console.log("  SHIPYARD_BASE_URL       API base URL (default: http://localhost:3000)")
+  console.log(`  SHIPYARD_LAUNCH_TIMEOUT_MS  Launch/status loop timeout in ms (default: ${DEFAULT_LAUNCH_TIMEOUT_MS})`)
   console.log("  LOCAL_SHIPYARD_KIND_CLUSTER_NAME  kind cluster name reset target (default: orchwiz)")
   console.log("")
   console.log("Optional flags:")
@@ -291,7 +303,8 @@ async function requestJson<T>(args: {
       },
       signal: controller.signal,
       ...(args.body ? { body: JSON.stringify(args.body) } : {}),
-    })
+      dispatcher: fetchDispatcher,
+    } as RequestInit & { dispatcher: Agent })
   } catch (error) {
     if ((error as Error).name === "AbortError") {
       throw new Error(`${args.method} ${args.url} timed out after ${args.timeoutMs}ms`)
@@ -600,7 +613,7 @@ async function main(): Promise<void> {
       url: `${args.baseUrl}/api/ship-yard/local/cluster/reset`,
       method: "POST",
       token,
-      timeoutMs: DEFAULT_REQUEST_TIMEOUT_MS,
+      timeoutMs: CLUSTER_RESET_REQUEST_TIMEOUT_MS,
       body: {
         confirm: "reset-cluster",
         clusterName,

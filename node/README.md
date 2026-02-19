@@ -50,7 +50,7 @@ npm run test:bot
 
 - `npm run test:bot` runs the default mode (`smoke`) using `PW_BOT_MODE` and base/target env defaults.
 - `npm run test:bot:smoke` runs critical public-route checks.
-- `npm run test:bot:full` runs deeper non-auth checks plus visual comparison step.
+- `npm run test:bot:full` runs deeper checks plus visual comparison and passkey auth E2E (register -> sign out -> passkey sign-in).
 - `npm run test:bot:headed` runs the smoke flow in headed mode.
 - `npm run test:bot:ci` runs smoke in CI mode with fail-fast behavior.
 
@@ -60,6 +60,10 @@ npm run test:bot
 - `PW_BOT_MODE` (`smoke`, `full`, `custom`)
 - `PW_TARGET_URLS` (comma-separated URLs for custom mode)
 - `PW_REPORT_DIR` (default `node/output/playwright`)
+- `PW_BOT_AUTH_EMAIL_PREFIX` (default `orchwiz.bot`)
+- `PW_BOT_AUTH_EMAIL_DOMAIN` (default `example.com`)
+- `PW_BOT_AUTH_DISPLAY_NAME` (default `OrchWiz Bot`)
+- `PW_BOT_RUN_ID` (optional; bot auto-generates when omitted)
 
 Example:
 
@@ -68,6 +72,17 @@ PW_BOT_MODE=custom \
 PW_TARGET_URLS=https://example.com,https://example.org \
 npm run test:bot
 ```
+
+Local passkey auth E2E example (full mode):
+
+```bash
+PW_BOT_MODE=full \
+PW_BOT_AUTH_EMAIL_PREFIX=qa.bot \
+PW_BOT_AUTH_EMAIL_DOMAIN=local.test \
+npm run test:bot
+```
+
+Passkey auth E2E is local-only for now. CI remains smoke-focused via `npm run test:bot:ci`.
 
 ### Output artifacts
 
@@ -179,7 +194,7 @@ Create flows for both agent and application deployments support profile-aware fi
   - Sets `TF_VAR_app_image` automatically for the provisioning run
   - Controls: `LOCAL_SHIPYARD_AUTO_BUILD_APP_IMAGE`, `LOCAL_SHIPYARD_AUTO_CREATE_KIND_CLUSTER`, `LOCAL_SHIPYARD_ENABLE_OBSERVABILITY_STACK`, `LOCAL_SHIPYARD_FORCE_REBUILD_APP_IMAGE`, `LOCAL_SHIPYARD_APP_IMAGE`, `LOCAL_SHIPYARD_DOCKERFILE`, `LOCAL_SHIPYARD_DOCKER_CONTEXT`, `LOCAL_SHIPYARD_KIND_CLUSTER_NAME`
 - Local launch requests are rejected when `CLOUD_DEPLOY_ONLY=true`
-- Local flow validates kube context presence; when `LOCAL_SHIPYARD_AUTO_CREATE_KIND_CLUSTER=true` and the target `kind` cluster is missing, Ship Yard creates it before loading the app image (default is `false`).
+- Local flow validates kube context presence; by default, Ship Yard auto-heals missing `kind` contexts by attempting `kind export kubeconfig` and creating/recreating the target cluster when needed. Set `LOCAL_SHIPYARD_AUTO_CREATE_KIND_CLUSTER=false` to disable this behavior.
 - Local flow defaults to lean observability for resource control (`TF_VAR_enable_grafana/prometheus/loki/clickhouse/langfuse=false`). Set `LOCAL_SHIPYARD_ENABLE_OBSERVABILITY_STACK=true` to opt in to full local observability provisioning.
 - Recommended Docker Desktop workstation budget for local Ship Yard loops: `4 CPU / 8 GiB`.
 - Failures return structured non-2xx responses with `error`, `code`, and optional `details.suggestedCommands`

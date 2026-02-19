@@ -41,6 +41,7 @@ export async function runSecurityAudit(options: SecurityAuditRunOptions): Promis
   const report = {
     reportId: buildSecurityAuditReportId(now),
     userId: options.userId,
+    shipDeploymentId: options.shipDeploymentId || null,
     createdAt: now.toISOString(),
     mode,
     checks,

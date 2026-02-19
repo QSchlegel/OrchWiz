@@ -37,6 +37,7 @@ export interface SecurityRiskScore {
 export interface SecurityAuditReport {
   reportId: string
   userId: string
+  shipDeploymentId?: string | null
   createdAt: string
   mode: "safe_sim" | "live"
   checks: SecurityAuditCheckResult[]

@@ -965,6 +965,21 @@ function resolveLangfuseUpstreamBaseUrl(): string | null {
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
       return null
     }
+    const runningInKubernetes = asString(process.env.KUBERNETES_SERVICE_HOST) !== null
+    if (runningInKubernetes) {
+      const hostname = parsed.hostname.trim().toLowerCase()
+      const isLoopbackOrLocalhost =
+        hostname === "localhost"
+        || hostname === "127.0.0.1"
+        || hostname === "::1"
+        || hostname.endsWith(".localhost")
+      const isClusterInternalHost = hostname.endsWith(".svc.cluster.local") || hostname.endsWith(".svc")
+      // Browser clients cannot resolve in-cluster/private hosts from bridge cards.
+      // Prefer runtime-edge-derived/public links for those cases.
+      if (isLoopbackOrLocalhost || isClusterInternalHost) {
+        return null
+      }
+    }
     return parsed.toString().replace(/\/+$/u, "")
   } catch {
     return null
@@ -1266,16 +1281,17 @@ export async function handleGetBridgeState(
       publicHost
         ? rewriteLoopbackUrlHostname(runtimeUiKubeviewHref, publicHost)
         : runtimeUiKubeviewHref
+    const kubeviewHrefForSiblingDerivation = rewrittenKubeviewHref || rewrittenMonitoringConfig.kubeviewUrl || null
     const runtimeUiGrafanaHref = deriveRuntimeUiHrefFromKubeview({
-      kubeviewRuntimeUiHref: rewrittenKubeviewHref,
+      kubeviewRuntimeUiHref: kubeviewHrefForSiblingDerivation,
       servicePath: "grafana",
     })
     const runtimeUiPrometheusHref = deriveRuntimeUiHrefFromKubeview({
-      kubeviewRuntimeUiHref: rewrittenKubeviewHref,
+      kubeviewRuntimeUiHref: kubeviewHrefForSiblingDerivation,
       servicePath: "prometheus",
     })
     const runtimeUiLangfuseHref = deriveRuntimeUiHrefFromKubeview({
-      kubeviewRuntimeUiHref: rewrittenKubeviewHref,
+      kubeviewRuntimeUiHref: kubeviewHrefForSiblingDerivation,
       servicePath: "langfuse",
     })
     const rewrittenOpenclawUrls =

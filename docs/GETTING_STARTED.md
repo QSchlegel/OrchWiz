@@ -143,7 +143,7 @@ npm run shipyard:local:debug
 Notes:
 
 - For `kind`, local bootstrap uses Docker to build/load `orchwiz:local-dev` from `node/Dockerfile.shipyard` when `saneBootstrap=true`.
-- `LOCAL_SHIPYARD_AUTO_CREATE_KIND_CLUSTER` now defaults to `false`; set it to `true` if you want missing kind clusters to be auto-created during bootstrap.
+- `LOCAL_SHIPYARD_AUTO_CREATE_KIND_CLUSTER` now defaults to `true`; bootstrap will auto-heal missing/stale `kind` contexts. Set it to `false` if you need fully manual cluster management.
 - Local bootstrap now defaults to lean observability for resource control. Set `LOCAL_SHIPYARD_ENABLE_OBSERVABILITY_STACK=true` to opt in to full local observability stack provisioning.
 - Debug loop enforces one-ship-at-a-time for debug ships: it deletes prior debug ships by name prefix and recreates the target kind cluster before launching.
 - Debug loop auto-tears down local debug infrastructure on exit by default (ship cleanup with `preserveInfra=false` + best-effort `kind delete cluster`).

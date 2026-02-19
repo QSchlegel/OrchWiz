@@ -41,6 +41,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({
       reportId: result.report.reportId,
+      shipDeploymentId: result.report.shipDeploymentId || null,
       createdAt: result.report.createdAt,
       riskScore: result.report.riskScore,
       severityCounts: result.report.severityCounts,

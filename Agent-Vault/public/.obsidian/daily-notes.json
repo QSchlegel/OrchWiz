@@ -1,0 +1,5 @@
+{
+  "format": "YYYY-MM-DD",
+  "folder": "ops-tracker/events/manual",
+  "template": "ops-tracker/templates/(TEMPLATE) Ops Tracker Event"
+}

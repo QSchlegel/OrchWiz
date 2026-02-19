@@ -65,3 +65,45 @@ test("createStreamingRunCommand strips ANSI sequences", async () => {
   assert.match(allLines, /\bred\b/u)
   assert.doesNotMatch(allLines, /\u001b\[/u)
 })
+
+test("createStreamingRunCommand classifies non-warning stderr as debug", async () => {
+  const emitted: Array<{ level: string; source: string; stream?: string; lines: string[] }> = []
+  const runCommand = createStreamingRunCommand({
+    source: "local-bootstrap",
+    emitLaunchLog: (entry) => emitted.push(entry),
+  })
+
+  const result = await runCommand(process.execPath, [
+    "-e",
+    "process.stderr.write('transferring context: 1.2MB\\n')",
+  ])
+
+  assert.equal(result.ok, true)
+  const stderrEntry = emitted.find((entry) =>
+    entry.stream === "stderr"
+    && entry.lines.some((line) => line.includes("transferring context")),
+  )
+  assert.ok(stderrEntry)
+  assert.equal(stderrEntry?.level, "debug")
+})
+
+test("createStreamingRunCommand classifies warning-like stderr as warn", async () => {
+  const emitted: Array<{ level: string; source: string; stream?: string; lines: string[] }> = []
+  const runCommand = createStreamingRunCommand({
+    source: "local-bootstrap",
+    emitLaunchLog: (entry) => emitted.push(entry),
+  })
+
+  const result = await runCommand(process.execPath, [
+    "-e",
+    "process.stderr.write('warning: probe failed\\n')",
+  ])
+
+  assert.equal(result.ok, true)
+  const stderrEntry = emitted.find((entry) =>
+    entry.stream === "stderr"
+    && entry.lines.some((line) => line.includes("warning: probe failed")),
+  )
+  assert.ok(stderrEntry)
+  assert.equal(stderrEntry?.level, "warn")
+})

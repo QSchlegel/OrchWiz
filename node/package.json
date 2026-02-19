@@ -32,19 +32,23 @@
     "coin:gif": "npx tsx scripts/coin-toss-gif.ts",
     "downloads:sync": "npx tsx scripts/sync-desktop-downloads.ts",
     "downloads:mirror-local": "npx tsx scripts/mirror-local-desktop-downloads.ts",
-    "open-source:generate": "npx tsx scripts/generate-open-source-attributions.ts"
+    "open-source:generate": "npx tsx scripts/generate-open-source-attributions.ts",
+    "ops-tracker:export": "npx tsx scripts/ops-tracker-export.ts",
+    "ops-tracker:export:dry-run": "npx tsx scripts/ops-tracker-export.ts --dry-run",
+    "ops-tracker:backfill": "npx tsx scripts/ops-tracker-export.ts --backfill-days=90"
   },
   "prisma": {
     "seed": "npx tsx prisma/seed.ts"
   },
   "overrides": {
     "hono": ">=4.11.7",
-    "lodash": ">=4.17.23"
+    "lodash": ">=4.17.23",
+    "undici": ">=6.23.0"
   },
   "dependencies": {
     "@better-auth/passkey": "^1.4.15",
     "@langfuse/client": "^4.6.0",
-    "@meshsdk/core": "^1.8.11",
+    "@meshsdk/core": "^1.9.0-beta.98",
     "@octokit/rest": "^22.0.1",
     "@prisma/adapter-pg": "^7.3.0",
     "@prisma/client": "^7.3.0",
@@ -66,6 +70,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@playwright/test": "^1.58.2",
     "@tailwindcss/postcss": "^4.1.18",
     "@types/node": "^25.0.10",
     "@types/react": "^19.2.9",
@@ -75,7 +80,6 @@
     "autoprefixer": "^10.4.19",
     "eslint": "^9.39.2",
     "eslint-config-next": "^16.1.4",
-    "@playwright/test": "^1.58.2",
     "playwright": "^1.58.2",
     "postcss": "^8.4.38",
     "prisma": "^7.3.0",

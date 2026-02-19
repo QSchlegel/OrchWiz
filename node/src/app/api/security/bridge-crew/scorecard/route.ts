@@ -24,6 +24,7 @@ export async function GET() {
 
     return NextResponse.json({
       overallScore: scorecard.overallScore,
+      shipDeploymentId: scorecard.shipDeploymentId || null,
       perStationScores: scorecard.perStationScores,
       failingScenarios: scorecard.failingScenarios,
       generatedAt: scorecard.generatedAt,

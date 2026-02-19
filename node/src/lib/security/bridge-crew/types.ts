@@ -39,6 +39,7 @@ export interface BridgeCrewScenarioResult {
 
 export interface BridgeCrewScorecard {
   userId: string
+  shipDeploymentId?: string | null
   mode: BridgeCrewStressMode
   scenarioPack: BridgeCrewScenarioPack
   overallScore: number

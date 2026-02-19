@@ -54,10 +54,15 @@ function createRuntime(options: RuntimeOptions = {}): {
       "/repo/infra/ansible/inventory/local.ini",
       "/repo/infra/ansible/playbooks/starship_local.yml",
       "/repo/node/Dockerfile.shipyard",
+      "/repo/services/provider-proxy/Dockerfile",
     ],
   )
   const existingDirectories = new Set(
-    options.existingDirectories || ["/repo/infra/terraform/environments/starship-local", "/repo/node"],
+    options.existingDirectories || [
+      "/repo/infra/terraform/environments/starship-local",
+      "/repo/node",
+      "/repo/services/provider-proxy",
+    ],
   )
 
   const runtime: LocalBootstrapRuntime = {
@@ -309,12 +314,9 @@ test("fails when expected kube context is missing", async () => {
   assert.ok(result.details?.suggestedCommands?.includes("kind create cluster --name orchwiz"))
 })
 
-test("auto-creates Kind cluster when context is missing and saneBootstrap is true", async () => {
+test("auto-creates Kind cluster by default when context is missing and saneBootstrap is true", async () => {
   let getContextsCallCount = 0
   const { runtime, calls } = createRuntime({
-    env: {
-      LOCAL_SHIPYARD_AUTO_CREATE_KIND_CLUSTER: "true",
-    },
     runCommand: async (command, args) => {
       if (command === "kubectl" && args.join(" ") === "config get-contexts -o name") {
         getContextsCallCount += 1
@@ -324,6 +326,9 @@ test("auto-creates Kind cluster when context is missing and saneBootstrap is tru
           stderr: "",
           exitCode: 0,
         }
+      }
+      if (command === "kind" && args.join(" ") === "export kubeconfig --name orchwiz") {
+        return { ok: false, stdout: "", stderr: "ERROR: no kind clusters found.", exitCode: 1 }
       }
       if (command === "kind" && args.join(" ") === "create cluster --name orchwiz") {
         return { ok: true, stdout: "Created cluster", stderr: "", exitCode: 0 }
@@ -353,8 +358,11 @@ test("auto-creates Kind cluster when context is missing and saneBootstrap is tru
   assert.equal(kindCreateCalls[0].args[3], "orchwiz")
 })
 
-test("does not auto-create Kind cluster when context is missing and auto-create is not enabled", async () => {
+test("does not auto-create Kind cluster when context is missing and auto-create is disabled", async () => {
   const { runtime, calls } = createRuntime({
+    env: {
+      LOCAL_SHIPYARD_AUTO_CREATE_KIND_CLUSTER: "false",
+    },
     runCommand: async (command, args) => {
       if (command === "kubectl" && args.join(" ") === "config get-contexts -o name") {
         return {
@@ -385,6 +393,67 @@ test("does not auto-create Kind cluster when context is missing and auto-create 
     (c) => c.command === "kind" && c.args[0] === "create" && c.args[1] === "cluster",
   )
   assert.equal(kindCreateCalls.length, 0)
+})
+
+test("recovers stale Kind cluster state when context is missing", async () => {
+  let getContextsCallCount = 0
+  let kindCreateCallCount = 0
+  const { runtime, calls } = createRuntime({
+    runCommand: async (command, args) => {
+      if (command === "kubectl" && args.join(" ") === "config get-contexts -o name") {
+        getContextsCallCount += 1
+        return {
+          ok: true,
+          stdout: getContextsCallCount === 1 ? "docker-desktop\n" : "docker-desktop\nkind-orchwiz\n",
+          stderr: "",
+          exitCode: 0,
+        }
+      }
+      if (command === "kind" && args.join(" ") === "export kubeconfig --name orchwiz") {
+        return {
+          ok: false,
+          stdout: "",
+          stderr: "Error response from daemon: container is not running",
+          exitCode: 1,
+        }
+      }
+      if (command === "kind" && args.join(" ") === "create cluster --name orchwiz") {
+        kindCreateCallCount += 1
+        if (kindCreateCallCount === 1) {
+          return {
+            ok: false,
+            stdout: "",
+            stderr: 'ERROR: failed to create cluster: node(s) already exist for a cluster with the name "orchwiz"',
+            exitCode: 1,
+          }
+        }
+        return { ok: true, stdout: "Created cluster", stderr: "", exitCode: 0 }
+      }
+      if (command === "kind" && args.join(" ") === "delete cluster --name orchwiz") {
+        return { ok: true, stdout: "Deleted cluster", stderr: "", exitCode: 0 }
+      }
+      if (command === "ansible-playbook") {
+        return { ok: true, stdout: "PLAY RECAP", stderr: "", exitCode: 0 }
+      }
+      return { ok: true, stdout: "", stderr: "", exitCode: 0 }
+    },
+  })
+
+  const result = await runLocalBootstrap(
+    {
+      infrastructure: baseInfrastructure,
+      provisioningMode: "terraform_ansible",
+      saneBootstrap: true,
+    },
+    runtime,
+  )
+
+  assert.ok(result.ok, `expected bootstrap to succeed, got ${JSON.stringify(result)}`)
+  assert.equal(kindCreateCallCount, 2, "kind create cluster should be attempted twice for stale nodes")
+  const deleteCall = calls.find(
+    (call) => call.command === "kind" && call.args.join(" ") === "delete cluster --name orchwiz",
+  )
+  assert.ok(deleteCall, "kind delete cluster should be called before recreate")
 })
 
 test("provisioning failure includes OCI helm remediation for invalid chart reference", async () => {
@@ -736,6 +805,7 @@ test("sane bootstrap builds/loads local app image and passes TF_VAR_app_image", 
   const ansibleCall = calls.find((call) => call.command === "ansible-playbook")
   assert.ok(ansibleCall)
   assert.equal(ansibleCall?.env?.TF_VAR_app_image, "orchwiz:local-dev")
+  assert.equal(ansibleCall?.env?.TF_VAR_provider_proxy_image, "orchwiz-provider-proxy:local-dev")
 })
 
 test("sane bootstrap auto-creates kind cluster when kind load reports missing nodes", async () => {

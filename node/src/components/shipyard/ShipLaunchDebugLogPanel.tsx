@@ -12,6 +12,107 @@ export type LaunchLogLine = {
   text: string
 }
 
+type PodOverviewSnapshot = {
+  capturedAt: string
+  context: string
+  total: number
+  phases: {
+    running: number
+    pending: number
+    succeeded: number
+    failed: number
+    unknown: number
+  }
+  namespaces: Array<{
+    name: string
+    total: number
+    running: number
+    pending: number
+    succeeded: number
+    failed: number
+    unknown: number
+    waiting: number
+    crashing: number
+  }>
+}
+
+const POD_OVERVIEW_LOG_PREFIX = "[pods-overview] "
+
+function asNumber(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return 0
+  }
+  return Math.max(0, value)
+}
+
+function parsePodOverviewSnapshot(line: string): PodOverviewSnapshot | null {
+  if (!line.startsWith(POD_OVERVIEW_LOG_PREFIX)) {
+    return null
+  }
+  const payload = line.slice(POD_OVERVIEW_LOG_PREFIX.length).trim()
+  if (!payload) {
+    return null
+  }
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(payload)
+  } catch {
+    return null
+  }
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return null
+  }
+
+  const obj = parsed as Record<string, unknown>
+  const phases = obj.phases
+  const namespacesRaw = Array.isArray(obj.namespaces) ? obj.namespaces : []
+
+  const normalizedNamespaces = namespacesRaw
+    .map((entry) => {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+        return null
+      }
+      const ns = entry as Record<string, unknown>
+      return {
+        name: typeof ns.name === "string" && ns.name.trim().length > 0 ? ns.name : "unknown",
+        total: asNumber(ns.total),
+        running: asNumber(ns.running),
+        pending: asNumber(ns.pending),
+        succeeded: asNumber(ns.succeeded),
+        failed: asNumber(ns.failed),
+        unknown: asNumber(ns.unknown),
+        waiting: asNumber(ns.waiting),
+        crashing: asNumber(ns.crashing),
+      }
+    })
+    .filter((entry): entry is NonNullable<typeof entry> => entry !== null)
+
+  const phasesRecord =
+    phases && typeof phases === "object" && !Array.isArray(phases)
+      ? (phases as Record<string, unknown>)
+      : {}
+
+  return {
+    capturedAt: typeof obj.capturedAt === "string" && obj.capturedAt.length > 0 ? obj.capturedAt : "",
+    context: typeof obj.context === "string" && obj.context.length > 0 ? obj.context : "current",
+    total: asNumber(obj.total),
+    phases: {
+      running: asNumber(phasesRecord.running),
+      pending: asNumber(phasesRecord.pending),
+      succeeded: asNumber(phasesRecord.succeeded),
+      failed: asNumber(phasesRecord.failed),
+      unknown: asNumber(phasesRecord.unknown),
+    },
+    namespaces: normalizedNamespaces,
+  }
+}
+
+function isPodOverviewLogLine(text: string): boolean {
+  return text.startsWith(POD_OVERVIEW_LOG_PREFIX)
+}
+
 function formatTime(timestamp: string): string {
   const date = new Date(timestamp)
   if (Number.isNaN(date.getTime())) {
@@ -44,11 +145,38 @@ export function ShipLaunchDebugLogPanel(props: {
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null)
 
+  const visibleLines = useMemo(
+    () => props.lines.filter((line) => !isPodOverviewLogLine(line.text)),
+    [props.lines],
+  )
   const hasLines = props.lines.length > 0
   const lineCountLabel = useMemo(() => {
-    const count = props.lines.filter((line) => line.key !== "launch-log-truncated").length
+    const count = visibleLines.filter((line) => line.key !== "launch-log-truncated").length
     return count.toLocaleString()
+  }, [visibleLines])
+  const latestPodOverview = useMemo(() => {
+    for (let index = props.lines.length - 1; index >= 0; index -= 1) {
+      const parsed = parsePodOverviewSnapshot(props.lines[index]?.text || "")
+      if (parsed) {
+        return parsed
+      }
+    }
+    return null
   }, [props.lines])
+  const phaseCards = useMemo(
+    () => (
+      latestPodOverview
+        ? [
+            { label: "Running", value: latestPodOverview.phases.running, cls: "text-emerald-700 dark:text-emerald-300" },
+            { label: "Pending", value: latestPodOverview.phases.pending, cls: "text-amber-700 dark:text-amber-300" },
+            { label: "Failed", value: latestPodOverview.phases.failed, cls: "text-rose-700 dark:text-rose-300" },
+            { label: "Succeeded", value: latestPodOverview.phases.succeeded, cls: "text-cyan-700 dark:text-cyan-300" },
+            { label: "Unknown", value: latestPodOverview.phases.unknown, cls: "text-slate-600 dark:text-slate-300" },
+          ]
+        : []
+    ),
+    [latestPodOverview],
+  )
 
   useEffect(() => {
     if (!props.open) {
@@ -139,13 +267,64 @@ export function ShipLaunchDebugLogPanel(props: {
               "repeating-linear-gradient(135deg, rgba(15,23,42,0.03), rgba(15,23,42,0.03) 10px, rgba(15,23,42,0.0) 10px, rgba(15,23,42,0.0) 20px)",
           }}
         >
-          {props.lines.length === 0 ? (
+          {latestPodOverview ? (
+            <div className="mb-2 rounded-lg border border-cyan-500/25 bg-cyan-500/10 px-2 py-2 font-sans text-[11px] text-slate-700 dark:text-slate-200">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="rounded-md border border-cyan-500/30 px-1.5 py-0.5 font-semibold text-cyan-700 dark:text-cyan-300">
+                  Pods Overview
+                </span>
+                <span className="text-slate-500 dark:text-slate-400">
+                  context={latestPodOverview.context}
+                </span>
+                <span className="text-slate-500 dark:text-slate-400">
+                  captured={formatTime(latestPodOverview.capturedAt)}
+                </span>
+                <span className="text-slate-500 dark:text-slate-400">
+                  total={latestPodOverview.total}
+                </span>
+              </div>
+
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {phaseCards.map((phase) => (
+                  <span
+                    key={phase.label}
+                    className={`rounded-md border border-slate-300/60 bg-white/70 px-1.5 py-0.5 text-[10px] dark:border-white/10 dark:bg-white/[0.04] ${phase.cls}`}
+                  >
+                    {phase.label}: {phase.value}
+                  </span>
+                ))}
+              </div>
+
+              {latestPodOverview.namespaces.length > 0 ? (
+                <div className="mt-2 space-y-1">
+                  {latestPodOverview.namespaces.slice(0, 6).map((namespace) => (
+                    <div key={namespace.name} className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px]">
+                      <span className="w-[122px] truncate font-semibold text-slate-700 dark:text-slate-200">{namespace.name}</span>
+                      <span className="text-emerald-700 dark:text-emerald-300">R {namespace.running}</span>
+                      <span className="text-amber-700 dark:text-amber-300">P {namespace.pending}</span>
+                      <span className="text-rose-700 dark:text-rose-300">F {namespace.failed}</span>
+                      <span className="text-cyan-700 dark:text-cyan-300">S {namespace.succeeded}</span>
+                      {namespace.waiting > 0 ? (
+                        <span className="text-slate-600 dark:text-slate-300">W {namespace.waiting}</span>
+                      ) : null}
+                      {namespace.crashing > 0 ? (
+                        <span className="font-semibold text-rose-700 dark:text-rose-300">Crash {namespace.crashing}</span>
+                      ) : null}
+                      <span className="text-slate-500 dark:text-slate-400">T {namespace.total}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
+          {visibleLines.length === 0 ? (
             <p className="py-6 text-center text-xs text-slate-500 dark:text-slate-400">
               No logs yet.
             </p>
           ) : (
             <div className="space-y-1">
-              {props.lines.map((line) => (
+              {visibleLines.map((line) => (
                 <div key={line.key} className={`flex gap-2 ${lineTone(line)}`}>
                   <span className="w-[72px] shrink-0 tabular-nums text-slate-500 dark:text-slate-400">
                     {formatTime(line.timestamp)}
@@ -166,4 +345,3 @@ export function ShipLaunchDebugLogPanel(props: {
     </div>
   )
 }
-

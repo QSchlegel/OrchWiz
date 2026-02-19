@@ -101,6 +101,16 @@ function parseCookieHeaderValues(value: string | null): Array<{ name: string; va
   return out
 }
 
+function buildUpstreamCookieHeader(req: http.IncomingMessage): string | null {
+  const cookies = parseCookieHeaderValues(typeof req.headers.cookie === "string" ? req.headers.cookie : null)
+  const filtered = cookies.filter((cookie) => cookie.name !== ORCHWIZ_RUNTIME_JWT_COOKIE_NAME)
+  if (filtered.length === 0) {
+    return null
+  }
+
+  return filtered.map((cookie) => `${cookie.name}=${cookie.value}`).join("; ")
+}
+
 function extractBearerToken(value: string | null): string | null {
   const raw = asString(value)
   if (!raw) return null
@@ -497,6 +507,8 @@ function copyRequestHeadersForUpstream(req: http.IncomingMessage): Headers {
 
   const accept = typeof req.headers.accept === "string" ? req.headers.accept : "*/*"
   headers.set("accept", accept)
+  // Avoid upstream compression so proxied bodies/headers stay consistent when we rewrite content.
+  headers.set("accept-encoding", "identity")
 
   const ua = typeof req.headers["user-agent"] === "string" ? req.headers["user-agent"] : null
   headers.set("user-agent", ua || "OrchWiz-RuntimeEdge")
@@ -513,6 +525,9 @@ function copyRequestHeadersForUpstream(req: http.IncomingMessage): Headers {
   // If the client supplies Authorization (for OpenClaw), allow it to pass through.
   const authz = typeof req.headers.authorization === "string" ? req.headers.authorization : null
   if (authz) headers.set("authorization", authz)
+
+  const cookie = buildUpstreamCookieHeader(req)
+  if (cookie) headers.set("cookie", cookie)
 
   return headers
 }
@@ -605,6 +620,7 @@ async function handleHttpRequest(req: http.IncomingMessage, res: http.ServerResp
   const responseHeaders = new Headers(upstream.headers)
   responseHeaders.delete("content-security-policy")
   responseHeaders.delete("x-frame-options")
+  responseHeaders.delete("content-encoding")
   responseHeaders.delete("content-length")
   responseHeaders.set("cache-control", "no-store")
 
@@ -773,8 +789,26 @@ async function handleWsProxyConnection(downstream: WebSocket, req: http.Incoming
     }
 
     // OpenClaw websocket endpoint is served from the same base as its HTTP UI.
+    const upstreamHeaders: Record<string, string> = {}
+    const authz = typeof req.headers.authorization === "string" ? req.headers.authorization : null
+    if (authz) {
+      upstreamHeaders.authorization = authz
+    }
+
+    const upstreamOrigin = (() => {
+      try {
+        // OpenClaw validates websocket Origin against control UI allowed origins.
+        // Use the public gateway origin so proxied sessions match expected gateway host checks.
+        return new URL(target.publicBaseUrl).origin
+      } catch {
+        return undefined
+      }
+    })()
+
     upstream = new WebSocket(target.wsUpstreamUrl, {
       perMessageDeflate: false,
+      ...(upstreamOrigin ? { origin: upstreamOrigin } : {}),
+      ...(Object.keys(upstreamHeaders).length > 0 ? { headers: upstreamHeaders } : {}),
     })
 
     upstream.on("open", () => {

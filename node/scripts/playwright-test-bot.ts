@@ -2,7 +2,7 @@ import { spawn } from "node:child_process"
 import { createWriteStream, mkdirSync, readFileSync, existsSync } from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
-import { parseBotMode, normalizeBaseUrl, parseTargetUrls } from "../tests/playwright/_bot-shared"
+import { parseBotMode, normalizeBaseUrl, parseTargetUrls, resolveBotRunId } from "../tests/playwright/_bot-shared"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -44,7 +44,11 @@ function resolveTestFiles(mode: BotMode, targetCount: number): string[] {
     return ["tests/playwright/custom.spec.ts"]
   }
 
-  return ["tests/playwright/full.spec.ts", "tests/playwright/visual.spec.ts"]
+  return [
+    "tests/playwright/full.spec.ts",
+    "tests/playwright/visual.spec.ts",
+    "tests/playwright/auth-passkey.spec.ts",
+  ]
 }
 
 function parseJunitSummary(xmlPath: string): {
@@ -114,6 +118,7 @@ async function runPlaywright(cmd: string, args: string[], env: NodeJS.ProcessEnv
 function writeBotSummary(args: {
   mode: string
   baseUrl: string
+  runId: string
   targetUrls: string[]
   reportDir: string
   command: string
@@ -126,6 +131,7 @@ function writeBotSummary(args: {
   const summary = {
     botMode: args.mode,
     baseUrl: args.baseUrl,
+    runId: args.runId,
     targetCount: args.targetUrls.length,
     targetUrls: args.targetUrls,
     reportDir: args.reportDir,
@@ -162,6 +168,7 @@ async function main(): Promise<void> {
   const mode = parseMode(process.env.PW_BOT_MODE)
   const baseUrl = normalizeBaseUrl(process.env.ORCHWIZ_BOT_BASE_URL || DEFAULT_BASE_URL)
   const reportDir = normalizeReportDir(process.env.PW_REPORT_DIR)
+  const runId = resolveBotRunId(process.env.PW_BOT_RUN_ID)
   const targetUrls = parseTargetUrls(process.env.PW_TARGET_URLS).map((entry) => entry.url)
   const isCi = process.env.CI === "1" || process.env.CI?.toLowerCase() === "true"
   const commandArgs = formatArgs({
@@ -180,6 +187,7 @@ async function main(): Promise<void> {
     PW_BOT_MODE: mode,
     ORCHWIZ_BOT_BASE_URL: baseUrl,
     PW_REPORT_DIR: reportDir,
+    PW_BOT_RUN_ID: runId,
     PW_TARGET_URLS: targetUrls.join(","),
   })
   const completedAt = new Date().toISOString()
@@ -188,6 +196,7 @@ async function main(): Promise<void> {
   writeBotSummary({
     mode,
     baseUrl,
+    runId,
     targetUrls,
     reportDir,
     command,
@@ -204,11 +213,13 @@ if (import.meta.url === new URL(`file://${__filename}`).href) {
   void main().catch((error) => {
     const startedAt = new Date().toISOString()
     const reportDir = normalizeReportDir(process.env.PW_REPORT_DIR)
+    const runId = resolveBotRunId(process.env.PW_BOT_RUN_ID)
     mkdirSync(reportDir, { recursive: true })
 
     const summary = {
       botMode: parseMode(process.env.PW_BOT_MODE),
       baseUrl: normalizeBaseUrl(process.env.ORCHWIZ_BOT_BASE_URL || DEFAULT_BASE_URL),
+      runId,
       targetCount: parseTargetUrls(process.env.PW_TARGET_URLS).length,
       targetUrls: parseTargetUrls(process.env.PW_TARGET_URLS).map((entry) => entry.url),
       reportDir,

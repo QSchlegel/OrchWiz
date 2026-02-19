@@ -193,6 +193,7 @@ This documentation does not claim completed certification or attestation.
 
 - [Getting started](docs/GETTING_STARTED.md)
 - [Current features](docs/CURRENT_FEATURES.md)
+- [Railway deployment setup](docs/RAILWAY.md)
 - [Compliance overview](docs/compliance/README.md)
 - [Contribution guide](CONTRIBUTING.md)
 - [Marketing execution plan](MARKETING_EXECUTION.md)

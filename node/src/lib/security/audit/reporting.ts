@@ -28,6 +28,7 @@ function renderSecurityAuditMarkdown(report: SecurityAuditReport): string {
   sections.push("")
   sections.push(`- Generated: ${report.createdAt}`)
   sections.push(`- User: ${report.userId}`)
+  sections.push(`- Ship deployment: ${report.shipDeploymentId || "fleet"}`)
   sections.push(`- Mode: ${report.mode}`)
   sections.push(`- Threat model version: ${report.threatModelVersion}`)
   sections.push(`- Risk score: ${report.riskScore.score} (${report.riskScore.level})`)

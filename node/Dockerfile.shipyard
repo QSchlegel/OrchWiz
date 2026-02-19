@@ -2,7 +2,23 @@ FROM node:20-bookworm-slim AS runtime
 WORKDIR /app
 COPY package*.json ./
 COPY scripts/fix-libsodium-wrappers-sumo.cjs ./scripts/
-RUN npm ci
+# Make dependency install resilient to transient registry/network failures in Docker builds.
+RUN set -eux; \
+  npm config set fetch-retries 5; \
+  npm config set fetch-retry-factor 2; \
+  npm config set fetch-retry-mintimeout 20000; \
+  npm config set fetch-retry-maxtimeout 120000; \
+  npm config set prefer-offline true; \
+  attempt=1; \
+  until npm ci --no-audit --fund=false; do \
+    if [ "$attempt" -ge 3 ]; then \
+      echo "npm ci failed after ${attempt} attempts"; \
+      exit 1; \
+    fi; \
+    attempt=$((attempt + 1)); \
+    echo "npm ci failed, retrying (attempt ${attempt}/3)"; \
+    sleep 10; \
+  done
 # Next.js dev server in this image needs native SWC bindings (wasm bindings fail with turbo.createProject).
 RUN NEXT_VERSION="$(node -p "require('./node_modules/next/package.json').version")" \
   && ARCH="$(dpkg --print-architecture)" \

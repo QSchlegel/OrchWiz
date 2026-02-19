@@ -559,3 +559,46 @@ test("handleGetBridgeState rewrites configured loopback monitoring links to the 
     },
   )
 })
+
+test("handleGetBridgeState derives grafana and prometheus proxy links from configured kubeview proxy when runtime metadata is missing", async () => {
+  await withEnv(
+    {
+      LANGFUSE_BASE_URL: undefined,
+    },
+    async () => {
+      const response = await handleGetBridgeState(
+        requestFor("http://localhost/api/bridge/state"),
+        createBaseDeps({
+          findSelectedShipMonitoring: async () => ({
+            id: "ship-1",
+            status: "active",
+            deploymentProfile: "local_starship_build",
+            config: {
+              monitoring: {
+                grafanaUrl: "/api/bridge/runtime-ui/grafana",
+                prometheusUrl: "/api/bridge/runtime-ui/prometheus",
+                kubeviewUrl: "/api/bridge/runtime-ui/kubeview",
+              },
+            },
+            metadata: {
+              runtimeUi: {
+                openclaw: {
+                  source: "terraform_output",
+                  urls: {
+                    xo: "http://localhost:3100/openclaw/xo",
+                  },
+                },
+              },
+            },
+          }),
+        }) as any,
+      )
+
+      assert.equal(response.status, 200)
+      const payload = (await response.json()) as Record<string, unknown>
+      const monitoring = payload.monitoring as Record<string, Record<string, unknown>>
+      assert.equal(monitoring.grafana.href, "/api/bridge/runtime-ui/grafana")
+      assert.equal(monitoring.prometheus.href, "/api/bridge/runtime-ui/prometheus")
+    },
+  )
+})

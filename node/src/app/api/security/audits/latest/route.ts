@@ -15,6 +15,7 @@ export async function GET() {
 
     return NextResponse.json({
       reportId: latest.reportId,
+      shipDeploymentId: latest.shipDeploymentId || null,
       createdAt: latest.createdAt,
       riskScore: latest.riskScore,
       severityCounts: latest.severityCounts,

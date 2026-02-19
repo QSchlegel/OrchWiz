@@ -42,6 +42,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({
       ...scorecard,
+      shipDeploymentId: scorecard.shipDeploymentId || null,
       reportPath,
     })
   } catch (error) {

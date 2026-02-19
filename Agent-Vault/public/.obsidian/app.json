@@ -1,0 +1,20 @@
+{
+  "alwaysUpdateLinks": true,
+  "newFileLocation": "folder",
+  "newFileFolderPath": "ops-tracker/events/manual",
+  "attachmentFolderPath": "ops-tracker/resources",
+  "useMarkdownLinks": true,
+  "defaultViewMode": "source",
+  "showLineNumber": true,
+  "spellcheck": true,
+  "spellcheckLanguages": [
+    "en-US"
+  ],
+  "showIndentGuide": true,
+  "showFrontmatter": true,
+  "readableLineLength": true,
+  "foldHeading": true,
+  "foldIndent": true,
+  "showTabBar": true,
+  "rightToLeft": false
+}

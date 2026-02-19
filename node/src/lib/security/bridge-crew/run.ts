@@ -174,6 +174,7 @@ export async function runBridgeCrewStressEvaluation(args: {
   const scenarios = scenariosForPack(scenarioPack)
   return evaluateBridgeCrewScenarios({
     userId: args.userId,
+    shipDeploymentId: args.shipDeploymentId || null,
     mode,
     scenarioPack,
     scenarios,

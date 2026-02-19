@@ -8,6 +8,7 @@ import {
   resolveShipNamespace,
 } from "@/lib/bridge/openclaw-runtime"
 import type { DeploymentProfile } from "@/lib/deployment/profile"
+import { ORCHWIZ_RUNTIME_JWT_COOKIE_NAME } from "@/lib/runtime-jwt"
 
 export const dynamic = "force-dynamic"
 
@@ -21,6 +22,7 @@ interface ShipSelectionRecord {
   status: "pending" | "deploying" | "active" | "inactive" | "failed" | "updating"
   deploymentProfile: DeploymentProfile
   config: unknown
+  metadata: unknown
 }
 
 function asString(value: unknown): string | null {
@@ -39,9 +41,76 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>
 }
 
+function parseCookieHeaderValues(value: string | null): Array<{ name: string; value: string }> {
+  if (!value) return []
+  const out: Array<{ name: string; value: string }> = []
+  for (const part of value.split(";")) {
+    const trimmed = part.trim()
+    if (!trimmed) continue
+    const eqIndex = trimmed.indexOf("=")
+    if (eqIndex <= 0) continue
+    const name = trimmed.slice(0, eqIndex).trim()
+    const cookieValue = trimmed.slice(eqIndex + 1).trim()
+    if (!name || !cookieValue) continue
+    out.push({ name, value: cookieValue })
+  }
+  return out
+}
+
+function extractRuntimeJwtCookieHeader(rawCookieHeader: string | null): string | null {
+  const runtimeJwtCookie = parseCookieHeaderValues(rawCookieHeader).find(
+    (cookie) => cookie.name === ORCHWIZ_RUNTIME_JWT_COOKIE_NAME,
+  )
+  if (!runtimeJwtCookie) {
+    return null
+  }
+  return `${runtimeJwtCookie.name}=${runtimeJwtCookie.value}`
+}
+
 function stripTrailingSlash(value: string): string {
   const trimmed = value.replace(/\/+$/u, "")
   return trimmed.length > 0 ? trimmed : "/"
+}
+
+function normalizeHttpUrl(value: string | null): string | null {
+  if (!value) {
+    return null
+  }
+
+  try {
+    const parsed = new URL(value)
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return null
+    }
+    return parsed.toString().replace(/\/+$/u, "")
+  } catch {
+    return null
+  }
+}
+
+function isLoopbackOrLocalhostUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value)
+    const hostname = parsed.hostname.trim().toLowerCase()
+    return (
+      hostname === "localhost"
+      || hostname === "127.0.0.1"
+      || hostname === "::1"
+      || hostname.endsWith(".localhost")
+    )
+  } catch {
+    return false
+  }
+}
+
+function resolveRuntimeUiGatewayBaseFromMetadata(args: {
+  metadata: unknown
+  stationKey: string
+}): string | null {
+  const runtimeUi = asRecord(asRecord(args.metadata).runtimeUi)
+  const openclaw = asRecord(runtimeUi.openclaw)
+  const urls = asRecord(openclaw.urls)
+  return normalizeHttpUrl(asString(urls[args.stationKey]))
 }
 
 function parseGatewayTokenMap(
@@ -224,6 +293,7 @@ async function selectShipForRuntimeUi(args: {
       status: true,
       deploymentProfile: true,
       config: true,
+      metadata: true,
     },
     orderBy: {
       updatedAt: "desc",
@@ -285,20 +355,51 @@ async function handleRuntimeUiProxy(
     )
   }
 
+  const metadataRuntimeUiUrl = resolveRuntimeUiGatewayBaseFromMetadata({
+    metadata: selectedShip.metadata,
+    stationKey: params.stationKey,
+  })
+  const runningInKubernetes = asString(process.env.KUBERNETES_SERVICE_HOST) !== null
+  const metadataRuntimeUiUrlIsLoopback = metadataRuntimeUiUrl ? isLoopbackOrLocalhostUrl(metadataRuntimeUiUrl) : false
+  // In-cluster app pods cannot reach host-loopback runtime-edge URLs (e.g. 127.0.0.1:3100).
+  // Use metadata URLs for browser gateway wiring, but fetch upstream from the in-cluster station service.
+  const upstreamBaseUrl =
+    metadataRuntimeUiUrl && (!runningInKubernetes || !metadataRuntimeUiUrlIsLoopback)
+      ? metadataRuntimeUiUrl
+      : resolvedRuntime.href
+
   const upstreamUrl = buildUpstreamUrl({
-    baseUrl: resolvedRuntime.href,
+    baseUrl: upstreamBaseUrl,
     runtimePath: params.runtimePath || [],
     searchParams: request.nextUrl.searchParams,
   })
 
+  const headersToUpstream: Record<string, string> = {
+    Accept: request.headers.get("accept") || "*/*",
+    "Accept-Encoding": "identity",
+    "User-Agent": request.headers.get("user-agent") || "OrchWiz-Bridge-RuntimeUiProxy",
+  }
+
+  const requestContentType = request.headers.get("content-type")
+  if (requestContentType) {
+    headersToUpstream["Content-Type"] = requestContentType
+  }
+
+  const runtimeJwtCookie = extractRuntimeJwtCookieHeader(request.headers.get("cookie"))
+  if (runtimeJwtCookie) {
+    headersToUpstream.Cookie = runtimeJwtCookie
+  }
+
   let upstream: Response
   try {
+    const body =
+      request.method === "GET" || request.method === "HEAD"
+        ? undefined
+        : await request.arrayBuffer()
     upstream = await fetch(upstreamUrl, {
       method: request.method,
-      headers: {
-        Accept: request.headers.get("accept") || "*/*",
-        "User-Agent": request.headers.get("user-agent") || "OrchWiz-Bridge-RuntimeUiProxy",
-      },
+      headers: headersToUpstream,
+      body,
       redirect: "manual",
     })
   } catch (error) {
@@ -309,7 +410,8 @@ async function handleRuntimeUiProxy(
           stationKey: params.stationKey,
           namespace,
           source: resolvedRuntime.source,
-          runtimeBaseUrl: resolvedRuntime.href,
+          runtimeBaseUrl: upstreamBaseUrl,
+          metadataRuntimeUiUrl,
           upstreamUrl: upstreamUrl.toString(),
           reason: errorMessage(error),
         },
@@ -321,6 +423,7 @@ async function handleRuntimeUiProxy(
   const responseHeaders = new Headers(upstream.headers)
   responseHeaders.delete("content-security-policy")
   responseHeaders.delete("x-frame-options")
+  responseHeaders.delete("content-encoding")
   responseHeaders.delete("content-length")
   responseHeaders.set("cache-control", "no-store")
 
@@ -330,7 +433,7 @@ async function handleRuntimeUiProxy(
       "location",
       rewriteUpstreamLocation({
         location,
-        upstreamBaseUrl: resolvedRuntime.href,
+        upstreamBaseUrl,
         stationKey: params.stationKey,
         shipDeploymentId: selectedShip.id,
       }),
@@ -339,7 +442,8 @@ async function handleRuntimeUiProxy(
 
   const contentType = responseHeaders.get("content-type") || ""
   if (request.method === "GET" && contentType.toLowerCase().includes("text/html")) {
-    const gatewayUrl = wsUrlForHttpBase(resolvedRuntime.href)
+    const gatewayBaseUrl = metadataRuntimeUiUrl || upstreamBaseUrl
+    const gatewayUrl = wsUrlForHttpBase(gatewayBaseUrl)
     if (!gatewayUrl) {
       return NextResponse.json(
         {
@@ -348,6 +452,7 @@ async function handleRuntimeUiProxy(
             stationKey: params.stationKey,
             namespace,
             source: resolvedRuntime.source,
+            gatewayBaseUrl,
             runtimeBaseUrl: resolvedRuntime.href,
           },
         },
@@ -399,6 +504,86 @@ export async function GET(
 }
 
 export async function HEAD(
+  request: NextRequest,
+  { params }: { params: Promise<RuntimeUiRouteParams> },
+) {
+  try {
+    return await handleRuntimeUiProxy(request, await params)
+  } catch (error) {
+    console.error("Bridge runtime UI proxy failed:", error)
+    return NextResponse.json(
+      {
+        error: "Runtime UI proxy failed.",
+        details: {
+          reason: errorMessage(error),
+        },
+      },
+      { status: 502 },
+    )
+  }
+}
+
+export async function POST(
+  request: NextRequest,
+  { params }: { params: Promise<RuntimeUiRouteParams> },
+) {
+  try {
+    return await handleRuntimeUiProxy(request, await params)
+  } catch (error) {
+    console.error("Bridge runtime UI proxy failed:", error)
+    return NextResponse.json(
+      {
+        error: "Runtime UI proxy failed.",
+        details: {
+          reason: errorMessage(error),
+        },
+      },
+      { status: 502 },
+    )
+  }
+}
+
+export async function PUT(
+  request: NextRequest,
+  { params }: { params: Promise<RuntimeUiRouteParams> },
+) {
+  try {
+    return await handleRuntimeUiProxy(request, await params)
+  } catch (error) {
+    console.error("Bridge runtime UI proxy failed:", error)
+    return NextResponse.json(
+      {
+        error: "Runtime UI proxy failed.",
+        details: {
+          reason: errorMessage(error),
+        },
+      },
+      { status: 502 },
+    )
+  }
+}
+
+export async function PATCH(
+  request: NextRequest,
+  { params }: { params: Promise<RuntimeUiRouteParams> },
+) {
+  try {
+    return await handleRuntimeUiProxy(request, await params)
+  } catch (error) {
+    console.error("Bridge runtime UI proxy failed:", error)
+    return NextResponse.json(
+      {
+        error: "Runtime UI proxy failed.",
+        details: {
+          reason: errorMessage(error),
+        },
+      },
+      { status: 502 },
+    )
+  }
+}
+
+export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<RuntimeUiRouteParams> },
 ) {

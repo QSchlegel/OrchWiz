@@ -34,6 +34,16 @@ function stripTrailingSlash(value: string): string {
   return trimmed.length > 0 ? trimmed : "/"
 }
 
+function isLoopbackOrLocalhostHost(hostname: string): boolean {
+  const normalized = hostname.trim().toLowerCase()
+  return (
+    normalized === "localhost"
+    || normalized === "127.0.0.1"
+    || normalized === "::1"
+    || normalized.endsWith(".localhost")
+  )
+}
+
 function proxyBasePath(): string {
   return "/api/bridge/runtime-ui/langfuse"
 }
@@ -332,11 +342,28 @@ async function selectShipForRuntimeUi(args: {
 }
 
 function resolveLangfuseUpstreamBaseUrl(args: { namespace: string | null }): string {
+  const runningInKubernetes = asString(process.env.KUBERNETES_SERVICE_HOST) !== null
+  const monitoringNamespace = asString(process.env.ORCHWIZ_MONITORING_NAMESPACE) || "monitoring"
   const override = asString(process.env.LANGFUSE_BASE_URL)
   if (override) {
     try {
       const parsed = new URL(override)
       if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+        if (runningInKubernetes) {
+          const overrideHost = parsed.hostname.trim().toLowerCase()
+          if (isLoopbackOrLocalhostHost(overrideHost)) {
+            throw new Error("Ignoring loopback LANGFUSE_BASE_URL inside Kubernetes.")
+          }
+
+          const legacyServiceHost = `langfuse.${monitoringNamespace}.svc.cluster.local`
+          const legacyShortHost = `langfuse.${monitoringNamespace}.svc`
+          if (overrideHost === legacyServiceHost || overrideHost === legacyShortHost) {
+            parsed.hostname = `langfuse-web.${monitoringNamespace}.svc.cluster.local`
+            if (!parsed.port) {
+              parsed.port = "3000"
+            }
+          }
+        }
         return parsed.toString().replace(/\/+$/u, "")
       }
     } catch {
@@ -344,9 +371,8 @@ function resolveLangfuseUpstreamBaseUrl(args: { namespace: string | null }): str
     }
   }
 
-  const runningInKubernetes = asString(process.env.KUBERNETES_SERVICE_HOST) !== null
-  if (runningInKubernetes && args.namespace) {
-    return `http://langfuse-web.${args.namespace}.svc.cluster.local:3000`
+  if (runningInKubernetes) {
+    return `http://langfuse-web.${monitoringNamespace}.svc.cluster.local:3000`
   }
 
   // Local dev fallback expects `kubectl -n monitoring port-forward svc/langfuse-web 3002:3000`.
@@ -384,6 +410,7 @@ async function handleRuntimeUiProxy(
 
   const headersToUpstream: Record<string, string> = {
     Accept: request.headers.get("accept") || "*/*",
+    "Accept-Encoding": "identity",
     "User-Agent": request.headers.get("user-agent") || "OrchWiz-Bridge-LangfuseProxy",
   }
 
@@ -424,6 +451,7 @@ async function handleRuntimeUiProxy(
   const responseHeaders = new Headers(upstream.headers)
   responseHeaders.delete("content-security-policy")
   responseHeaders.delete("x-frame-options")
+  responseHeaders.delete("content-encoding")
   responseHeaders.delete("content-length")
   responseHeaders.set("cache-control", "no-store")
 

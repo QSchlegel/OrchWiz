@@ -83,6 +83,7 @@ function evaluateScenario(
 
 export function evaluateBridgeCrewScenarios(args: {
   userId: string
+  shipDeploymentId?: string | null
   mode: BridgeCrewStressMode
   scenarioPack: "core" | "extended"
   scenarios: BridgeCrewStressScenario[]
@@ -121,6 +122,7 @@ export function evaluateBridgeCrewScenarios(args: {
 
   return {
     userId: args.userId,
+    shipDeploymentId: args.shipDeploymentId || null,
     mode: args.mode,
     scenarioPack: args.scenarioPack,
     overallScore: clampScore(weighted),
