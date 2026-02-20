@@ -1278,11 +1278,24 @@ function runMigrationsIfEnabled(): void {
   }
   console.log("[migrate] Running prisma migrate deploy...")
   const result = spawnSync("npx", ["prisma", "migrate", "deploy"], {
-    stdio: "inherit",
+    stdio: "pipe",
     shell: true,
+    encoding: "utf8",
     env: { ...process.env },
   })
+  const stderr = (result.stderr ?? result.stdout ?? "").trim()
   if (result.status !== 0) {
+    const isUnreachable =
+      /P1001|Can't reach database|ECONNREFUSED|connection refused/i.test(stderr)
+    if (isUnreachable && process.env.CI === "true") {
+      console.warn(
+        "[migrate] Database unreachable (CI or no DB). Skipping migrations and starting anyway.",
+      )
+      if (stderr) console.warn("[migrate] stderr:", stderr)
+      return
+    }
+    if (result.stdout) process.stdout.write(result.stdout)
+    if (result.stderr) process.stderr.write(result.stderr)
     throw new Error(
       `prisma migrate deploy exited with code ${result.status ?? "unknown"}. Fix migrations or DATABASE_URL before starting.`,
     )

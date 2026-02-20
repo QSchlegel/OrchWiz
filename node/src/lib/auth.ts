@@ -137,7 +137,9 @@ export function createAuth(resolvedAppUrl?: string) {
     session: {
       modelName: "authSession",
     },
-    secret: process.env.BETTER_AUTH_SECRET!,
+    secret:
+      process.env.BETTER_AUTH_SECRET ||
+      (process.env.CI === "true" ? "ci-build-placeholder-not-for-production" : undefined)!,
     ...(appUrl ? { baseURL: appUrl } : {}),
   })
 }
