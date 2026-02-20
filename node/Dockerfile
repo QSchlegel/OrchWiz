@@ -38,11 +38,14 @@ COPY --from=builder /app/.next ./.next
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/prisma ./prisma
+COPY --from=builder /app/prisma.config.ts ./prisma.config.ts
 COPY --from=builder /app/next.config.js ./next.config.js
 COPY --from=builder /app/server.ts ./server.ts
 COPY --from=builder /app/server-dotenv.ts ./server-dotenv.ts
 COPY --from=builder /app/src ./src
 COPY --from=builder /app/tsconfig.json ./tsconfig.json
+
+RUN npm install -g npm@11
 
 RUN chown -R nextjs:nodejs /app
 USER nextjs
