@@ -1265,7 +1265,13 @@ async function handleRuntimeUiWsProxyConnection(downstream: WebSocket, req: http
   }
 }
 
-function runMigrationsIfEnabled(): void {
+const MIGRATE_ENV_FILE = ".env.migrate"
+
+function escapeEnvValue(value: string): string {
+  return value.replace(/\\/gu, "\\\\").replace(/"/gu, '\\"').replace(/\n/gu, "\\n")
+}
+
+async function runMigrationsIfEnabled(): Promise<void> {
   const nodeEnv = process.env.NODE_ENV
   const explicitlyEnabled = process.env.RUN_MIGRATIONS_ON_STARTUP === "true"
   const explicitlyDisabled = process.env.RUN_MIGRATIONS_ON_STARTUP === "false"
@@ -1277,47 +1283,66 @@ function runMigrationsIfEnabled(): void {
     console.warn("[migrate] DATABASE_URL not set; skipping automatic migrations.")
     return
   }
-  console.log("[migrate] Running prisma migrate deploy...")
-  const migrateEnv = { ...process.env, DATABASE_URL: databaseUrl }
-  const result = spawnSync("npx", ["prisma", "migrate", "deploy"], {
-    stdio: "pipe",
-    shell: false,
-    encoding: "utf8",
-    cwd: SERVER_ROOT_DIR,
-    env: migrateEnv,
-  })
-  const stderr = (result.stderr ?? result.stdout ?? "").trim()
-  if (result.status !== 0) {
-    const isUnreachable =
-      /P1001|Can't reach database|ECONNREFUSED|connection refused/i.test(stderr)
-    const isMissingUrl = /datasource\.url.*required|url.*required.*prisma config/i.test(stderr)
-    if (isUnreachable && process.env.CI === "true") {
-      console.warn(
-        "[migrate] Database unreachable (CI or no DB). Skipping migrations and starting anyway.",
-      )
-      if (stderr) console.warn("[migrate] stderr:", stderr)
-      return
-    }
-    if (isMissingUrl) {
-      console.error(
-        "[migrate] Prisma did not receive DATABASE_URL. Ensure DATABASE_URL is set in this environment (e.g. Railway service variables).",
-      )
-      if (stderr) console.error("[migrate] stderr:", stderr)
-      throw new Error(
-        "DATABASE_URL is required for migrations. Set DATABASE_URL in your deployment environment.",
-      )
-    }
-    if (result.stdout) process.stdout.write(result.stdout)
-    if (result.stderr) process.stderr.write(result.stderr)
-    throw new Error(
-      `prisma migrate deploy exited with code ${result.status ?? "unknown"}. Fix migrations or DATABASE_URL before starting.`,
+  const migrateFilePath = path.join(SERVER_ROOT_DIR, MIGRATE_ENV_FILE)
+  try {
+    await fs.writeFile(
+      migrateFilePath,
+      `DATABASE_URL="${escapeEnvValue(databaseUrl)}"\n`,
+      "utf8",
     )
+  } catch (writeErr) {
+    console.error("[migrate] Failed to write", MIGRATE_ENV_FILE, writeErr)
+    throw new Error("DATABASE_URL is required for migrations. Set DATABASE_URL in your deployment environment.")
   }
-  console.log("[migrate] Finished prisma migrate deploy.")
+  try {
+    console.log("[migrate] Running prisma migrate deploy...")
+    const migrateEnv = { ...process.env, DATABASE_URL: databaseUrl }
+    const result = spawnSync("npx", ["prisma", "migrate", "deploy"], {
+      stdio: "pipe",
+      shell: false,
+      encoding: "utf8",
+      cwd: SERVER_ROOT_DIR,
+      env: migrateEnv,
+    })
+    const stderr = (result.stderr ?? result.stdout ?? "").trim()
+    if (result.status !== 0) {
+      const isUnreachable =
+        /P1001|Can't reach database|ECONNREFUSED|connection refused/i.test(stderr)
+      const isMissingUrl = /datasource\.url.*required|url.*required.*prisma config/i.test(stderr)
+      if (isUnreachable && process.env.CI === "true") {
+        console.warn(
+          "[migrate] Database unreachable (CI or no DB). Skipping migrations and starting anyway.",
+        )
+        if (stderr) console.warn("[migrate] stderr:", stderr)
+        return
+      }
+      if (isMissingUrl) {
+        console.error(
+          "[migrate] Prisma did not receive DATABASE_URL. Ensure DATABASE_URL is set in this environment (e.g. Railway service variables).",
+        )
+        if (stderr) console.error("[migrate] stderr:", stderr)
+        throw new Error(
+          "DATABASE_URL is required for migrations. Set DATABASE_URL in your deployment environment.",
+        )
+      }
+      if (result.stdout) process.stdout.write(result.stdout)
+      if (result.stderr) process.stderr.write(result.stderr)
+      throw new Error(
+        `prisma migrate deploy exited with code ${result.status ?? "unknown"}. Fix migrations or DATABASE_URL before starting.`,
+      )
+    }
+    console.log("[migrate] Finished prisma migrate deploy.")
+  } finally {
+    try {
+      await fs.rm(migrateFilePath, { force: true })
+    } catch {
+      // ignore
+    }
+  }
 }
 
 async function main() {
-  runMigrationsIfEnabled()
+  await runMigrationsIfEnabled()
 
   const cli = parseCliArgs(process.argv.slice(2))
   const port =
