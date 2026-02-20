@@ -1273,6 +1273,9 @@ function escapeEnvValue(value: string): string {
 
 async function runMigrationsIfEnabled(): Promise<void> {
   const nodeEnv = process.env.NODE_ENV
+  if (nodeEnv === "production") {
+    console.log("[migrate] DATABASE_URL present:", Boolean(process.env.DATABASE_URL))
+  }
   const explicitlyEnabled = process.env.RUN_MIGRATIONS_ON_STARTUP === "true"
   const explicitlyDisabled = process.env.RUN_MIGRATIONS_ON_STARTUP === "false"
   if (explicitlyDisabled || (!explicitlyEnabled && nodeEnv !== "production")) {
@@ -1296,7 +1299,11 @@ async function runMigrationsIfEnabled(): Promise<void> {
   }
   try {
     console.log("[migrate] Running prisma migrate deploy...")
-    const migrateEnv = { ...process.env, DATABASE_URL: databaseUrl }
+    const migrateEnv = {
+      ...process.env,
+      DATABASE_URL: databaseUrl,
+      PRISMA_MIGRATE_ENV_PATH: migrateFilePath,
+    }
     const result = spawnSync("npx", ["prisma", "migrate", "deploy"], {
       stdio: "pipe",
       shell: false,

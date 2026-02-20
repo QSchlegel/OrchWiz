@@ -32,7 +32,7 @@ Use monorepo root directories so each service builds from its own folder:
 
 ### `orchwiz-node`
 
-- `DATABASE_URL`
+- `DATABASE_URL` — must be set **on the orchwiz-node service** (not only on the Postgres service). After adding or changing it, **redeploy** the service so the new value is injected at process start.
 - `BETTER_AUTH_SECRET`
 - `BETTER_AUTH_URL` — **must be a full URL with scheme** (e.g. `https://orchwiz.com`). Host-only values like `orchwiz.com` are normalized to `https://` in code, but setting the full URL avoids "Invalid base URL" errors from auth and metrics.
 - `NEXT_PUBLIC_APP_URL` — same as above; use full URL (e.g. `https://orchwiz.com`).
@@ -64,6 +64,10 @@ If you want the OpenClaw `SSH` interaction mode in Bridge Runtime Rail:
 - When preflight fails, Bridge stays in SSH mode and shows structured diagnostics (no automatic UI fallback).
 
 ## Troubleshooting
+
+### `Prisma did not receive DATABASE_URL` / `datasource.url property is required`
+
+Ensure `DATABASE_URL` is set on the **orchwiz-node** (web) service, not only on the Postgres service. Redeploy after adding or changing the variable so the new env is available at startup. The app also passes the migrate env file by absolute path so the Prisma subprocess can load `DATABASE_URL` from it.
 
 ### `The table public.User does not exist` / `The table public.Verification does not exist` (P2021)
 
