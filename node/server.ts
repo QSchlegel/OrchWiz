@@ -1304,7 +1304,8 @@ async function runMigrationsIfEnabled(): Promise<void> {
       DATABASE_URL: databaseUrl,
       PRISMA_MIGRATE_ENV_PATH: migrateFilePath,
     }
-    const result = spawnSync("npx", ["prisma", "migrate", "deploy"], {
+    const prismaBin = path.join(SERVER_ROOT_DIR, "node_modules", ".bin", "prisma")
+    const result = spawnSync(prismaBin, ["migrate", "deploy"], {
       stdio: "pipe",
       shell: false,
       encoding: "utf8",

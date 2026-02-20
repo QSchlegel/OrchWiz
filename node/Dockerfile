@@ -45,8 +45,6 @@ COPY --from=builder /app/server-dotenv.ts ./server-dotenv.ts
 COPY --from=builder /app/src ./src
 COPY --from=builder /app/tsconfig.json ./tsconfig.json
 
-RUN npm install -g npm@11
-
 RUN chown -R nextjs:nodejs /app
 USER nextjs
 
