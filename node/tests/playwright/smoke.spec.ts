@@ -15,7 +15,7 @@ test.describe("Playwright bot smoke suite", () => {
 
   test("home route renders main hero copy", async ({ page }) => {
     await page.goto("/", { waitUntil: "domcontentloaded" })
-    await expect(page.getByRole("heading", { name: /OrchWiz/i })).toBeVisible()
+    await expect(page.getByRole("heading", { level: 1 }).filter({ hasText: /OrchWiz/i })).toBeVisible()
     await expect(page.getByRole("link", { name: /Beam me up/i })).toBeVisible()
   })
 

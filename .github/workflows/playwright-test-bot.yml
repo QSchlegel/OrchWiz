@@ -45,11 +45,16 @@ jobs:
           PW_REPORT_DIR: /home/runner/work/orchwiz/orchwiz/node/output/playwright
           NODE_ENV: production
         run: |
+          set -e
+          cleanup() { [ -n "${APP_PID-}" ] && { kill $APP_PID 2>/dev/null || true; wait $APP_PID 2>/dev/null || true; }; }
+          trap cleanup EXIT
+
           if [ -f .env.example ]; then
             cp .env.example .env
           fi
 
           npm run build >/tmp/orchwiz-build.log 2>&1
+          echo "Build completed."
 
           (npm run start >/tmp/orchwiz-app.log 2>&1 & echo $! > /tmp/orchwiz-app.pid)
           APP_PID=$(cat /tmp/orchwiz-app.pid)
@@ -63,6 +68,8 @@ jobs:
             if [ ! -d /proc/$APP_PID ]; then
               echo "app process exited before it became ready"
               cat /tmp/orchwiz-app.log
+              echo "--- build log ---"
+              cat /tmp/orchwiz-build.log
               exit 1
             fi
             sleep 2
@@ -71,25 +78,29 @@ jobs:
           if [ "$APP_READY" != "1" ]; then
             echo "app did not become ready before timeout"
             cat /tmp/orchwiz-app.log
+            echo "--- build log ---"
+            cat /tmp/orchwiz-build.log
             kill $APP_PID || true
             wait $APP_PID || true
             exit 1
           fi
 
           if [ ! -d /proc/$APP_PID ]; then
-            echo "app process exited before it became ready"
+            echo "app process exited before tests"
             cat /tmp/orchwiz-app.log
             exit 1
           fi
+          echo "App is ready."
 
+          echo "Running Playwright smoke tests..."
           if ! npm run test:bot:ci; then
             BOT_EXIT_CODE=$?
+            echo "Tests failed. App log:"
+            cat /tmp/orchwiz-app.log
           else
             BOT_EXIT_CODE=0
           fi
 
-          kill $APP_PID || true
-          wait $APP_PID || true
           exit ${BOT_EXIT_CODE:-1}
         timeout-minutes: 30
 
@@ -99,4 +110,4 @@ jobs:
         with:
           name: playwright-test-bot-artifacts
           path: node/output/playwright/
-          if-no-files-found: error
+          if-no-files-found: ignore
