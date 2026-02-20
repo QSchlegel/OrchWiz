@@ -53,11 +53,11 @@ jobs:
             cp .env.example .env
           fi
 
-          npm run build >/tmp/orchwiz-build.log 2>&1
+          npm run build
           echo "Build completed."
 
-          (npm run start >/tmp/orchwiz-app.log 2>&1 & echo $! > /tmp/orchwiz-app.pid)
-          APP_PID=$(cat /tmp/orchwiz-app.pid)
+          (npm run start >orchwiz-app.log 2>&1 & echo $! > .orchwiz-app.pid)
+          APP_PID=$(cat .orchwiz-app.pid)
           APP_READY=0
 
           for attempt in $(seq 1 90); do
@@ -67,9 +67,8 @@ jobs:
             fi
             if [ ! -d /proc/$APP_PID ]; then
               echo "app process exited before it became ready"
-              cat /tmp/orchwiz-app.log
-              echo "--- build log ---"
-              cat /tmp/orchwiz-build.log
+              echo "--- app log ---"
+              cat orchwiz-app.log
               exit 1
             fi
             sleep 2
@@ -77,9 +76,8 @@ jobs:
 
           if [ "$APP_READY" != "1" ]; then
             echo "app did not become ready before timeout"
-            cat /tmp/orchwiz-app.log
-            echo "--- build log ---"
-            cat /tmp/orchwiz-build.log
+            echo "--- app log ---"
+            cat orchwiz-app.log
             kill $APP_PID || true
             wait $APP_PID || true
             exit 1
@@ -87,7 +85,8 @@ jobs:
 
           if [ ! -d /proc/$APP_PID ]; then
             echo "app process exited before tests"
-            cat /tmp/orchwiz-app.log
+            echo "--- app log ---"
+            cat orchwiz-app.log
             exit 1
           fi
           echo "App is ready."
@@ -96,7 +95,7 @@ jobs:
           if ! npm run test:bot:ci; then
             BOT_EXIT_CODE=$?
             echo "Tests failed. App log:"
-            cat /tmp/orchwiz-app.log
+            cat orchwiz-app.log
           else
             BOT_EXIT_CODE=0
           fi
@@ -111,3 +110,10 @@ jobs:
           name: playwright-test-bot-artifacts
           path: node/output/playwright/
           if-no-files-found: ignore
+
+      - name: Upload app log on failure
+        if: failure() && hashFiles('node/orchwiz-app.log') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: orchwiz-app-log
+          path: node/orchwiz-app.log
