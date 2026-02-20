@@ -3,6 +3,9 @@
 # Stage 1: Dependencies
 FROM node:20-alpine AS deps
 WORKDIR /app
+# node-pty has native bindings; when prebuilds are missing, node-gyp needs Python + C++ toolchain
+RUN apk add --no-cache python3 make g++
+ENV PYTHON=/usr/bin/python3
 COPY package.json package-lock.json* ./
 COPY scripts/fix-libsodium-wrappers-sumo.cjs ./scripts/
 RUN npm ci
