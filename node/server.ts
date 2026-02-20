@@ -1281,7 +1281,7 @@ function runMigrationsIfEnabled(): void {
   const migrateEnv = { ...process.env, DATABASE_URL: databaseUrl }
   const result = spawnSync("npx", ["prisma", "migrate", "deploy"], {
     stdio: "pipe",
-    shell: true,
+    shell: false,
     encoding: "utf8",
     cwd: SERVER_ROOT_DIR,
     env: migrateEnv,
