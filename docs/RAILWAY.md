@@ -83,4 +83,4 @@ Reference: [Railway Config as Code docs](https://docs.railway.com/config-as-code
 - Build strategy: Dockerfile
 - Included services: `node`, `data-core`, `provider-proxy`
 - Out of scope: `wallet-enclave`, `kugelaudio-tts`
-- DB migrations: operator-managed (no automatic migration hook in Railway manifests)
+- DB migrations: **automatic** — on startup the node service runs `prisma migrate deploy` when `NODE_ENV=production` and `DATABASE_URL` is set. To disable: `RUN_MIGRATIONS_ON_STARTUP=false`. To run in non-production: `RUN_MIGRATIONS_ON_STARTUP=true`.

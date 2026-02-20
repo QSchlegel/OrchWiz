@@ -3,6 +3,7 @@
 import "next/dist/server/node-environment-baseline"
 
 import "./server-dotenv"
+import { spawnSync } from "node:child_process"
 import fs from "node:fs/promises"
 import http from "node:http"
 import { tmpdir } from "node:os"
@@ -1264,7 +1265,34 @@ async function handleRuntimeUiWsProxyConnection(downstream: WebSocket, req: http
   }
 }
 
+function runMigrationsIfEnabled(): void {
+  const nodeEnv = process.env.NODE_ENV
+  const explicitlyEnabled = process.env.RUN_MIGRATIONS_ON_STARTUP === "true"
+  const explicitlyDisabled = process.env.RUN_MIGRATIONS_ON_STARTUP === "false"
+  if (explicitlyDisabled || (!explicitlyEnabled && nodeEnv !== "production")) {
+    return
+  }
+  if (!process.env.DATABASE_URL) {
+    console.warn("[migrate] DATABASE_URL not set; skipping automatic migrations.")
+    return
+  }
+  console.log("[migrate] Running prisma migrate deploy...")
+  const result = spawnSync("npx", ["prisma", "migrate", "deploy"], {
+    stdio: "inherit",
+    shell: true,
+    env: { ...process.env },
+  })
+  if (result.status !== 0) {
+    throw new Error(
+      `prisma migrate deploy exited with code ${result.status ?? "unknown"}. Fix migrations or DATABASE_URL before starting.`,
+    )
+  }
+  console.log("[migrate] Finished prisma migrate deploy.")
+}
+
 async function main() {
+  runMigrationsIfEnabled()
+
   const cli = parseCliArgs(process.argv.slice(2))
   const port =
     parseNumber(cli.port)

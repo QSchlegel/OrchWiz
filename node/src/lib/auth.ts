@@ -18,13 +18,22 @@ const githubProvider =
 
 const socialProviders = githubProvider ? { github: githubProvider } : undefined
 
+/** Normalize app URL so host-only values (e.g. "orchwiz.com") get a scheme. */
+function normalizeAppUrl(url: string | undefined): string | undefined {
+  const raw = url?.trim()
+  if (!raw) return undefined
+  if (raw.startsWith("http://") || raw.startsWith("https://")) return raw
+  return `https://${raw}`
+}
+
 function getPasskeyConfig(appUrl?: string) {
-  if (!appUrl) {
+  const normalized = normalizeAppUrl(appUrl)
+  if (!normalized) {
     return {}
   }
 
   try {
-    const parsedUrl = new URL(appUrl)
+    const parsedUrl = new URL(normalized)
     return {
       origin: parsedUrl.origin,
       rpID: parsedUrl.hostname,
@@ -36,7 +45,8 @@ function getPasskeyConfig(appUrl?: string) {
 }
 
 export function createAuth(resolvedAppUrl?: string) {
-  const appUrl = resolvedAppUrl || appUrlFromEnv
+  const rawAppUrl = resolvedAppUrl || appUrlFromEnv
+  const appUrl = normalizeAppUrl(rawAppUrl) || rawAppUrl
   const passkeyConfig = getPasskeyConfig(appUrl)
 
   return betterAuth({
