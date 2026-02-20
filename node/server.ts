@@ -1272,27 +1272,40 @@ function runMigrationsIfEnabled(): void {
   if (explicitlyDisabled || (!explicitlyEnabled && nodeEnv !== "production")) {
     return
   }
-  if (!process.env.DATABASE_URL) {
+  const databaseUrl = process.env.DATABASE_URL
+  if (!databaseUrl) {
     console.warn("[migrate] DATABASE_URL not set; skipping automatic migrations.")
     return
   }
   console.log("[migrate] Running prisma migrate deploy...")
+  const migrateEnv = { ...process.env, DATABASE_URL: databaseUrl }
   const result = spawnSync("npx", ["prisma", "migrate", "deploy"], {
     stdio: "pipe",
     shell: true,
     encoding: "utf8",
-    env: { ...process.env },
+    cwd: SERVER_ROOT_DIR,
+    env: migrateEnv,
   })
   const stderr = (result.stderr ?? result.stdout ?? "").trim()
   if (result.status !== 0) {
     const isUnreachable =
       /P1001|Can't reach database|ECONNREFUSED|connection refused/i.test(stderr)
+    const isMissingUrl = /datasource\.url.*required|url.*required.*prisma config/i.test(stderr)
     if (isUnreachable && process.env.CI === "true") {
       console.warn(
         "[migrate] Database unreachable (CI or no DB). Skipping migrations and starting anyway.",
       )
       if (stderr) console.warn("[migrate] stderr:", stderr)
       return
+    }
+    if (isMissingUrl) {
+      console.error(
+        "[migrate] Prisma did not receive DATABASE_URL. Ensure DATABASE_URL is set in this environment (e.g. Railway service variables).",
+      )
+      if (stderr) console.error("[migrate] stderr:", stderr)
+      throw new Error(
+        "DATABASE_URL is required for migrations. Set DATABASE_URL in your deployment environment.",
+      )
     }
     if (result.stdout) process.stdout.write(result.stdout)
     if (result.stderr) process.stderr.write(result.stderr)
