@@ -34,9 +34,9 @@ Use monorepo root directories so each service builds from its own folder:
 
 - `DATABASE_URL`
 - `BETTER_AUTH_SECRET`
-- `BETTER_AUTH_URL`
-- `NEXT_PUBLIC_APP_URL`
-- `NEXT_PUBLIC_SITE_URL`
+- `BETTER_AUTH_URL` — **must be a full URL with scheme** (e.g. `https://orchwiz.com`). Host-only values like `orchwiz.com` are normalized to `https://` in code, but setting the full URL avoids "Invalid base URL" errors from auth and metrics.
+- `NEXT_PUBLIC_APP_URL` — same as above; use full URL (e.g. `https://orchwiz.com`).
+- `NEXT_PUBLIC_SITE_URL` — same as above; used for metadata and as fallback for auth base URL.
 - Optional for Bridge Runtime Rail SSH console mode:
   - `ORCHWIZ_BRIDGE_SSH_TTY_ENABLED=true` (or keep `ENABLE_LOCAL_COMMAND_EXECUTION=true`)
   - `ORCHWIZ_BRIDGE_SSH_TTY_MAX_SESSION_MS` (optional; defaults to `1800000`)
@@ -64,6 +64,19 @@ If you want the OpenClaw `SSH` interaction mode in Bridge Runtime Rail:
 - When preflight fails, Bridge stays in SSH mode and shows structured diagnostics (no automatic UI fallback).
 
 ## Troubleshooting
+
+### `The table public.User does not exist` / `The table public.Verification does not exist` (P2021)
+
+The database has not had Prisma migrations applied. Fix:
+
+1. Ensure `DATABASE_URL` is set for `orchwiz-node` and points to the same Postgres used in production.
+2. Ensure automatic migrations run on startup: `NODE_ENV=production` (Railway sets this for production) and do **not** set `RUN_MIGRATIONS_ON_STARTUP=false`.
+3. If the app started before `DATABASE_URL` was set, restart the service so that startup migrations run.
+4. To run migrations manually once (e.g. from your machine), from the repo root: `cd node && npx prisma migrate deploy` (with `DATABASE_URL` in the environment).
+
+### `Invalid base URL: orchwiz.com. Please provide a valid base URL.`
+
+Set `BETTER_AUTH_URL` and/or `NEXT_PUBLIC_APP_URL` and `NEXT_PUBLIC_SITE_URL` to a **full URL** with scheme, e.g. `https://orchwiz.com`. Host-only values are normalized in code, but some code paths (e.g. auth getSession) can still see the raw env; using the full URL everywhere avoids this.
 
 ### `Dockerfile \`Dockerfile\` does not exist`
 

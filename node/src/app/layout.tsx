@@ -6,7 +6,14 @@ import { ThemeProvider } from "@/components/theme/ThemeProvider";
 import { ThemeFooter } from "@/components/theme/ThemeFooter";
 import { NotificationProvider } from "@/components/notifications";
 
-const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000";
+function toAbsoluteSiteUrl(value: string | undefined): string {
+  const u = value?.trim();
+  if (!u) return "http://localhost:3000";
+  if (u.startsWith("http://") || u.startsWith("https://")) return u;
+  return `https://${u}`;
+}
+
+const siteUrl = toAbsoluteSiteUrl(process.env.NEXT_PUBLIC_SITE_URL) || "http://localhost:3000";
 
 export const metadata: Metadata = {
   metadataBase: new URL(siteUrl),

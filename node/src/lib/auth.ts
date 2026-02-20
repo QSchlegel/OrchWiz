@@ -5,7 +5,14 @@ import { github } from "better-auth/social-providers"
 import { passkey } from "@better-auth/passkey"
 import { prisma } from "./prisma"
 
-const appUrlFromEnv = process.env.BETTER_AUTH_URL || process.env.NEXT_PUBLIC_APP_URL
+/** App URL for Better Auth; prefers explicit auth URL, then public app URL, then site URL. */
+function getAppUrlFromEnv(): string | undefined {
+  const raw =
+    process.env.BETTER_AUTH_URL ||
+    process.env.NEXT_PUBLIC_APP_URL ||
+    process.env.NEXT_PUBLIC_SITE_URL
+  return raw?.trim() || undefined
+}
 const githubClientId = process.env.GITHUB_CLIENT_ID
 const githubClientSecret = process.env.GITHUB_CLIENT_SECRET
 const githubProvider =
@@ -45,8 +52,8 @@ function getPasskeyConfig(appUrl?: string) {
 }
 
 export function createAuth(resolvedAppUrl?: string) {
-  const rawAppUrl = resolvedAppUrl || appUrlFromEnv
-  const appUrl = normalizeAppUrl(rawAppUrl) || rawAppUrl
+  const rawAppUrl = resolvedAppUrl || getAppUrlFromEnv()
+  const appUrl = normalizeAppUrl(rawAppUrl) ?? rawAppUrl
   const passkeyConfig = getPasskeyConfig(appUrl)
 
   return betterAuth({
@@ -131,7 +138,7 @@ export function createAuth(resolvedAppUrl?: string) {
       modelName: "authSession",
     },
     secret: process.env.BETTER_AUTH_SECRET!,
-    baseURL: appUrl,
+    ...(appUrl ? { baseURL: appUrl } : {}),
   })
 }
 
