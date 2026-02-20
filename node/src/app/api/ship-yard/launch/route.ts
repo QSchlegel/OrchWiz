@@ -69,6 +69,11 @@ import {
   type ShipLaunchLogSource,
   type ShipLaunchLogStream,
 } from "@/lib/shipyard/launch-logging"
+import {
+  createShipLaunchReportWriter,
+  type ShipLaunchReportArtifact,
+  type ShipLaunchReportWriter,
+} from "@/lib/shipyard/launch-reports"
 import { cleanupFailedLocalLaunch } from "@/lib/shipyard/infra-teardown"
 
 export const dynamic = "force-dynamic"
@@ -177,6 +182,14 @@ export function withSanitizedAppRegistryLaunchConfig(args: {
 }
 
 export async function POST(request: NextRequest) {
+  let finalizeLaunchReportOnUnhandled:
+    | ((args: {
+      status: "succeeded" | "failed"
+      errorCode?: string | null
+      errorMessage?: string | null
+    }) => Promise<ShipLaunchReportArtifact | null>)
+    | null = null
+
   try {
     const body = asRecord(await request.json())
     const actor = await requireShipyardRequestActor(request, {
@@ -186,6 +199,39 @@ export async function POST(request: NextRequest) {
     const ownerUserId = actor.userId
     const requestId = asString(body?.requestId)
     let launchDeploymentId: string | null = null
+    const launchReportWriter: ShipLaunchReportWriter | null =
+      requestId
+        ? createShipLaunchReportWriter({
+            ownerUserId,
+            requestId,
+          })
+        : null
+    let finalizedLaunchReport: ShipLaunchReportArtifact | null = null
+
+    const finalizeLaunchReport = async (args: {
+      status: "succeeded" | "failed"
+      errorCode?: string | null
+      errorMessage?: string | null
+    }): Promise<ShipLaunchReportArtifact | null> => {
+      if (!launchReportWriter) {
+        return null
+      }
+      if (finalizedLaunchReport) {
+        return finalizedLaunchReport
+      }
+      try {
+        finalizedLaunchReport = await launchReportWriter.finalize({
+          status: args.status,
+          errorCode: args.errorCode,
+          errorMessage: args.errorMessage,
+        })
+        return finalizedLaunchReport
+      } catch (error) {
+        console.error("Failed to finalize ship launch report:", error)
+        return null
+      }
+    }
+    finalizeLaunchReportOnUnhandled = finalizeLaunchReport
 
     const emitLaunchLog = (entry: {
       level: ShipLaunchLogLevel
@@ -193,11 +239,27 @@ export async function POST(request: NextRequest) {
       stream?: ShipLaunchLogStream
       lines: string[]
     }) => {
-      if (!requestId) return
       const lines = Array.isArray(entry.lines)
         ? entry.lines.filter((line) => typeof line === "string" && line.trim().length > 0)
         : []
       if (lines.length === 0) return
+      const capturedAt = new Date().toISOString()
+
+      if (launchReportWriter) {
+        try {
+          launchReportWriter.append({
+            timestamp: capturedAt,
+            level: entry.level,
+            source: entry.source,
+            ...(entry.stream ? { stream: entry.stream } : {}),
+            lines,
+          })
+        } catch (error) {
+          console.error("Failed to persist launch log entry:", error)
+        }
+      }
+
+      if (!requestId) return
 
       publishShipLaunchLog({
         userId: ownerUserId,
@@ -207,6 +269,7 @@ export async function POST(request: NextRequest) {
           level: entry.level,
           source: entry.source,
           ...(entry.stream ? { stream: entry.stream } : {}),
+          capturedAt,
           lines,
         },
       })
@@ -218,6 +281,21 @@ export async function POST(request: NextRequest) {
       message: string
       deploymentId?: string | null
     }) => {
+      const normalizedPercent = Math.max(0, Math.min(100, Math.round(progress.percent)))
+      const progressMessage = typeof progress.message === "string" ? progress.message.trim() : ""
+      if (launchReportWriter && progressMessage.length > 0) {
+        try {
+          launchReportWriter.append({
+            timestamp: new Date().toISOString(),
+            level: "info",
+            source: "ship-yard",
+            lines: [`[progress ${normalizedPercent}% ${progress.stage}] ${progressMessage}`],
+          })
+        } catch (error) {
+          console.error("Failed to persist launch progress entry:", error)
+        }
+      }
+
       if (!requestId) return
 
       publishRealtimeEvent({
@@ -225,7 +303,7 @@ export async function POST(request: NextRequest) {
         userId: ownerUserId,
         payload: {
           requestId,
-          percent: Math.max(0, Math.min(100, Math.round(progress.percent))),
+          percent: normalizedPercent,
           stage: progress.stage,
           message: progress.message,
           deploymentId: progress.deploymentId ?? null,
@@ -415,6 +493,13 @@ export async function POST(request: NextRequest) {
       return { deployment, bridgeCrew }
     })
     launchDeploymentId = created.deployment.id
+    if (launchReportWriter) {
+      try {
+        launchReportWriter.setDeploymentId(created.deployment.id)
+      } catch (error) {
+        console.error("Failed to bind launch report to deployment ID:", error)
+      }
+    }
 
     emitLaunchProgress({
       percent: 18,
@@ -488,6 +573,24 @@ export async function POST(request: NextRequest) {
     let launchMetadataState: Record<string, unknown> = {
       ...((created.deployment.metadata as Record<string, unknown> | null) || {}),
     }
+    if (launchReportWriter) {
+      try {
+        launchMetadataState = {
+          ...launchMetadataState,
+          launchLogs: launchReportWriter.snapshot() as unknown as Prisma.InputJsonValue,
+        }
+      } catch (error) {
+        console.error("Failed to snapshot launch report metadata:", error)
+      }
+    }
+
+    await prisma.agentDeployment.update({
+      where: { id: created.deployment.id },
+      data: {
+        metadata: launchMetadataState as Prisma.InputJsonValue,
+      },
+    })
+
     let launchDebitedAmountCents = 0
     let launchDebitLedgerEntryId: string | null = null
     let launchRefundLedgerEntryId: string | null = null
@@ -573,6 +676,18 @@ export async function POST(request: NextRequest) {
         }
       }
 
+      const launchReport = await finalizeLaunchReport({
+        status: "failed",
+        errorCode: args.code,
+        errorMessage: args.error,
+      })
+      if (launchReport) {
+        launchMetadataState = {
+          ...launchMetadataState,
+          launchLogs: launchReport as unknown as Prisma.InputJsonValue,
+        }
+      }
+
       const failureMetadata = {
         ...mergeMetadataPreservingKubeview(launchMetadataState, args.metadata),
         deploymentError: args.error,
@@ -619,6 +734,7 @@ export async function POST(request: NextRequest) {
           quartermaster,
           baseRequirementsEstimate,
           deploymentOverview,
+          launchReport,
         },
         { status: args.httpStatus ?? 422 },
       )
@@ -982,9 +1098,10 @@ export async function POST(request: NextRequest) {
         })
         return { code: 0, stdout: stdout ?? "", stderr: stderr ?? "" }
       } catch (err: unknown) {
-        const code = typeof (err as NodeJS.ErrnoException)?.code === "number" ? (err as NodeJS.ErrnoException).code : 1
+        const codeCandidate = (err as NodeJS.ErrnoException | null)?.code
+        const code = typeof codeCandidate === "number" ? codeCandidate : 1
         return {
-          code: code ?? 1,
+          code,
           stderr: err instanceof Error ? err.message : String(err),
         }
       }
@@ -1096,6 +1213,22 @@ export async function POST(request: NextRequest) {
       lines: ["Ship launch complete"],
     })
 
+    const launchReport = await finalizeLaunchReport({
+      status: "succeeded",
+    })
+    if (launchReport) {
+      const metadataWithLaunchReport = {
+        ...asRecord(deployment.metadata),
+        launchLogs: launchReport as unknown as Prisma.InputJsonValue,
+      }
+      deployment = await prisma.agentDeployment.update({
+        where: { id: deployment.id },
+        data: {
+          metadata: metadataWithLaunchReport as unknown as Prisma.InputJsonValue,
+        },
+      })
+    }
+
     return NextResponse.json({
       deployment,
       bridgeCrew,
@@ -1103,10 +1236,22 @@ export async function POST(request: NextRequest) {
       baseRequirementsEstimate,
       deploymentOverview,
       bootstrap,
+      launchReport,
     })
   } catch (error) {
     if (error instanceof AccessControlError) {
       return NextResponse.json({ error: error.message, code: error.code }, { status: error.status })
+    }
+    if (finalizeLaunchReportOnUnhandled) {
+      try {
+        await finalizeLaunchReportOnUnhandled({
+          status: "failed",
+          errorCode: "UNHANDLED_EXCEPTION",
+          errorMessage: error instanceof Error ? error.message : String(error),
+        })
+      } catch (finalizeError) {
+        console.error("Failed to finalize launch report after unhandled exception:", finalizeError)
+      }
     }
     console.error("Error launching ship yard deployment:", error)
     return NextResponse.json({ error: "Internal server error" }, { status: 500 })

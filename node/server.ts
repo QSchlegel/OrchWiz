@@ -5,24 +5,36 @@ import "next/dist/server/node-environment-baseline"
 import "./server-dotenv"
 import fs from "node:fs/promises"
 import http from "node:http"
+import { tmpdir } from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import next from "next"
+import { spawn as ptySpawn, type IPty } from "node-pty"
 import { WebSocket, WebSocketServer, type RawData } from "ws"
 import { createAuth } from "./src/lib/auth"
 import { prisma } from "./src/lib/prisma"
 import { runDueNightlySecurityAudits } from "./src/lib/security/audit/nightly"
 import {
+  isMetricsRequestAuthorized,
+  observeHttpRequest,
+  recordNodeRuntimeSignals,
+  renderPrometheusMetrics,
+  resolveConfiguredMetricsToken,
+  shouldRequireMetricsAuth,
+} from "./src/lib/observability/prometheus"
+import {
   isBridgeStationKey,
   resolveOpenClawRuntimeUrlForStation,
   resolveShipNamespace,
 } from "./src/lib/bridge/openclaw-runtime"
+import { resolveOpenClawSshTarget } from "./src/lib/bridge/openclaw-ssh-target"
 
 interface ShipSelectionRecord {
   id: string
   status: "pending" | "deploying" | "active" | "inactive" | "failed" | "updating"
-  deploymentProfile: "local_starship_build" | "cloud_shipyard"
+  deploymentProfile: "local_starship_build" | "lightweight_shuttle" | "cloud_shipyard"
   config: unknown
+  metadata: unknown
 }
 
 type DesktopAssetKey = "mac" | "windows" | "linux"
@@ -49,6 +61,13 @@ function asString(value: unknown): string | null {
 
   const trimmed = value.trim()
   return trimmed.length > 0 ? trimmed : null
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {}
+  }
+  return value as Record<string, unknown>
 }
 
 function parseNumber(value: unknown): number | null {
@@ -79,6 +98,15 @@ function parseBooleanEnv(value: unknown): boolean | null {
   return null
 }
 
+function parseBooleanFlag(value: string | null): boolean {
+  if (!value) {
+    return false
+  }
+
+  const normalized = value.trim().toLowerCase()
+  return normalized === "true" || normalized === "1" || normalized === "yes" || normalized === "on"
+}
+
 function parseCliArgs(argv: string[]) {
   const args: Record<string, string> = {}
   for (let index = 0; index < argv.length; index += 1) {
@@ -103,6 +131,24 @@ function parseCliArgs(argv: string[]) {
   }
 
   return args
+}
+
+function parseRequestUrl(req: http.IncomingMessage): URL | null {
+  try {
+    return new URL(req.url || "/", `http://${req.headers.host || "localhost"}`)
+  } catch {
+    return null
+  }
+}
+
+function firstHeaderValue(value: string | string[] | undefined): string | null {
+  if (typeof value === "string") {
+    return value
+  }
+  if (Array.isArray(value) && value.length > 0 && typeof value[0] === "string") {
+    return value[0]
+  }
+  return null
 }
 
 function startLocalSecurityAuditCron() {
@@ -481,6 +527,54 @@ function resolvePublicRequestOrigin(req: http.IncomingMessage): string {
   return `http://${host}`
 }
 
+function normalizeHttpUrl(value: string | null): string | null {
+  if (!value) {
+    return null
+  }
+
+  try {
+    const parsed = new URL(value)
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return null
+    }
+    return parsed.toString().replace(/\/+$/u, "")
+  } catch {
+    return null
+  }
+}
+
+function isLoopbackOrLocalhostUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value)
+    const hostname = parsed.hostname.trim().toLowerCase()
+    return (
+      hostname === "localhost"
+      || hostname === "127.0.0.1"
+      || hostname === "::1"
+      || hostname.endsWith(".localhost")
+    )
+  } catch {
+    return false
+  }
+}
+
+function resolveRuntimeUiGatewayBaseFromMetadata(args: {
+  metadata: unknown
+  stationKey: string
+}): string | null {
+  const runtimeUi = asRecord(asRecord(args.metadata).runtimeUi)
+  const openclaw = asRecord(runtimeUi.openclaw)
+  const urls = asRecord(openclaw.urls)
+  return normalizeHttpUrl(asString(urls[args.stationKey]))
+}
+
+function resolveWsDirectTerminalPassthrough(url: URL): boolean {
+  if (parseBooleanFlag(url.searchParams.get("directWs"))) {
+    return true
+  }
+  return parseBooleanEnv(process.env.ORCHWIZ_RUNTIME_EDGE_DIRECT_TERMINAL_PASSTHROUGH) === true
+}
+
 async function selectShipForRuntimeUi(args: {
   userId: string
   requestedShipDeploymentId: string | null
@@ -495,6 +589,7 @@ async function selectShipForRuntimeUi(args: {
       status: true,
       deploymentProfile: true,
       config: true,
+      metadata: true,
     },
     orderBy: {
       updatedAt: "desc",
@@ -515,7 +610,7 @@ async function selectShipForRuntimeUi(args: {
   return (ships.find((ship) => ship.status === "active") || ships[0]) as ShipSelectionRecord
 }
 
-function extractStationKeyFromWsPath(pathname: string): string | null {
+function extractRuntimeUiStationKeyFromWsPath(pathname: string): string | null {
   const parts = pathname.split("/").filter(Boolean)
   // /api/bridge/runtime-ui/openclaw-gateway/:stationKey
   // /api/bridge/runtime-ui/openclaw-gateway/:stationKey/ws
@@ -537,6 +632,24 @@ function extractStationKeyFromWsPath(pathname: string): string | null {
     && parts[5] === "ws"
 
   if (!matchesBase && !matchesWs) {
+    return null
+  }
+
+  return parts[4] || null
+}
+
+function extractRuntimeSshStationKeyFromWsPath(pathname: string): string | null {
+  const parts = pathname.split("/").filter(Boolean)
+  // /api/bridge/runtime-ssh/openclaw/:stationKey/ws
+  const matchesWs =
+    parts.length === 6
+    && parts[0] === "api"
+    && parts[1] === "bridge"
+    && parts[2] === "runtime-ssh"
+    && parts[3] === "openclaw"
+    && parts[5] === "ws"
+
+  if (!matchesWs) {
     return null
   }
 
@@ -578,6 +691,16 @@ function wsUrlForHttpUrl(value: string): string | null {
   }
 }
 
+function appendUrlQueryParam(value: string, key: string, paramValue: string): string {
+  try {
+    const parsed = new URL(value)
+    parsed.searchParams.set(key, paramValue)
+    return parsed.toString()
+  } catch {
+    return value
+  }
+}
+
 function originForHttpUrl(value: string): string | null {
   try {
     const parsed = new URL(value)
@@ -613,6 +736,339 @@ function safeWsCloseReason(reason: Buffer | string | undefined): string | undefi
     return text
   }
   return undefined
+}
+
+function rawDataToUtf8(data: RawData): string {
+  if (typeof data === "string") {
+    return data
+  }
+  if (Buffer.isBuffer(data)) {
+    return data.toString("utf8")
+  }
+  if (Array.isArray(data)) {
+    return Buffer.concat(data).toString("utf8")
+  }
+  return Buffer.from(data).toString("utf8")
+}
+
+function sendRuntimeSshEvent(
+  downstream: WebSocket,
+  payload: Record<string, unknown>,
+) {
+  if (downstream.readyState !== WebSocket.OPEN) {
+    return
+  }
+
+  downstream.send(JSON.stringify(payload))
+}
+
+async function handleRuntimeSshWsProxyConnection(downstream: WebSocket, req: http.IncomingMessage) {
+  const debug = parseBooleanEnv(process.env.ORCHWIZ_DEBUG_OPENCLAW_SSH_WS) === true
+  const startedAt = Date.now()
+  const log = (...args: unknown[]) => {
+    if (debug) {
+      console.log("[openclaw-ssh-ws]", `+${Date.now() - startedAt}ms`, ...args)
+    }
+  }
+
+  let ttyProcess: IPty | null = null
+  let ttyExited = false
+  let sshKeyDir: string | null = null
+  let ttlTimer: NodeJS.Timeout | null = null
+  let cleaned = false
+
+  const closeDownstream = (code?: number, reason?: string) => {
+    const safeCode = isValidWsCloseCode(code) ? code : undefined
+    const safeReason = safeCode ? safeWsCloseReason(reason) : undefined
+    if (downstream.readyState === WebSocket.OPEN || downstream.readyState === WebSocket.CONNECTING) {
+      if (safeCode) {
+        downstream.close(safeCode, safeReason)
+      } else {
+        downstream.close()
+      }
+    }
+  }
+
+  const cleanup = async () => {
+    if (cleaned) {
+      return
+    }
+    cleaned = true
+
+    if (ttlTimer) {
+      clearTimeout(ttlTimer)
+      ttlTimer = null
+    }
+
+    if (ttyProcess && !ttyExited) {
+      try {
+        ttyProcess.kill("SIGTERM")
+      } catch {
+        // ignore
+      }
+      const forceKill = setTimeout(() => {
+        if (ttyProcess && !ttyExited) {
+          try {
+            ttyProcess.kill("SIGKILL")
+          } catch {
+            // ignore
+          }
+        }
+      }, 2_000)
+      forceKill.unref?.()
+    }
+
+    if (sshKeyDir) {
+      await fs.rm(sshKeyDir, { recursive: true, force: true }).catch(() => undefined)
+      sshKeyDir = null
+    }
+  }
+
+  downstream.on("close", (code, reason) => {
+    log("downstream close", { code, reason: reason?.toString("utf8") || "" })
+    void cleanup()
+  })
+
+  downstream.on("error", () => {
+    log("downstream error")
+    void cleanup()
+  })
+
+  try {
+    const requestUrl = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`)
+    const stationKeyRaw = extractRuntimeSshStationKeyFromWsPath(requestUrl.pathname)
+    if (!stationKeyRaw || !isBridgeStationKey(stationKeyRaw)) {
+      closeDownstream(1008, "Unknown station key.")
+      return
+    }
+
+    const requestOrigin = resolvePublicRequestOrigin(req)
+    const authForRequest = createAuth(requestOrigin)
+    const session = await authForRequest.api.getSession({ headers: nodeHeadersToWebHeaders(req) })
+    if (!session) {
+      closeDownstream(1008, "Unauthorized.")
+      return
+    }
+
+    const requestedShipDeploymentId = asString(requestUrl.searchParams.get("shipDeploymentId"))
+    const resolved = await resolveOpenClawSshTarget({
+      userId: session.user.id,
+      stationKey: stationKeyRaw,
+      requestedShipDeploymentId,
+    })
+    if (resolved.ok === false) {
+      sendRuntimeSshEvent(downstream, {
+        type: "error",
+        detail: resolved.detail,
+        code: resolved.code,
+        suggestedActions: resolved.suggestedActions,
+      })
+      closeDownstream(1008, resolved.detail)
+      return
+    }
+
+    sendRuntimeSshEvent(downstream, {
+      type: "status",
+      state: "connecting",
+      detail: `Connecting via ${resolved.target.strategy}...`,
+      strategy: resolved.target.strategy,
+    })
+
+    const useLocalKubectl = resolved.target.strategy === "local_kubernetes_exec"
+    let command = "kubectl"
+    let commandArgs: string[] = [
+      "-n",
+      resolved.target.namespace,
+      "exec",
+      "-it",
+      `deployment/openclaw-${resolved.target.stationKey}`,
+      "--",
+      "/bin/sh",
+      "-lc",
+      [
+        "mkdir -p /tmp/owz-bin",
+        "cat > /tmp/owz-bin/openclaw <<'OWZEOF'",
+        "#!/bin/sh",
+        "exec node /app/openclaw.mjs \"$@\"",
+        "OWZEOF",
+        "chmod +x /tmp/owz-bin/openclaw",
+        "export PATH=\"/tmp/owz-bin:/usr/local/bin:/usr/bin:/bin\"",
+        `export OPENCLAW_GATEWAY_URL="\${OPENCLAW_GATEWAY_URL:-ws://openclaw-${resolved.target.stationKey}:18789}"`,
+        "export OPENCLAW_GATEWAY_TOKEN=\"${OPENCLAW_GATEWAY_TOKEN:-}\"",
+        `export NO_PROXY="127.0.0.1,localhost,openclaw-${resolved.target.stationKey},.svc,\${NO_PROXY:-}"`,
+        "export no_proxy=\"$NO_PROXY\"",
+        "openclaw config set gateway.mode remote >/dev/null 2>&1 || true",
+        "openclaw config set gateway.remote.url \"$OPENCLAW_GATEWAY_URL\" >/dev/null 2>&1 || true",
+        "if [ -n \"${OPENCLAW_GATEWAY_TOKEN:-}\" ]; then openclaw config set gateway.remote.token \"$OPENCLAW_GATEWAY_TOKEN\" >/dev/null 2>&1 || true; fi",
+        "openclaw gateway probe >/dev/null 2>&1 || true",
+        "exec /bin/sh -i",
+      ].join("\n"),
+    ]
+    let connectedDetail = `Connected via local kubectl in namespace ${resolved.target.namespace} (openclaw shim enabled).`
+
+    if (!useLocalKubectl) {
+      if (
+        !resolved.target.sshHost
+        || !resolved.target.sshUser
+        || !resolved.target.privateKeyPem
+        || typeof resolved.target.sshPort !== "number"
+      ) {
+        sendRuntimeSshEvent(downstream, {
+          type: "error",
+          code: "SSH_TARGET_UNRESOLVED",
+          detail: "Resolved SSH target is missing host, user, port, or key material.",
+          suggestedActions: ["Re-run SSH preflight and verify ship SSH metadata and key configuration."],
+        })
+        closeDownstream(1008, "Resolved SSH target is incomplete.")
+        return
+      }
+
+      sshKeyDir = await fs.mkdtemp(path.join(tmpdir(), "owz-runtime-ssh-"))
+      const keyFilePath = path.join(sshKeyDir, "id_ed25519")
+      const knownHostsPath = path.join(sshKeyDir, "known_hosts")
+      await fs.writeFile(keyFilePath, `${resolved.target.privateKeyPem.trim()}\n`, "utf8")
+      await fs.chmod(keyFilePath, 0o600)
+      await fs.writeFile(knownHostsPath, "", "utf8")
+
+      command = "ssh"
+      commandArgs = [
+        "-tt",
+        "-i",
+        keyFilePath,
+        "-p",
+        String(resolved.target.sshPort),
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ServerAliveInterval=30",
+        "-o",
+        "ServerAliveCountMax=3",
+        "-o",
+        "StrictHostKeyChecking=accept-new",
+        "-o",
+        `UserKnownHostsFile=${knownHostsPath}`,
+        `${resolved.target.sshUser}@${resolved.target.sshHost}`,
+        resolved.target.remoteCommand,
+      ]
+      connectedDetail = `Connected to ${resolved.target.sshUser}@${resolved.target.sshHost}.`
+    }
+
+    log("tty spawn", {
+      stationKey: stationKeyRaw,
+      shipDeploymentId: resolved.target.shipDeploymentId,
+      strategy: resolved.target.strategy,
+      commandPreview: resolved.target.commandPreview,
+    })
+
+    try {
+      ttyProcess = ptySpawn(command, commandArgs, {
+        cols: 120,
+        rows: 32,
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          TERM: process.env.TERM || "xterm-256color",
+        },
+      })
+    } catch (error) {
+      sendRuntimeSshEvent(downstream, {
+        type: "error",
+        detail: error instanceof Error && error.message ? error.message : "TTY process failed to start.",
+      })
+      closeDownstream(1011, "TTY process failed.")
+      void cleanup()
+      return
+    }
+
+    sendRuntimeSshEvent(downstream, {
+      type: "status",
+      state: "connected",
+      detail: connectedDetail,
+    })
+
+    ttyProcess.onData((chunk) => {
+      if (downstream.readyState !== WebSocket.OPEN) {
+        return
+      }
+      downstream.send(chunk)
+    })
+
+    ttyProcess.onExit((event) => {
+      ttyExited = true
+      sendRuntimeSshEvent(downstream, {
+        type: "status",
+        state: "closed",
+        detail: event.signal
+          ? `TTY session ended (signal ${event.signal}).`
+          : `TTY session ended (code ${event.exitCode ?? 0}).`,
+      })
+      closeDownstream(1000, "TTY session ended.")
+      void cleanup()
+    })
+
+    downstream.on("message", (data) => {
+      const text = rawDataToUtf8(data)
+      if (!ttyProcess || ttyExited) {
+        return
+      }
+
+      const trimmed = text.trim()
+      if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+        try {
+          const payload = JSON.parse(trimmed) as Record<string, unknown>
+          const type = asString(payload.type)
+          if (type === "disconnect") {
+            closeDownstream(1000, "Client requested disconnect.")
+            void cleanup()
+            return
+          }
+          if (type === "resize") {
+            const parsedCols = parseNumber(payload.cols)
+            const parsedRows = parseNumber(payload.rows)
+            const cols = Math.max(20, Math.min(400, Math.floor(parsedCols ?? 80)))
+            const rows = Math.max(10, Math.min(200, Math.floor(parsedRows ?? 24)))
+            ttyProcess.resize(cols, rows)
+            return
+          }
+          if (type === "input") {
+            const input = typeof payload.data === "string" ? payload.data : ""
+            if (input.length > 0) {
+              ttyProcess.write(input)
+            }
+            return
+          }
+        } catch {
+          // Fall through to raw input handling.
+        }
+      }
+
+      if (text.length > 0) {
+        ttyProcess.write(text)
+      }
+    })
+
+    const ttlMs = Math.max(
+      60_000,
+      parseNumber(process.env.ORCHWIZ_BRIDGE_SSH_TTY_MAX_SESSION_MS) ?? 30 * 60 * 1000,
+    )
+    ttlTimer = setTimeout(() => {
+      sendRuntimeSshEvent(downstream, {
+        type: "error",
+        detail: "TTY session reached max lifetime and was closed.",
+      })
+      closeDownstream(1000, "TTY session expired.")
+      void cleanup()
+    }, ttlMs)
+    ttlTimer.unref?.()
+  } catch (error) {
+    console.error("Runtime SSH websocket proxy failed:", error)
+    sendRuntimeSshEvent(downstream, {
+      type: "error",
+      detail: "Runtime SSH websocket proxy failed.",
+    })
+    closeDownstream(1011, "Runtime SSH websocket proxy failed.")
+    void cleanup()
+  }
 }
 
 async function handleRuntimeUiWsProxyConnection(downstream: WebSocket, req: http.IncomingMessage) {
@@ -684,7 +1140,7 @@ async function handleRuntimeUiWsProxyConnection(downstream: WebSocket, req: http
 
   try {
     const requestUrl = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`)
-    const stationKeyRaw = extractStationKeyFromWsPath(requestUrl.pathname)
+    const stationKeyRaw = extractRuntimeUiStationKeyFromWsPath(requestUrl.pathname)
     if (!stationKeyRaw || !isBridgeStationKey(stationKeyRaw)) {
       downstream.close(1008, "Unknown station key.")
       return
@@ -722,15 +1178,55 @@ async function handleRuntimeUiWsProxyConnection(downstream: WebSocket, req: http
       return
     }
 
-    const upstreamWsUrl = wsUrlForHttpUrl(resolvedRuntime.href)
+    const metadataRuntimeUiUrl = resolveRuntimeUiGatewayBaseFromMetadata({
+      metadata: selectedShip.metadata,
+      stationKey: stationKeyRaw,
+    })
+    const runningInKubernetes = asString(process.env.KUBERNETES_SERVICE_HOST) !== null
+    const metadataRuntimeUiUrlIsLoopback = metadataRuntimeUiUrl ? isLoopbackOrLocalhostUrl(metadataRuntimeUiUrl) : false
+    const upstreamBaseUrl =
+      metadataRuntimeUiUrl && (!runningInKubernetes || !metadataRuntimeUiUrlIsLoopback)
+        ? metadataRuntimeUiUrl
+        : resolvedRuntime.href
+
+    const directTerminalPassthrough = resolveWsDirectTerminalPassthrough(requestUrl)
+    const useDownstreamOriginPassthrough = directTerminalPassthrough
+
+    let upstreamWsUrl = wsUrlForHttpUrl(upstreamBaseUrl)
     if (!upstreamWsUrl) {
-      log("close invalid upstream ws url", { href: resolvedRuntime.href })
+      log("close invalid upstream ws url", { href: upstreamBaseUrl })
       downstream.close(1011, "Runtime UI upstream websocket URL is invalid.")
       return
     }
 
-    const upstreamOrigin = originForHttpUrl(resolvedRuntime.href) || undefined
-    log("upstream", { upstreamWsUrl, upstreamOrigin, source: resolvedRuntime.source })
+    if (metadataRuntimeUiUrl && upstreamBaseUrl === metadataRuntimeUiUrl && useDownstreamOriginPassthrough) {
+      upstreamWsUrl = appendUrlQueryParam(upstreamWsUrl, "directWs", "1")
+    }
+
+    const downstreamOrigin = asString(firstHeaderValue(req.headers.origin))
+    const upstreamOrigin = (() => {
+      if (useDownstreamOriginPassthrough) {
+        if (!downstreamOrigin) {
+          return undefined
+        }
+        try {
+          return new URL(downstreamOrigin).origin
+        } catch {
+          return undefined
+        }
+      }
+      return originForHttpUrl(metadataRuntimeUiUrl || upstreamBaseUrl) || undefined
+    })()
+    log("upstream", {
+      upstreamWsUrl,
+      upstreamOrigin,
+      source: resolvedRuntime.source,
+      upstreamBaseUrl,
+      metadataRuntimeUiUrl,
+      directTerminalPassthrough,
+      useDownstreamOriginPassthrough,
+      downstreamOrigin,
+    })
 
     upstream = new WebSocket(upstreamWsUrl, {
       perMessageDeflate: false,
@@ -794,15 +1290,86 @@ async function main() {
   const wss = new WebSocketServer({ noServer: true })
 
   wss.on("connection", (downstream, req) => {
+    try {
+      const requestUrl = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`)
+      const runtimeSshStationKey = extractRuntimeSshStationKeyFromWsPath(requestUrl.pathname)
+      if (runtimeSshStationKey) {
+        void handleRuntimeSshWsProxyConnection(downstream, req)
+        return
+      }
+    } catch {
+      // Fall through to runtime-ui handler; it will fail with a websocket close if needed.
+    }
+
     void handleRuntimeUiWsProxyConnection(downstream, req)
   })
 
   await app.prepare()
   nextUpgradeHandler = (app as any).getUpgradeHandler?.()
+  const configuredMetricsToken = resolveConfiguredMetricsToken(
+    process.env.PROMETHEUS_METRICS_BEARER_TOKEN || process.env.ORCHWIZ_METRICS_BEARER_TOKEN,
+  )
+  const requireMetricsAuth = shouldRequireMetricsAuth({
+    nodeEnv: process.env.NODE_ENV,
+    configuredToken: configuredMetricsToken,
+  })
 
   const server = http.createServer((req, res) => {
+    const requestUrl = parseRequestUrl(req)
+    const finishMetricsRequest = observeHttpRequest({
+      service: "app",
+      method: req.method || "GET",
+      pathname: requestUrl?.pathname || "/",
+    })
+    let metricsFinished = false
+    const completeMetricsRequest = (statusCode: number) => {
+      if (metricsFinished) {
+        return
+      }
+      metricsFinished = true
+      finishMetricsRequest(statusCode)
+    }
+    res.once("finish", () => {
+      completeMetricsRequest(res.statusCode)
+    })
+    res.once("close", () => {
+      completeMetricsRequest(res.writableEnded ? res.statusCode : 499)
+    })
+
     void (async () => {
       try {
+        if (requestUrl?.pathname === "/metrics") {
+          const method = (req.method || "GET").toUpperCase()
+          if (method !== "GET" && method !== "HEAD") {
+            res.statusCode = 405
+            res.setHeader("Allow", "GET, HEAD")
+            res.setHeader("Content-Type", "text/plain; charset=utf-8")
+            res.end("Method Not Allowed\n")
+            return
+          }
+
+          const authorized = isMetricsRequestAuthorized({
+            authorizationHeader: firstHeaderValue(req.headers.authorization),
+            configuredToken: configuredMetricsToken,
+            authRequired: requireMetricsAuth,
+          })
+          if (!authorized) {
+            res.statusCode = 401
+            res.setHeader("WWW-Authenticate", "Bearer")
+            res.setHeader("Content-Type", "text/plain; charset=utf-8")
+            res.end("Unauthorized\n")
+            return
+          }
+
+          recordNodeRuntimeSignals({ service: "app" })
+          const metrics = await renderPrometheusMetrics()
+          res.statusCode = 200
+          res.setHeader("Cache-Control", "no-store")
+          res.setHeader("Content-Type", metrics.contentType)
+          res.end(method === "HEAD" ? "" : metrics.body)
+          return
+        }
+
         if (await maybeHandleMissingDesktopDownload(req, res)) {
           return
         }
@@ -821,7 +1388,9 @@ async function main() {
   server.on("upgrade", (req, socket, head) => {
     try {
       const requestUrl = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`)
-      const stationKeyRaw = extractStationKeyFromWsPath(requestUrl.pathname)
+      const runtimeUiStationKeyRaw = extractRuntimeUiStationKeyFromWsPath(requestUrl.pathname)
+      const runtimeSshStationKeyRaw = extractRuntimeSshStationKeyFromWsPath(requestUrl.pathname)
+      const stationKeyRaw = runtimeUiStationKeyRaw || runtimeSshStationKeyRaw
       if (!stationKeyRaw) {
         if (nextUpgradeHandler) {
           nextUpgradeHandler(req, socket, head)
@@ -840,8 +1409,8 @@ async function main() {
         wss.emit("connection", ws, req)
       })
     } catch (error) {
-      console.error("Runtime UI websocket proxy failed:", error)
-      socketHttpError(socket, 500, "Runtime UI websocket proxy failed.")
+      console.error("Runtime websocket proxy failed:", error)
+      socketHttpError(socket, 500, "Runtime websocket proxy failed.")
     }
   })
 

@@ -293,3 +293,45 @@ test("provider-proxy enforces streaming concurrency limits when enabled", async 
     },
   )
 })
+
+test("provider-proxy /metrics requires bearer token when configured", async () => {
+  resetStreamLimiterState()
+  const restoreMetricsToken = withEnv("PROMETHEUS_METRICS_BEARER_TOKEN", "metrics-secret")
+  const { baseUrl, close } = await listen()
+
+  try {
+    const unauthorized = await fetch(`${baseUrl}/metrics`)
+    assert.equal(unauthorized.status, 401)
+    assert.equal(unauthorized.headers.get("www-authenticate"), "Bearer")
+  } finally {
+    await close()
+    restoreMetricsToken()
+  }
+})
+
+test("provider-proxy /metrics returns Prometheus text format when authorized", async () => {
+  resetStreamLimiterState()
+  const restoreMetricsToken = withEnv("PROMETHEUS_METRICS_BEARER_TOKEN", "metrics-secret")
+  const { baseUrl, close } = await listen()
+
+  try {
+    const health = await fetch(`${baseUrl}/health`)
+    assert.equal(health.status, 200)
+
+    const metrics = await fetch(`${baseUrl}/metrics`, {
+      headers: {
+        Authorization: "Bearer metrics-secret",
+      },
+    })
+
+    assert.equal(metrics.status, 200)
+    assert.match(metrics.headers.get("content-type") || "", /text\/plain/i)
+    const body = await metrics.text()
+    assert.match(body, /orchwiz_http_requests_total/)
+    assert.match(body, /service="provider-proxy"/)
+    assert.match(body, /orchwiz_runtime_cpu_percent/)
+  } finally {
+    await close()
+    restoreMetricsToken()
+  }
+})

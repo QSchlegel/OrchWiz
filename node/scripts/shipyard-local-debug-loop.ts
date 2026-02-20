@@ -532,12 +532,12 @@ async function printInspectionReadout(args: {
       }
     }
 
+    type FailingPod = NonNullable<
+      NonNullable<NonNullable<InspectionResponse["diagnostics"]>["kubernetes"]>["failingPods"]
+    >[number]
     const failingPods = Array.isArray(inspection.json.diagnostics?.kubernetes?.failingPods)
       ? inspection.json.diagnostics?.kubernetes?.failingPods
-          .filter(
-            (pod): pod is NonNullable<NonNullable<InspectionResponse["diagnostics"]>["kubernetes"]>["failingPods"][number] =>
-              typeof pod?.name === "string" && pod.name.trim().length > 0,
-          )
+          .filter((pod): pod is FailingPod => typeof pod?.name === "string" && pod.name.trim().length > 0)
           .slice(0, 4)
       : []
     if (failingPods.length > 0) {

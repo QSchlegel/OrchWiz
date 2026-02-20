@@ -182,8 +182,8 @@ test("handleGetBridgeState marks missing monitoring URLs as warnings", async () 
   assert.equal(monitoring.prometheus.state, "warning")
   assert.match(String(monitoring.prometheus.detail), /Set Prometheus URL/i)
   assert.equal(monitoring.kubeview.state, "nominal")
-  assert.match(String(monitoring.kubeview.detail), /direct ship runtime ui/i)
-  assert.equal(monitoring.kubeview.href, "http://localhost:3100/kubeview")
+  assert.match(String(monitoring.kubeview.detail), /bridge proxy/i)
+  assert.equal(monitoring.kubeview.href, "/api/bridge/runtime-ui/kubeview?shipDeploymentId=ship-1")
 })
 
 test("handleGetBridgeState marks observability services as disabled when terraform metadata disables them", async () => {
@@ -272,6 +272,29 @@ test("handleGetBridgeState exposes langfuse monitoring card when LANGFUSE_BASE_U
       assert.equal(langfuse.service, "langfuse")
       assert.equal(langfuse.state, "nominal")
       assert.equal(langfuse.href, "https://langfuse.example.com")
+    },
+  )
+})
+
+test("handleGetBridgeState normalizes runtime-edge root LANGFUSE_BASE_URL for bridge cards", async () => {
+  await withEnv(
+    {
+      LANGFUSE_BASE_URL: "http://127.0.0.1:3100",
+    },
+    async () => {
+      const response = await handleGetBridgeState(
+        requestFor("http://localhost/api/bridge/state"),
+        createBaseDeps() as any,
+      )
+
+      assert.equal(response.status, 200)
+      const payload = (await response.json()) as Record<string, unknown>
+      const monitoring = payload.monitoring as Record<string, Record<string, unknown>>
+      const langfuse = monitoring.langfuse
+
+      assert.equal(langfuse.service, "langfuse")
+      assert.equal(langfuse.state, "nominal")
+      assert.equal(langfuse.href, "http://127.0.0.1:3100/langfuse")
     },
   )
 })
@@ -448,7 +471,7 @@ test("handleGetBridgeState uses hydrated runtimeUi metadata when legacy ships ar
   const payload = (await response.json()) as Record<string, unknown>
 
   const monitoring = payload.monitoring as Record<string, Record<string, unknown>>
-  assert.equal(monitoring.kubeview.href, "http://localhost:3100/kubeview")
+  assert.equal(monitoring.kubeview.href, "/api/bridge/runtime-ui/kubeview?shipDeploymentId=ship-1")
 
   const runtimeUi = payload.runtimeUi as Record<string, Record<string, unknown>>
   const openclaw = runtimeUi.openclaw
@@ -502,8 +525,11 @@ test("handleGetBridgeState rewrites loopback runtimeUi links to the current requ
       assert.equal(response.status, 200)
       const payload = (await response.json()) as Record<string, unknown>
       const monitoring = payload.monitoring as Record<string, Record<string, unknown>>
-      assert.equal(monitoring.kubeview.href, "http://127.0.0.1:3100/kubeview")
-      assert.equal(monitoring.grafana.href, "http://127.0.0.1:3100/grafana")
+      assert.equal(monitoring.kubeview.href, "/api/bridge/runtime-ui/kubeview?shipDeploymentId=ship-1")
+      assert.equal(
+        monitoring.grafana.href,
+        "http://127.0.0.1:3100/grafana/d/ship-oncall-cc/ship-on-call-command-center?orgId=1",
+      )
       assert.equal(monitoring.prometheus.href, "http://127.0.0.1:3100/prometheus")
       assert.equal(monitoring.langfuse.href, "http://127.0.0.1:3100/langfuse")
 
@@ -554,7 +580,7 @@ test("handleGetBridgeState rewrites configured loopback monitoring links to the 
       const monitoring = payload.monitoring as Record<string, Record<string, unknown>>
       assert.equal(monitoring.grafana.href, "http://127.0.0.1:3100/grafana")
       assert.equal(monitoring.prometheus.href, "http://127.0.0.1:3100/prometheus")
-      assert.equal(monitoring.kubeview.href, "http://127.0.0.1:3100/kubeview")
+      assert.equal(monitoring.kubeview.href, "/api/bridge/runtime-ui/kubeview?shipDeploymentId=ship-1")
       assert.equal(monitoring.langfuse.href, "http://127.0.0.1:3100/langfuse")
     },
   )
@@ -597,8 +623,78 @@ test("handleGetBridgeState derives grafana and prometheus proxy links from confi
       assert.equal(response.status, 200)
       const payload = (await response.json()) as Record<string, unknown>
       const monitoring = payload.monitoring as Record<string, Record<string, unknown>>
-      assert.equal(monitoring.grafana.href, "/api/bridge/runtime-ui/grafana")
+      assert.equal(
+        monitoring.grafana.href,
+        "/api/bridge/runtime-ui/grafana/d/ship-oncall-cc/ship-on-call-command-center?orgId=1",
+      )
       assert.equal(monitoring.prometheus.href, "/api/bridge/runtime-ui/prometheus")
     },
+  )
+})
+
+test("handleGetBridgeState preserves proxy grafana dashboard suffix when runtime UI href is derived", async () => {
+  const response = await handleGetBridgeState(
+    requestFor("http://localhost/api/bridge/state"),
+    createBaseDeps({
+      findSelectedShipMonitoring: async () => ({
+        id: "ship-1",
+        status: "active",
+        deploymentProfile: "local_starship_build",
+        config: {
+          monitoring: {
+            grafanaUrl: "/api/bridge/runtime-ui/grafana/d/custom-uid/custom-dashboard?orgId=2&from=now-6h",
+            prometheusUrl: "/api/bridge/runtime-ui/prometheus",
+            kubeviewUrl: "/api/bridge/runtime-ui/kubeview",
+          },
+        },
+        metadata: {
+          runtimeUi: {
+            kubeview: {
+              source: "terraform_output",
+              url: "http://localhost:3100/kubeview",
+            },
+          },
+        },
+      }),
+    }) as any,
+  )
+
+  assert.equal(response.status, 200)
+  const payload = (await response.json()) as Record<string, unknown>
+  const monitoring = payload.monitoring as Record<string, Record<string, unknown>>
+  assert.equal(
+    monitoring.grafana.href,
+    "http://localhost:3100/grafana/d/custom-uid/custom-dashboard?orgId=2&from=now-6h",
+  )
+})
+
+test("handleGetBridgeState treats legacy grafana proxy base with trailing slash as overview deep link", async () => {
+  const response = await handleGetBridgeState(
+    requestFor("http://localhost/api/bridge/state"),
+    createBaseDeps({
+      findSelectedShipMonitoring: async () => ({
+        id: "ship-1",
+        status: "active",
+        deploymentProfile: "local_starship_build",
+        config: {
+          monitoring: {
+            grafanaUrl: "/api/bridge/runtime-ui/grafana/",
+            prometheusUrl: "/api/bridge/runtime-ui/prometheus",
+            kubeviewUrl: "",
+          },
+        },
+        metadata: {
+          runtimeUi: {},
+        },
+      }),
+    }) as any,
+  )
+
+  assert.equal(response.status, 200)
+  const payload = (await response.json()) as Record<string, unknown>
+  const monitoring = payload.monitoring as Record<string, Record<string, unknown>>
+  assert.equal(
+    monitoring.grafana.href,
+    "/api/bridge/runtime-ui/grafana/d/ship-oncall-cc/ship-on-call-command-center?orgId=1&shipDeploymentId=ship-1",
   )
 })

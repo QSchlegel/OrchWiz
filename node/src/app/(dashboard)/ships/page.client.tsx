@@ -32,6 +32,10 @@ import {
 } from "lucide-react"
 import { NodeInfoCard } from "@/components/orchestration/NodeInfoCard"
 import { ShipToolsPanel } from "@/components/shipyard/ShipToolsPanel"
+import {
+  ShipLaunchDebugLogPanel,
+  type LaunchLogLine,
+} from "@/components/shipyard/ShipLaunchDebugLogPanel"
 import { useEventStream } from "@/lib/realtime/useEventStream"
 import { SHIP_MONITORING_DEFAULTS } from "@/lib/shipyard/monitoring"
 import {
@@ -202,6 +206,21 @@ interface DeploymentWithInfra extends Deployment {
   infrastructure: InfrastructureConfig | null
 }
 
+interface DeployLiveProgressState {
+  percent: number
+  stage: string
+  message: string
+  updatedAt: string
+}
+
+interface DeployProgressSnapshot {
+  percent: number
+  stage: string
+  message: string
+  updatedAt: string
+  tone: "active" | "inflight" | "failed"
+}
+
 // ---------------------------------------------------------------------------
 // Visual configuration
 // ---------------------------------------------------------------------------
@@ -219,6 +238,214 @@ const nodeTypeCfg = {
   cloud: { icon: Cloud, label: "Cloud", color: "text-sky-600 dark:text-blue-400", bg: "bg-sky-500/12 dark:bg-blue-500/15", border: "border-sky-500/20 dark:border-blue-500/30" },
   hybrid: { icon: Network, label: "Hybrid", color: "text-pink-600 dark:text-pink-400", bg: "bg-pink-500/12 dark:bg-pink-500/15", border: "border-pink-500/20 dark:border-pink-500/30" },
 } as const
+
+const deployStatusProgress: Record<Deployment["status"], number> = {
+  pending: 8,
+  deploying: 48,
+  updating: 76,
+  active: 100,
+  inactive: 0,
+  failed: 100,
+}
+
+const deployStatusMessage: Record<Deployment["status"], string> = {
+  pending: "Queued for deployment",
+  deploying: "Provisioning infrastructure",
+  updating: "Applying updates",
+  active: "Deployment ready",
+  inactive: "Deployment stopped",
+  failed: "Deployment failed",
+}
+
+const MAX_DEPLOY_LIVE_LOG_LINES = 500
+
+function asObjectRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null
+  }
+  return value as Record<string, unknown>
+}
+
+function asNonEmptyString(value: unknown): string | null {
+  if (typeof value !== "string") return null
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : null
+}
+
+function asStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .filter((entry): entry is string => typeof entry === "string")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0)
+}
+
+function clampPercent(value: number): number {
+  if (!Number.isFinite(value)) return 0
+  return Math.max(0, Math.min(100, Math.round(value)))
+}
+
+function splitNonEmptyLines(value: string): string[] {
+  return value
+    .split(/\r?\n/u)
+    .map((line) => line.trimEnd())
+    .filter((line) => line.trim().length > 0)
+}
+
+function normalizeLaunchLogLevel(value: unknown): LaunchLogLine["level"] {
+  if (value === "debug" || value === "warn" || value === "error") {
+    return value
+  }
+  return "info"
+}
+
+function buildMetadataLaunchLogLines(ship: DeploymentWithInfra): LaunchLogLine[] {
+  const metadata = asObjectRecord(ship.metadata)
+  if (!metadata) return []
+
+  const timestamp = ship.lastHealthCheck || ship.deployedAt || ship.createdAt || new Date().toISOString()
+  const lines: LaunchLogLine[] = []
+  const seen = new Set<string>()
+
+  const pushLine = (args: { text: string; level?: LaunchLogLine["level"]; source?: string }) => {
+    const text = args.text.trim()
+    if (!text) return
+    const level = args.level || "info"
+    const source = args.source || "ship-yard"
+    const dedupeKey = `${level}|${source}|${text}`
+    if (seen.has(dedupeKey)) return
+    seen.add(dedupeKey)
+    lines.push({
+      key: `meta-${ship.id}-${lines.length}`,
+      timestamp,
+      level,
+      source,
+      text,
+    })
+  }
+
+  const deploymentErrorCode = asNonEmptyString(metadata.deploymentErrorCode)
+  if (deploymentErrorCode) {
+    pushLine({
+      level: "error",
+      source: "ship-yard",
+      text: `Error code: ${deploymentErrorCode}`,
+    })
+  }
+
+  const deploymentError = asNonEmptyString(metadata.deploymentError)
+  if (deploymentError) {
+    pushLine({
+      level: "error",
+      source: "ship-yard",
+      text: deploymentError,
+    })
+  }
+
+  const deploymentErrorDetails = asObjectRecord(metadata.deploymentErrorDetails)
+  const suggestedCommands = asStringArray(deploymentErrorDetails?.suggestedCommands)
+  for (const command of suggestedCommands.slice(0, 16)) {
+    pushLine({
+      level: "warn",
+      source: "ship-yard",
+      text: `suggested: ${command}`,
+    })
+  }
+
+  const missingCommands = asStringArray(deploymentErrorDetails?.missingCommands)
+  if (missingCommands.length > 0) {
+    pushLine({
+      level: "warn",
+      source: "local-bootstrap",
+      text: `Missing tools: ${missingCommands.join(", ")}`,
+    })
+  }
+
+  const missingFiles = asStringArray(deploymentErrorDetails?.missingFiles)
+  if (missingFiles.length > 0) {
+    pushLine({
+      level: "warn",
+      source: "local-bootstrap",
+      text: `Missing files: ${missingFiles.join(", ")}`,
+    })
+  }
+
+  const mode = asNonEmptyString(metadata.mode)
+  if (mode) {
+    pushLine({
+      level: "debug",
+      source: "deployment-adapter",
+      text: `Mode: ${mode}`,
+    })
+  }
+
+  const connectorUrl = asNonEmptyString(metadata.connectorUrl)
+  if (connectorUrl) {
+    pushLine({
+      level: "debug",
+      source: "deployment-adapter",
+      text: `Connector URL: ${connectorUrl}`,
+    })
+  }
+
+  const endpoint = asNonEmptyString(metadata.endpoint)
+  if (endpoint) {
+    pushLine({
+      level: "debug",
+      source: "deployment-adapter",
+      text: `Connector endpoint: ${endpoint}`,
+    })
+  }
+
+  for (const command of asStringArray(metadata.commands).slice(0, 20)) {
+    pushLine({
+      level: "info",
+      source: "ship-yard",
+      text: `$ ${command}`,
+    })
+  }
+
+  const clusterReadyCheck = asNonEmptyString(metadata.clusterReadyCheck)
+  if (clusterReadyCheck) {
+    for (const line of splitNonEmptyLines(clusterReadyCheck).slice(-20)) {
+      pushLine({
+        level: "debug",
+        source: "local-bootstrap",
+        text: line,
+      })
+    }
+  }
+
+  return lines.slice(-60)
+}
+
+function resolveDeployProgressSnapshot(
+  ship: DeploymentWithInfra,
+  liveState: DeployLiveProgressState | null,
+): DeployProgressSnapshot {
+  const statusPercent = deployStatusProgress[ship.status]
+  const livePercent = liveState ? clampPercent(liveState.percent) : null
+  const percent =
+    ship.status === "active" || ship.status === "failed"
+      ? 100
+      : livePercent == null
+        ? statusPercent
+        : Math.max(statusPercent, livePercent)
+
+  const deploymentError = asNonEmptyString(asObjectRecord(ship.metadata)?.deploymentError)
+  const statusMessage = ship.status === "failed" && deploymentError
+    ? deploymentError
+    : deployStatusMessage[ship.status]
+  const message = liveState?.message || statusMessage
+
+  return {
+    percent,
+    stage: liveState?.stage || ship.status,
+    message,
+    updatedAt: liveState?.updatedAt || ship.lastHealthCheck || ship.deployedAt || ship.createdAt,
+    tone: ship.status === "failed" ? "failed" : ship.status === "active" ? "active" : "inflight",
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Formatters
@@ -297,6 +524,8 @@ export default function ShipsPage() {
   const [copied, setCopied] = useState(false)
   const [wizardStep, setWizardStep] = useState<1 | 2 | 3>(1)
   const [pendingAction, setPendingAction] = useState<string | null>(null)
+  const [liveDeployProgressByShipId, setLiveDeployProgressByShipId] = useState<Record<string, DeployLiveProgressState>>({})
+  const [liveDeployLogsByShipId, setLiveDeployLogsByShipId] = useState<Record<string, LaunchLogLine[]>>({})
 
   const [form, setForm] = useState<DeploymentFormData>({
     name: "", description: "", subagentId: "", nodeId: "",
@@ -346,6 +575,96 @@ export default function ShipsPage() {
     }
   }, [])
 
+  const appendLiveDeployLogs = useCallback((shipId: string, incoming: LaunchLogLine[]) => {
+    if (incoming.length === 0) return
+    setLiveDeployLogsByShipId((current) => {
+      const existing = current[shipId] || []
+      const base = existing.filter((line) => line.key !== `deploy-log-truncated-${shipId}`)
+      const next = [...base]
+
+      for (const entry of incoming) {
+        const normalizedText = entry.text.trim()
+        if (!normalizedText) {
+          continue
+        }
+        const normalizedEntry: LaunchLogLine = {
+          ...entry,
+          text: normalizedText,
+        }
+        const last = next[next.length - 1]
+        if (
+          last
+          && last.text === normalizedEntry.text
+          && last.level === normalizedEntry.level
+          && last.source === normalizedEntry.source
+          && last.stream === normalizedEntry.stream
+        ) {
+          continue
+        }
+        next.push(normalizedEntry)
+      }
+
+      if (next.length > MAX_DEPLOY_LIVE_LOG_LINES) {
+        const trimmed = next.slice(next.length - MAX_DEPLOY_LIVE_LOG_LINES)
+        const truncatedLine: LaunchLogLine = {
+          key: `deploy-log-truncated-${shipId}`,
+          timestamp: new Date().toISOString(),
+          level: "info",
+          source: "ship-yard",
+          text: `... truncated (showing last ${MAX_DEPLOY_LIVE_LOG_LINES} lines) ...`,
+        }
+        return {
+          ...current,
+          [shipId]: [truncatedLine, ...trimmed],
+        }
+      }
+
+      return {
+        ...current,
+        [shipId]: next,
+      }
+    })
+  }, [])
+
+  const updateLiveDeployProgress = useCallback((args: {
+    shipId: string
+    percent?: number | null
+    stage?: string | null
+    message?: string | null
+    updatedAt?: string | null
+  }) => {
+    setLiveDeployProgressByShipId((current) => {
+      const existing = current[args.shipId]
+      const nextPercent = args.percent == null
+        ? existing?.percent ?? 0
+        : Math.max(existing?.percent ?? 0, clampPercent(args.percent))
+      const nextStage = args.stage?.trim() || existing?.stage || ""
+      const nextMessage = args.message?.trim() || existing?.message || ""
+      const nextUpdatedAt = args.updatedAt || existing?.updatedAt || new Date().toISOString()
+
+      return {
+        ...current,
+        [args.shipId]: {
+          percent: nextPercent,
+          stage: nextStage,
+          message: nextMessage,
+          updatedAt: nextUpdatedAt,
+        },
+      }
+    })
+  }, [])
+
+  const clearLiveDeployLogs = useCallback((shipId: string) => {
+    setLiveDeployLogsByShipId((current) => {
+      if (!(shipId in current)) {
+        return current
+      }
+      const next = { ...current }
+      delete next[shipId]
+      return next
+    })
+  }, [])
+
   // ── Fetching ──────────────────────────────────────────────────────────
   useEffect(() => { fetchDeployments() }, [])
   useEffect(() => {
@@ -380,7 +699,14 @@ export default function ShipsPage() {
 
   useEventStream({
     enabled: true,
-    types: ["ship.updated", "deployment.updated", "forwarding.received", RUNTIME_NODE_METRICS_EVENT_TYPE],
+    types: [
+      "ship.updated",
+      "deployment.updated",
+      "ship.launch.progress",
+      "ship.launch.log",
+      "forwarding.received",
+      RUNTIME_NODE_METRICS_EVENT_TYPE,
+    ],
     onEvent: (event) => {
       if (event.type === RUNTIME_NODE_METRICS_EVENT_TYPE) {
         const parsedMetrics = parseRuntimeNodeMetricsPayload(event.payload)
@@ -389,6 +715,84 @@ export default function ShipsPage() {
         }
         return
       }
+
+      if (event.type === "ship.launch.progress") {
+        const payload = asObjectRecord(event.payload)
+        const deploymentId = asNonEmptyString(payload?.deploymentId)
+        if (!deploymentId) {
+          return
+        }
+
+        const percentRaw = payload?.percent
+        const percent = typeof percentRaw === "number" && Number.isFinite(percentRaw)
+          ? percentRaw
+          : null
+        const stage = asNonEmptyString(payload?.stage)
+        const message = asNonEmptyString(payload?.message)
+
+        updateLiveDeployProgress({
+          shipId: deploymentId,
+          percent,
+          stage,
+          message,
+          updatedAt: event.timestamp,
+        })
+
+        if (message) {
+          appendLiveDeployLogs(deploymentId, [{
+            key: `deploy-progress-${event.id}`,
+            timestamp: event.timestamp,
+            level: "info",
+            source: "ship-yard",
+            text: message,
+          }])
+        }
+
+        if (percent != null && percent >= 100) {
+          fetchDeployments()
+          fetchRuntime()
+        }
+        return
+      }
+
+      if (event.type === "ship.launch.log") {
+        const payload = asObjectRecord(event.payload)
+        const deploymentId = asNonEmptyString(payload?.deploymentId)
+        if (!deploymentId) {
+          return
+        }
+
+        const lines = Array.isArray(payload?.lines)
+          ? payload.lines
+            .filter((line): line is string => typeof line === "string")
+            .map((line) => line.trimEnd())
+            .filter((line) => line.trim().length > 0)
+          : []
+        if (lines.length === 0) {
+          return
+        }
+
+        const level = normalizeLaunchLogLevel(payload?.level)
+        const source = asNonEmptyString(payload?.source) || "ship-yard"
+        const streamRaw = asNonEmptyString(payload?.stream)
+        const stream = streamRaw === "stdout" || streamRaw === "stderr"
+          ? streamRaw
+          : undefined
+
+        appendLiveDeployLogs(
+          deploymentId,
+          lines.map((line, index) => ({
+            key: `deploy-log-${event.id}-${index}`,
+            timestamp: event.timestamp,
+            level,
+            source,
+            ...(stream ? { stream } : {}),
+            text: line,
+          })),
+        )
+        return
+      }
+
       fetchDeployments()
       fetchRuntime()
     },
@@ -531,6 +935,60 @@ export default function ShipsPage() {
   }), [withInfra, filtered.length])
 
   useEffect(() => {
+    setLiveDeployProgressByShipId((current) => {
+      let changed = false
+      const next = { ...current }
+      const activeIds = new Set(withInfra.map((ship) => ship.id))
+
+      for (const id of Object.keys(next)) {
+        if (!activeIds.has(id)) {
+          delete next[id]
+          changed = true
+        }
+      }
+
+      for (const ship of withInfra) {
+        if (ship.status !== "active" && ship.status !== "failed") {
+          continue
+        }
+        const existing = next[ship.id]
+        const targetMessage = deployStatusMessage[ship.status]
+        if (
+          existing
+          && existing.percent >= 100
+          && existing.message === targetMessage
+        ) {
+          continue
+        }
+        next[ship.id] = {
+          percent: 100,
+          stage: ship.status,
+          message: targetMessage,
+          updatedAt: ship.lastHealthCheck || ship.deployedAt || ship.createdAt,
+        }
+        changed = true
+      }
+
+      return changed ? next : current
+    })
+  }, [withInfra])
+
+  useEffect(() => {
+    setLiveDeployLogsByShipId((current) => {
+      const activeIds = new Set(withInfra.map((ship) => ship.id))
+      let changed = false
+      const next = { ...current }
+      for (const id of Object.keys(next)) {
+        if (!activeIds.has(id)) {
+          delete next[id]
+          changed = true
+        }
+      }
+      return changed ? next : current
+    })
+  }, [withInfra])
+
+  useEffect(() => {
     if (!selectedId) return
     if (!filtered.some(d => d.id === selectedId)) setSelectedId(filtered[0]?.id || null)
   }, [filtered, selectedId])
@@ -538,6 +996,16 @@ export default function ShipsPage() {
   const selected = useMemo<DeploymentWithInfra | null>(
     () => selectedId ? filtered.find(d => d.id === selectedId) || null : null,
     [filtered, selectedId],
+  )
+
+  const selectedLiveDeployProgress = useMemo(
+    () => selectedId ? liveDeployProgressByShipId[selectedId] || null : null,
+    [liveDeployProgressByShipId, selectedId],
+  )
+
+  const selectedLiveDeployLogs = useMemo(
+    () => selectedId ? liveDeployLogsByShipId[selectedId] || [] : [],
+    [liveDeployLogsByShipId, selectedId],
   )
 
   const hasFilters = !!(search || statusFilter !== "all" || infraFilter !== "all")
@@ -870,6 +1338,9 @@ export default function ShipsPage() {
                   kindCluster={selected.infrastructure?.kind === "kind" ? kindByCtx.get(selected.infrastructure.kubeContext) : undefined}
                   runtime={runtime}
                   runtimeMetrics={runtimeMetrics}
+                  liveDeployProgress={selectedLiveDeployProgress}
+                  liveDeployLogs={selectedLiveDeployLogs}
+                  onClearLiveDeployLogs={() => clearLiveDeployLogs(selected.id)}
                   onShipNotFound={handlePanelShipNotFound}
                 />
               </>
@@ -1211,7 +1682,7 @@ export default function ShipsPage() {
 // Detail Panel
 // ---------------------------------------------------------------------------
 function DetailPanel({
-  ship, tab, onTab, onStatus, onDelete, onCopy, copied, kindCluster, runtime, runtimeMetrics, onShipNotFound,
+  ship, tab, onTab, onStatus, onDelete, onCopy, copied, kindCluster, runtime, runtimeMetrics, liveDeployProgress, liveDeployLogs, onClearLiveDeployLogs, onShipNotFound,
 }: {
   ship: DeploymentWithInfra
   tab: DetailTab
@@ -1223,6 +1694,9 @@ function DetailPanel({
   kindCluster?: RuntimeSnapshot["kind"]["clusters"][number]
   runtime: RuntimeSnapshot | null
   runtimeMetrics: RuntimeNodeMetricsPayload | null
+  liveDeployProgress: DeployLiveProgressState | null
+  liveDeployLogs: LaunchLogLine[]
+  onClearLiveDeployLogs: () => void
   onShipNotFound?: (shipDeploymentId: string) => void | Promise<void>
 }) {
   const st = statusCfg[ship.status]
@@ -1232,6 +1706,87 @@ function DetailPanel({
 
   const missingCtx = ship.infrastructure?.kind === "kind" && !!ship.infrastructure.kubeContext && !!runtime && !kindCluster
   const stoppedCluster = !!kindCluster && kindCluster.totalNodeCount > 0 && kindCluster.runningNodeCount === 0
+  const [deployLogOpen, setDeployLogOpen] = useState(false)
+  const [deployLogAutoScroll, setDeployLogAutoScroll] = useState(true)
+  const [metadataLogsDismissed, setMetadataLogsDismissed] = useState(false)
+
+  const metadataDeployLogs = useMemo(
+    () => (metadataLogsDismissed ? [] : buildMetadataLaunchLogLines(ship)),
+    [metadataLogsDismissed, ship],
+  )
+  const deployLogLines = useMemo(
+    () => (liveDeployLogs.length > 0 ? liveDeployLogs : metadataDeployLogs),
+    [liveDeployLogs, metadataDeployLogs],
+  )
+  const deployProgress = useMemo(
+    () => resolveDeployProgressSnapshot(ship, liveDeployProgress),
+    [liveDeployProgress, ship],
+  )
+  const showDeployTelemetry = useMemo(
+    () => (
+      ship.status === "pending"
+      || ship.status === "deploying"
+      || ship.status === "updating"
+      || ship.status === "failed"
+      || liveDeployProgress != null
+      || deployLogLines.length > 0
+    ),
+    [deployLogLines.length, liveDeployProgress, ship.status],
+  )
+
+  const deployProgressTone = deployProgress.tone === "failed"
+    ? {
+        border: "border-rose-500/30",
+        bg: "bg-rose-500/10",
+        text: "text-rose-700 dark:text-rose-200",
+        subtle: "text-rose-600/80 dark:text-rose-200/70",
+        fill: "from-rose-500 to-red-500",
+      }
+    : deployProgress.tone === "active"
+      ? {
+          border: "border-emerald-500/30",
+          bg: "bg-emerald-500/10",
+          text: "text-emerald-700 dark:text-emerald-200",
+          subtle: "text-emerald-600/80 dark:text-emerald-200/70",
+          fill: "from-emerald-500 to-green-500",
+        }
+      : {
+          border: "border-cyan-500/30",
+          bg: "bg-cyan-500/10",
+          text: "text-cyan-700 dark:text-cyan-200",
+          subtle: "text-cyan-700/70 dark:text-cyan-200/75",
+          fill: "from-cyan-500 to-blue-500",
+        }
+
+  const copyDeployLogs = useCallback(() => {
+    const logText = deployLogLines
+      .map((line) => {
+        const ts = new Date(line.timestamp)
+        const timeLabel = Number.isNaN(ts.getTime())
+          ? line.timestamp
+          : ts.toLocaleTimeString(undefined, { hour12: false })
+        const streamLabel = line.stream ? `/${line.stream}` : ""
+        return `${timeLabel} ${line.level.toUpperCase()} ${line.source}${streamLabel}: ${line.text}`
+      })
+      .join("\n")
+
+    if (!logText.trim()) {
+      return
+    }
+    void navigator.clipboard.writeText(logText)
+  }, [deployLogLines])
+
+  useEffect(() => {
+    setMetadataLogsDismissed(false)
+    setDeployLogAutoScroll(true)
+    setDeployLogOpen(
+      ship.status === "pending"
+      || ship.status === "deploying"
+      || ship.status === "updating"
+      || ship.status === "failed"
+      || liveDeployLogs.length > 0,
+    )
+  }, [ship.id])
 
   return (
     <div className="glass-elevated animate-slide-in overflow-hidden rounded-2xl">
@@ -1333,6 +1888,47 @@ function DetailPanel({
             <Trash2 className="h-3.5 w-3.5" /> Delete
           </button>
         </div>
+
+        {showDeployTelemetry && (
+          <div className={`mt-4 rounded-xl border px-3 py-3 ${deployProgressTone.border} ${deployProgressTone.bg}`}>
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className={`readout ${deployProgressTone.subtle}`}>DEPLOYMENT PROGRESS</p>
+                <p className={`truncate text-sm font-medium ${deployProgressTone.text}`}>
+                  {deployProgress.message}
+                </p>
+              </div>
+              <span className={`shrink-0 text-sm font-semibold tabular-nums ${deployProgressTone.text}`}>
+                {deployProgress.percent}%
+              </span>
+            </div>
+
+            <div
+              role="progressbar"
+              aria-label="Ship deployment progress"
+              aria-valuenow={deployProgress.percent}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              className="h-2 overflow-hidden rounded-full border border-white/35 bg-white/30 dark:border-white/10 dark:bg-black/20"
+            >
+              <div
+                className={`h-full rounded-full bg-gradient-to-r ${deployProgressTone.fill} transition-[width] duration-300 ease-out ${
+                  ship.status === "pending" || ship.status === "deploying" || ship.status === "updating" ? "animate-pulse" : ""
+                }`}
+                style={{ width: `${deployProgress.percent}%` }}
+              />
+            </div>
+
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px]">
+              <span className={`rounded-full border px-2 py-0.5 ${deployProgressTone.border} ${deployProgressTone.text}`}>
+                {deployProgress.stage.replaceAll("_", " ")}
+              </span>
+              <span className={`readout ${deployProgressTone.subtle}`}>
+                UPDATED {relativeTime(deployProgress.updatedAt)}
+              </span>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* ── Tabs ────────────────────────────────────────────────── */}
@@ -1413,6 +2009,27 @@ function DetailPanel({
                 />
               </div>
             </details>
+
+            {showDeployTelemetry && (
+              <>
+                <div className="bridge-divider" />
+                <ShipLaunchDebugLogPanel
+                  open={deployLogOpen}
+                  onToggleOpen={() => setDeployLogOpen((current) => !current)}
+                  lines={deployLogLines}
+                  autoScroll={deployLogAutoScroll}
+                  onToggleAutoScroll={() => setDeployLogAutoScroll((current) => !current)}
+                  onCopy={copyDeployLogs}
+                  onClear={() => {
+                    if (liveDeployLogs.length > 0) {
+                      onClearLiveDeployLogs()
+                      return
+                    }
+                    setMetadataLogsDismissed(true)
+                  }}
+                />
+              </>
+            )}
 
             {ship.subagent && (
               <>

@@ -112,6 +112,138 @@ function isLoopbackOrLocalhostUrl(value: string): boolean {
   }
 }
 
+function isLoopbackOrLocalhostHostname(value: string): boolean {
+  const hostname = value.trim().toLowerCase()
+  return (
+    hostname === "localhost"
+    || hostname === "127.0.0.1"
+    || hostname === "::1"
+    || hostname.endsWith(".localhost")
+  )
+}
+
+function isLikelyClusterInternalHostname(hostname: string): boolean {
+  const normalized = hostname.trim().toLowerCase()
+  if (!normalized || isLoopbackOrLocalhostHostname(normalized)) {
+    return false
+  }
+
+  if (
+    normalized.endsWith(".svc")
+    || normalized.endsWith(".svc.cluster.local")
+    || normalized.endsWith(".cluster.local")
+    || normalized.endsWith(".internal")
+  ) {
+    return true
+  }
+
+  if (/^\d{1,3}(?:\.\d{1,3}){3}$/u.test(normalized)) {
+    if (normalized.startsWith("10.") || normalized.startsWith("192.168.")) {
+      return true
+    }
+
+    if (normalized.startsWith("172.")) {
+      const [, secondOctet] = normalized.split(".")
+      const second = Number.parseInt(secondOctet || "", 10)
+      if (Number.isFinite(second) && second >= 16 && second <= 31) {
+        return true
+      }
+    }
+  }
+
+  return !normalized.includes(".")
+}
+
+function isLikelyBrowserReachableRuntimeUrl(args: {
+  value: string
+  runningInKubernetes: boolean
+}): boolean {
+  try {
+    const parsed = new URL(args.value)
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return false
+    }
+
+    const hostname = parsed.hostname.trim().toLowerCase()
+    if (args.runningInKubernetes && isLoopbackOrLocalhostHostname(hostname)) {
+      return false
+    }
+
+    return !isLikelyClusterInternalHostname(hostname)
+  } catch {
+    return false
+  }
+}
+
+function isLikelyOpenClawRuntimeEdgeUrl(args: {
+  value: string
+  stationKey: string
+}): boolean {
+  try {
+    const parsed = new URL(args.value)
+    const hostname = parsed.hostname.trim().toLowerCase()
+    const normalizedPath = parsed.pathname.replace(/\/+$/u, "")
+    const stationKey = args.stationKey.trim().toLowerCase()
+
+    if (
+      normalizedPath === `/openclaw/${stationKey}`
+      || normalizedPath.startsWith(`/openclaw/${stationKey}/`)
+    ) {
+      return true
+    }
+
+    return hostname === `openclaw-${stationKey}` || hostname.startsWith(`openclaw-${stationKey}.`)
+  } catch {
+    return false
+  }
+}
+
+export function resolveOpenClawGatewayBaseForBrowser(args: {
+  metadataRuntimeUiUrl: string | null
+  resolvedRuntimeBaseUrl: string | null
+  proxyGatewayBaseUrl: string
+  stationKey: string
+  runningInKubernetes: boolean
+}): string {
+  const candidates = [args.metadataRuntimeUiUrl, args.resolvedRuntimeBaseUrl]
+
+  for (const candidate of candidates) {
+    if (!candidate) {
+      continue
+    }
+
+    if (
+      isLikelyBrowserReachableRuntimeUrl({
+        value: candidate,
+        runningInKubernetes: args.runningInKubernetes,
+      })
+      && isLikelyOpenClawRuntimeEdgeUrl({
+        value: candidate,
+        stationKey: args.stationKey,
+      })
+    ) {
+      return candidate
+    }
+  }
+
+  for (const candidate of candidates) {
+    if (!candidate) {
+      continue
+    }
+
+    if (
+      isLikelyBrowserReachableRuntimeUrl({
+        value: candidate,
+        runningInKubernetes: args.runningInKubernetes,
+      })
+    ) {
+      return candidate
+    }
+  }
+
+  return args.proxyGatewayBaseUrl
+}
+
 function resolveRuntimeUiGatewayBaseFromMetadata(args: {
   metadata: unknown
   stationKey: string
@@ -195,6 +327,18 @@ function proxyBasePath(stationKey: string): string {
   return `/api/bridge/runtime-ui/openclaw/${stationKey}`
 }
 
+function buildProxyGatewayBaseUrl(args: {
+  request: NextRequest
+  stationKey: string
+  shipDeploymentId: string | null
+}): string {
+  const proxyUrl = new URL(proxyBasePath(args.stationKey), args.request.nextUrl.origin)
+  if (args.shipDeploymentId) {
+    proxyUrl.searchParams.set("shipDeploymentId", args.shipDeploymentId)
+  }
+  return proxyUrl.toString()
+}
+
 function wsUrlForHttpBase(value: string): string | null {
   try {
     const parsed = new URL(value)
@@ -250,16 +394,56 @@ function rewriteUpstreamLocation(args: {
   }
 }
 
+function rewriteRootAbsolutePathForProxy(args: {
+  rawValue: string
+  proxyBasePath: string
+  upstreamBaseUrl: string
+}): string {
+  if (!args.rawValue.startsWith("/") || args.rawValue.startsWith("//")) {
+    return args.rawValue
+  }
+
+  const separatorIndex = args.rawValue.search(/[?#]/u)
+  const rawPath = separatorIndex === -1 ? args.rawValue : args.rawValue.slice(0, separatorIndex)
+  const suffix = separatorIndex === -1 ? "" : args.rawValue.slice(separatorIndex)
+
+  const proxyPath = stripTrailingSlash(args.proxyBasePath)
+  if (rawPath === proxyPath || rawPath.startsWith(`${proxyPath}/`)) {
+    return args.rawValue
+  }
+
+  let upstreamPath = "/"
+  try {
+    upstreamPath = stripTrailingSlash(new URL(args.upstreamBaseUrl).pathname)
+  } catch {
+    upstreamPath = "/"
+  }
+
+  if (upstreamPath !== "/" && (rawPath === upstreamPath || rawPath.startsWith(`${upstreamPath}/`))) {
+    const relativePath = rawPath.slice(upstreamPath.length)
+    const rebased = `${proxyPath}${relativePath}`.replace(/\/{2,}/gu, "/")
+    return `${rebased}${suffix}`
+  }
+
+  const prefixed = `${proxyPath}${rawPath}`.replace(/\/{2,}/gu, "/")
+  return `${prefixed}${suffix}`
+}
+
 function rewriteHtmlForProxy(args: {
   html: string
   stationKey: string
+  upstreamBaseUrl: string
   gatewayUrl: string
   gatewayToken: string | null
 }): string {
+  const proxyPath = proxyBasePath(args.stationKey)
   const baseHref = `${proxyBasePath(args.stationKey)}/`
   const injections: string[] = []
 
-  if (!/<base\s/iu.test(args.html)) {
+  let rewritten = args.html
+  if (/<base\s/iu.test(rewritten)) {
+    rewritten = rewritten.replace(/<base\s[^>]*>/iu, `<base href="${baseHref}">`)
+  } else {
     injections.push(`<base href="${baseHref}">`)
   }
 
@@ -280,10 +464,14 @@ function rewriteHtmlForProxy(args: {
   )
 
   // Rewrite root-absolute URLs ("/...") so runtime UI assets/actions stay within the proxy base path.
-  // Do this before injecting `<base>` so the injected tag doesn't get double-prefixed.
-  const rewritten = args.html.replace(
-    /(href|src|action)=(["'])\/(?!\/)/giu,
-    `$1=$2${baseHref}`,
+  rewritten = rewritten.replace(
+    /(href|src|action)=(["'])(\/[^"']*)\2/giu,
+    (_match, attr, quote, rawValue) =>
+      `${attr}=${quote}${rewriteRootAbsolutePathForProxy({
+        rawValue,
+        proxyBasePath: proxyPath,
+        upstreamBaseUrl: args.upstreamBaseUrl,
+      })}${quote}`,
   )
 
   return injections.length === 0
@@ -462,7 +650,18 @@ async function handleRuntimeUiProxy(
 
   const contentType = responseHeaders.get("content-type") || ""
   if (request.method === "GET" && contentType.toLowerCase().includes("text/html")) {
-    const gatewayBaseUrl = metadataRuntimeUiUrl || upstreamBaseUrl
+    const proxyGatewayBaseUrl = buildProxyGatewayBaseUrl({
+      request,
+      stationKey: params.stationKey,
+      shipDeploymentId: selectedShip.id,
+    })
+    const gatewayBaseUrl = resolveOpenClawGatewayBaseForBrowser({
+      metadataRuntimeUiUrl,
+      resolvedRuntimeBaseUrl: resolvedRuntime.href,
+      proxyGatewayBaseUrl,
+      stationKey: params.stationKey,
+      runningInKubernetes,
+    })
     const wsGatewayBaseUrl = wsUrlForHttpBase(gatewayBaseUrl)
     if (!wsGatewayBaseUrl) {
       return NextResponse.json(
@@ -473,6 +672,8 @@ async function handleRuntimeUiProxy(
             namespace,
             source: resolvedRuntime.source,
             gatewayBaseUrl,
+            proxyGatewayBaseUrl,
+            metadataRuntimeUiUrl,
             runtimeBaseUrl: resolvedRuntime.href,
           },
         },
@@ -491,6 +692,7 @@ async function handleRuntimeUiProxy(
     const body = rewriteHtmlForProxy({
       html: await upstream.text(),
       stationKey: params.stationKey,
+      upstreamBaseUrl,
       gatewayUrl,
       gatewayToken,
     })

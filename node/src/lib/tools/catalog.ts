@@ -664,7 +664,7 @@ async function syncToolCatalogForUser(args: {
               toolchain: curatedToolchain,
             }
           : {}),
-      },
+      } as Prisma.JsonValue,
       lastSyncedAt: refreshedAt,
     })
 
@@ -935,7 +935,7 @@ export async function importCuratedToolForUser(args: {
                 toolchain: curatedToolchain,
               }
             : {}),
-        },
+        } as Prisma.JsonValue,
         lastSyncedAt: new Date(),
       })
 
@@ -1022,7 +1022,7 @@ export async function importCuratedToolForUser(args: {
               toolchain: curatedToolchain,
             }
           : {}),
-      },
+      } as Prisma.JsonValue,
       lastSyncedAt: new Date(),
     })
 

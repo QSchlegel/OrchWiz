@@ -159,6 +159,13 @@ interface ShipDeploymentMetadata {
   baseRequirementsEstimate?: ShipBaseRequirementsEstimate
   bridgeCrewRoles?: BridgeCrewRole[]
   deploymentOverview?: ShipDeploymentOverview
+  launchLogs?: {
+    requestId?: string
+    status?: "running" | "succeeded" | "failed"
+    deploymentId?: string | null
+    completedAt?: string | null
+    [key: string]: unknown
+  }
   [key: string]: unknown
 }
 
@@ -1214,6 +1221,7 @@ export default function ShipYardPage() {
   const [launchLogLines, setLaunchLogLines] = useState<LaunchLogLine[]>([])
   const [launchLogOpen, setLaunchLogOpen] = useState(false)
   const [launchLogAutoScroll, setLaunchLogAutoScroll] = useState(true)
+  const launchLogCursorRef = useRef(0)
   const launchFallbackStartedAtRef = useRef(0)
   const launchFallbackTimerRef = useRef<number | null>(null)
   const launchHasServerProgressRef = useRef(false)
@@ -2515,22 +2523,20 @@ export default function ShipYardPage() {
     if (incoming.length === 0) return
 
     const MAX_LINES = 5000
+    const fingerprintForLine = (line: LaunchLogLine) =>
+      `${line.timestamp}|${line.level}|${line.source}|${line.stream || ""}|${line.text}`
 
     setLaunchLogLines((current) => {
       const base = current.filter((line) => line.key !== "launch-log-truncated")
       const next: LaunchLogLine[] = [...base]
+      const seen = new Set(base.map((line) => fingerprintForLine(line)))
 
       for (const entry of incoming) {
-        const last = next[next.length - 1]
-        if (
-          last
-          && last.text === entry.text
-          && last.level === entry.level
-          && last.source === entry.source
-          && last.stream === entry.stream
-        ) {
+        const fingerprint = fingerprintForLine(entry)
+        if (seen.has(fingerprint)) {
           continue
         }
+        seen.add(fingerprint)
         next.push(entry)
       }
 
@@ -2549,6 +2555,139 @@ export default function ShipYardPage() {
       return [truncatedLine, ...kept]
     })
   }, [])
+
+  const syncPersistedLaunchLogs = useCallback(
+    async (options: { requestId?: string; resetCursor?: boolean; limit?: number } = {}) => {
+      const requestId = options.requestId || launchLogRequestId
+      if (!requestId) {
+        return
+      }
+      const cursor = options.resetCursor ? 0 : launchLogCursorRef.current
+      const limit = typeof options.limit === "number" && Number.isFinite(options.limit)
+        ? Math.max(1, Math.min(10_000, Math.floor(options.limit)))
+        : 1200
+      const params = new URLSearchParams({
+        requestId,
+        cursor: String(cursor),
+        limit: String(limit),
+      })
+      const response = await fetch(`/api/ship-yard/launch/logs?${params.toString()}`)
+      if (!response.ok) {
+        return
+      }
+
+      const payload = await response.json()
+      const entriesRaw: unknown[] = Array.isArray(payload?.entries) ? payload.entries : []
+      const entries = entriesRaw
+        .map((entry: unknown): LaunchLogLine | null => {
+          if (!entry || typeof entry !== "object") {
+            return null
+          }
+          const obj = entry as Record<string, unknown>
+          const lineNumber = typeof obj.lineNumber === "number" && Number.isFinite(obj.lineNumber)
+            ? Math.max(0, Math.floor(obj.lineNumber))
+            : null
+          const timestamp = typeof obj.timestamp === "string" ? obj.timestamp : new Date().toISOString()
+          const levelRaw = typeof obj.level === "string" ? obj.level : "info"
+          const level: LaunchLogLine["level"] =
+            levelRaw === "debug" || levelRaw === "info" || levelRaw === "warn" || levelRaw === "error"
+              ? levelRaw
+              : "info"
+          const source = typeof obj.source === "string" ? obj.source : "ship-yard"
+          const streamRaw = typeof obj.stream === "string" ? obj.stream : null
+          const stream: LaunchLogLine["stream"] =
+            streamRaw === "stdout" || streamRaw === "stderr" ? streamRaw : undefined
+          const text = typeof obj.text === "string" ? obj.text.trimEnd() : ""
+          if (!text || !lineNumber) {
+            return null
+          }
+
+          return {
+            key: `persisted-${requestId}-${lineNumber}`,
+            timestamp,
+            level,
+            source,
+            ...(stream ? { stream } : {}),
+            text,
+          }
+        })
+        .filter((line): line is LaunchLogLine => line !== null)
+
+      if (entries.length > 0) {
+        appendLaunchLogLines(entries)
+      }
+
+      const nextCursor = typeof payload?.nextCursor === "number" && Number.isFinite(payload.nextCursor)
+        ? Math.max(0, Math.floor(payload.nextCursor))
+        : cursor + entries.length
+      launchLogCursorRef.current = Math.max(launchLogCursorRef.current, nextCursor)
+    },
+    [appendLaunchLogLines, launchLogRequestId],
+  )
+
+  useEffect(() => {
+    if (!launchLogRequestId || !isLaunching) {
+      return
+    }
+
+    let cancelled = false
+    const syncNow = async (options: { resetCursor?: boolean; limit?: number } = {}) => {
+      if (cancelled) return
+      try {
+        await syncPersistedLaunchLogs({
+          requestId: launchLogRequestId,
+          ...options,
+        })
+      } catch (error) {
+        console.error("Failed to sync persisted launch logs:", error)
+      }
+    }
+
+    launchLogCursorRef.current = 0
+    void syncNow({
+      resetCursor: true,
+      limit: 10_000,
+    })
+
+    const intervalId = window.setInterval(() => {
+      void syncNow()
+    }, 2000)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(intervalId)
+    }
+  }, [isLaunching, launchLogRequestId, syncPersistedLaunchLogs])
+
+  useEffect(() => {
+    if (launchLogRequestId) {
+      return
+    }
+    if (!selectedShip) {
+      return
+    }
+    const metadata = selectedShip.metadata
+    if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
+      return
+    }
+    const launchLogs = (metadata as Record<string, unknown>).launchLogs
+    if (!launchLogs || typeof launchLogs !== "object" || Array.isArray(launchLogs)) {
+      return
+    }
+    const requestId = (launchLogs as Record<string, unknown>).requestId
+    if (typeof requestId !== "string" || requestId.trim().length === 0) {
+      return
+    }
+
+    setLaunchLogRequestId(requestId)
+    setLaunchLogOpen(true)
+    launchLogCursorRef.current = 0
+    void syncPersistedLaunchLogs({
+      requestId,
+      resetCursor: true,
+      limit: 10_000,
+    })
+  }, [launchLogRequestId, selectedShip, syncPersistedLaunchLogs])
 
   const handleRealtimeShipEvent = useCallback(
     (event: { type: string; payload: unknown; timestamp: string; id: string }) => {
@@ -2579,11 +2718,16 @@ export default function ShipYardPage() {
         const streamRaw = typeof payload.stream === "string" ? payload.stream : null
         const stream: LaunchLogLine["stream"] =
           streamRaw === "stdout" || streamRaw === "stderr" ? streamRaw : undefined
+        const capturedAt = typeof payload.capturedAt === "string"
+          ? payload.capturedAt
+          : typeof event.timestamp === "string"
+            ? event.timestamp
+            : new Date().toISOString()
 
         appendLaunchLogLines(
           lines.map((text, index) => ({
             key: `${event.id}-${index}`,
-            timestamp: typeof event.timestamp === "string" ? event.timestamp : new Date().toISOString(),
+            timestamp: capturedAt,
             level,
             source,
             ...(stream ? { stream } : {}),
@@ -2911,6 +3055,7 @@ export default function ShipYardPage() {
     setLaunchRequestId(requestId)
     setLaunchLogRequestId(requestId)
     setLaunchLogLines([])
+    launchLogCursorRef.current = 0
     setLaunchLogOpen(true)
     setLaunchLogAutoScroll(true)
     setLaunchProgress(0)
@@ -2958,6 +3103,14 @@ export default function ShipYardPage() {
       })
 
       const payload = await response.json()
+      const launchReportPathMd =
+        typeof payload?.launchReport?.paths?.reportPathMd === "string"
+          ? payload.launchReport.paths.reportPathMd
+          : null
+      const launchReportPathJson =
+        typeof payload?.launchReport?.paths?.reportPathJson === "string"
+          ? payload.launchReport.paths.reportPathJson
+          : null
       if (!response.ok) {
         const suggestedCommands = Array.isArray(payload?.details?.suggestedCommands)
           ? payload.details.suggestedCommands.filter(
@@ -2965,6 +3118,10 @@ export default function ShipYardPage() {
                 typeof command === "string" && command.trim().length > 0,
             )
           : []
+        const reportCommands = [
+          launchReportPathMd ? `Launch report (markdown): ${launchReportPathMd}` : null,
+          launchReportPathJson ? `Launch report (json): ${launchReportPathJson}` : null,
+        ].filter((line): line is string => Boolean(line))
 
         if (typeof payload?.deployment?.id === "string") {
           setSelectedShipDeploymentId(payload.deployment.id)
@@ -2973,7 +3130,9 @@ export default function ShipYardPage() {
         setMessage({
           type: "error",
           text: typeof payload?.error === "string" ? payload.error : `${launchVehicleLabel} launch failed`,
-          ...(suggestedCommands.length > 0 ? { suggestedCommands } : {}),
+          ...((suggestedCommands.length > 0 || reportCommands.length > 0)
+            ? { suggestedCommands: [...suggestedCommands, ...reportCommands].slice(0, 8) }
+            : {}),
         })
         if (payload?.code === "INSUFFICIENT_CREDITS") {
           await refreshRefueling(true)
@@ -3019,10 +3178,29 @@ export default function ShipYardPage() {
         setMessage({
           type: "info",
           text: `${launchVehicleLabel} launched. Bridge crew bootstrap complete. n8n bootstrap is ${bootstrapN8N.status}.`,
-          ...(suggestedCommands.length > 0 ? { suggestedCommands } : {}),
+          ...((suggestedCommands.length > 0 || launchReportPathMd || launchReportPathJson)
+            ? {
+                suggestedCommands: [
+                  ...suggestedCommands,
+                  ...(launchReportPathMd ? [`Launch report (markdown): ${launchReportPathMd}`] : []),
+                  ...(launchReportPathJson ? [`Launch report (json): ${launchReportPathJson}`] : []),
+                ].slice(0, 8),
+              }
+            : {}),
         })
       } else {
-        setMessage({ type: "success", text: `${launchVehicleLabel} launched. Bridge crew bootstrap complete.` })
+        setMessage({
+          type: "success",
+          text: `${launchVehicleLabel} launched. Bridge crew bootstrap complete.`,
+          ...((launchReportPathMd || launchReportPathJson)
+            ? {
+                suggestedCommands: [
+                  ...(launchReportPathMd ? [`Launch report (markdown): ${launchReportPathMd}`] : []),
+                  ...(launchReportPathJson ? [`Launch report (json): ${launchReportPathJson}`] : []),
+                ],
+              }
+            : {}),
+        })
       }
       setStepIndex(0)
       setForm(createInitialFormState())
@@ -3035,6 +3213,14 @@ export default function ShipYardPage() {
       console.error("Ship launch failed:", error)
       setMessage({ type: "error", text: `${launchVehicleLabel} launch failed` })
     } finally {
+      try {
+        await syncPersistedLaunchLogs({
+          requestId,
+          limit: 10_000,
+        })
+      } catch (error) {
+        console.error("Failed to sync final launch logs:", error)
+      }
       stopLaunchFallbackProgress()
       setIsLaunching(false)
     }
@@ -4753,7 +4939,7 @@ export default function ShipYardPage() {
                                       </button>
                                       <button
                                         type="button"
-                                        onClick={saveSecretTemplate}
+                                        onClick={() => void saveSecretTemplate()}
                                         disabled={isSavingSecrets}
                                         className="inline-flex items-center gap-1.5 rounded-md border border-slate-300/70 bg-white/70 px-2.5 py-1.5 text-xs font-medium text-slate-700 disabled:opacity-50 dark:border-white/12 dark:bg-white/[0.06] dark:text-slate-200"
                                       >
@@ -4820,7 +5006,7 @@ export default function ShipYardPage() {
                                     <div className="flex flex-wrap items-center gap-2">
                                       <button
                                         type="button"
-                                        onClick={saveSecretTemplate}
+                                        onClick={() => void saveSecretTemplate()}
                                         disabled={isSavingSecrets}
                                         className="inline-flex items-center gap-1.5 rounded-md border border-cyan-500/45 bg-cyan-500/20 px-2.5 py-1.5 text-xs font-medium text-cyan-800 dark:border-cyan-300/45 dark:bg-cyan-500/25 dark:text-cyan-100"
                                       >
@@ -5675,7 +5861,10 @@ export default function ShipYardPage() {
                   autoScroll={launchLogAutoScroll}
                   onToggleAutoScroll={() => setLaunchLogAutoScroll((current) => !current)}
                   onCopy={copyLaunchDebugLogs}
-                  onClear={() => setLaunchLogLines([])}
+                  onClear={() => {
+                    setLaunchLogLines([])
+                    launchLogCursorRef.current = 0
+                  }}
                 />
               </div>
             )}

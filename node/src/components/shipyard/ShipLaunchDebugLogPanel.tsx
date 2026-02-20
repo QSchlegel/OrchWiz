@@ -34,6 +34,10 @@ type PodOverviewSnapshot = {
     waiting: number
     crashing: number
   }>
+  topWaitingReasons: Array<{
+    reason: string
+    count: number
+  }>
 }
 
 const POD_OVERVIEW_LOG_PREFIX = "[pods-overview] "
@@ -68,6 +72,7 @@ function parsePodOverviewSnapshot(line: string): PodOverviewSnapshot | null {
   const obj = parsed as Record<string, unknown>
   const phases = obj.phases
   const namespacesRaw = Array.isArray(obj.namespaces) ? obj.namespaces : []
+  const topWaitingReasonsRaw = Array.isArray(obj.topWaitingReasons) ? obj.topWaitingReasons : []
 
   const normalizedNamespaces = namespacesRaw
     .map((entry) => {
@@ -93,6 +98,22 @@ function parsePodOverviewSnapshot(line: string): PodOverviewSnapshot | null {
     phases && typeof phases === "object" && !Array.isArray(phases)
       ? (phases as Record<string, unknown>)
       : {}
+  const normalizedTopWaitingReasons = topWaitingReasonsRaw
+    .map((entry) => {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+        return null
+      }
+      const reasonRecord = entry as Record<string, unknown>
+      return {
+        reason:
+          typeof reasonRecord.reason === "string" && reasonRecord.reason.trim().length > 0
+            ? reasonRecord.reason
+            : "Unknown",
+        count: asNumber(reasonRecord.count),
+      }
+    })
+    .filter((entry): entry is NonNullable<typeof entry> => entry !== null)
+    .filter((entry) => entry.count > 0)
 
   return {
     capturedAt: typeof obj.capturedAt === "string" && obj.capturedAt.length > 0 ? obj.capturedAt : "",
@@ -106,6 +127,7 @@ function parsePodOverviewSnapshot(line: string): PodOverviewSnapshot | null {
       unknown: asNumber(phasesRecord.unknown),
     },
     namespaces: normalizedNamespaces,
+    topWaitingReasons: normalizedTopWaitingReasons,
   }
 }
 
@@ -192,6 +214,70 @@ export function ShipLaunchDebugLogPanel(props: {
 
   return (
     <div className="overflow-hidden rounded-2xl border border-slate-200/70 bg-white/70 shadow-sm backdrop-blur dark:border-white/12 dark:bg-white/[0.03]">
+      {latestPodOverview ? (
+        <div className="border-b border-cyan-500/20 bg-cyan-500/10 px-3 py-2 font-sans text-[11px] text-slate-700 dark:text-slate-200">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="rounded-md border border-cyan-500/30 px-1.5 py-0.5 font-semibold text-cyan-700 dark:text-cyan-300">
+              Pods Overview
+            </span>
+            <span className="text-slate-500 dark:text-slate-400">
+              context={latestPodOverview.context}
+            </span>
+            <span className="text-slate-500 dark:text-slate-400">
+              captured={formatTime(latestPodOverview.capturedAt)}
+            </span>
+            <span className="text-slate-500 dark:text-slate-400">
+              total={latestPodOverview.total}
+            </span>
+          </div>
+
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {phaseCards.map((phase) => (
+              <span
+                key={phase.label}
+                className={`rounded-md border border-slate-300/60 bg-white/70 px-1.5 py-0.5 text-[10px] dark:border-white/10 dark:bg-white/[0.04] ${phase.cls}`}
+              >
+                {phase.label}: {phase.value}
+              </span>
+            ))}
+          </div>
+          {latestPodOverview.topWaitingReasons.length > 0 ? (
+            <div className="mt-2 flex flex-wrap items-center gap-1 text-[10px]">
+              <span className="text-slate-500 dark:text-slate-400">Reasons:</span>
+              {latestPodOverview.topWaitingReasons.slice(0, 4).map((reason) => (
+                <span
+                  key={reason.reason}
+                  className="rounded-md border border-slate-300/60 bg-white/70 px-1.5 py-0.5 text-slate-600 dark:border-white/10 dark:bg-white/[0.04] dark:text-slate-300"
+                >
+                  {reason.reason} {reason.count}
+                </span>
+              ))}
+            </div>
+          ) : null}
+
+          {latestPodOverview.namespaces.length > 0 ? (
+            <div className="mt-2 space-y-1">
+              {latestPodOverview.namespaces.slice(0, 6).map((namespace) => (
+                <div key={namespace.name} className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px]">
+                  <span className="w-[122px] truncate font-semibold text-slate-700 dark:text-slate-200">{namespace.name}</span>
+                  <span className="text-emerald-700 dark:text-emerald-300">R {namespace.running}</span>
+                  <span className="text-amber-700 dark:text-amber-300">P {namespace.pending}</span>
+                  <span className="text-rose-700 dark:text-rose-300">F {namespace.failed}</span>
+                  <span className="text-cyan-700 dark:text-cyan-300">S {namespace.succeeded}</span>
+                  {namespace.waiting > 0 ? (
+                    <span className="text-slate-600 dark:text-slate-300">W {namespace.waiting}</span>
+                  ) : null}
+                  {namespace.crashing > 0 ? (
+                    <span className="font-semibold text-rose-700 dark:text-rose-300">Crash {namespace.crashing}</span>
+                  ) : null}
+                  <span className="text-slate-500 dark:text-slate-400">T {namespace.total}</span>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
       <div className="flex items-center justify-between gap-3 border-b border-slate-200/60 bg-white/50 px-3 py-2 dark:border-white/10 dark:bg-white/[0.02]">
         <button
           type="button"
@@ -267,57 +353,6 @@ export function ShipLaunchDebugLogPanel(props: {
               "repeating-linear-gradient(135deg, rgba(15,23,42,0.03), rgba(15,23,42,0.03) 10px, rgba(15,23,42,0.0) 10px, rgba(15,23,42,0.0) 20px)",
           }}
         >
-          {latestPodOverview ? (
-            <div className="mb-2 rounded-lg border border-cyan-500/25 bg-cyan-500/10 px-2 py-2 font-sans text-[11px] text-slate-700 dark:text-slate-200">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="rounded-md border border-cyan-500/30 px-1.5 py-0.5 font-semibold text-cyan-700 dark:text-cyan-300">
-                  Pods Overview
-                </span>
-                <span className="text-slate-500 dark:text-slate-400">
-                  context={latestPodOverview.context}
-                </span>
-                <span className="text-slate-500 dark:text-slate-400">
-                  captured={formatTime(latestPodOverview.capturedAt)}
-                </span>
-                <span className="text-slate-500 dark:text-slate-400">
-                  total={latestPodOverview.total}
-                </span>
-              </div>
-
-              <div className="mt-2 flex flex-wrap gap-1.5">
-                {phaseCards.map((phase) => (
-                  <span
-                    key={phase.label}
-                    className={`rounded-md border border-slate-300/60 bg-white/70 px-1.5 py-0.5 text-[10px] dark:border-white/10 dark:bg-white/[0.04] ${phase.cls}`}
-                  >
-                    {phase.label}: {phase.value}
-                  </span>
-                ))}
-              </div>
-
-              {latestPodOverview.namespaces.length > 0 ? (
-                <div className="mt-2 space-y-1">
-                  {latestPodOverview.namespaces.slice(0, 6).map((namespace) => (
-                    <div key={namespace.name} className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px]">
-                      <span className="w-[122px] truncate font-semibold text-slate-700 dark:text-slate-200">{namespace.name}</span>
-                      <span className="text-emerald-700 dark:text-emerald-300">R {namespace.running}</span>
-                      <span className="text-amber-700 dark:text-amber-300">P {namespace.pending}</span>
-                      <span className="text-rose-700 dark:text-rose-300">F {namespace.failed}</span>
-                      <span className="text-cyan-700 dark:text-cyan-300">S {namespace.succeeded}</span>
-                      {namespace.waiting > 0 ? (
-                        <span className="text-slate-600 dark:text-slate-300">W {namespace.waiting}</span>
-                      ) : null}
-                      {namespace.crashing > 0 ? (
-                        <span className="font-semibold text-rose-700 dark:text-rose-300">Crash {namespace.crashing}</span>
-                      ) : null}
-                      <span className="text-slate-500 dark:text-slate-400">T {namespace.total}</span>
-                    </div>
-                  ))}
-                </div>
-              ) : null}
-            </div>
-          ) : null}
-
           {visibleLines.length === 0 ? (
             <p className="py-6 text-center text-xs text-slate-500 dark:text-slate-400">
               No logs yet.

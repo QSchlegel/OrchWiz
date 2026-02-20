@@ -6,6 +6,7 @@ import { useSession } from "@/lib/auth-client"
 import { useEventStream } from "@/lib/realtime/useEventStream"
 import type { BridgeStationKey } from "@/lib/bridge/stations"
 import { BridgeDeckScene3D } from "@/components/bridge/BridgeDeckScene3D"
+import { OpenClawSshConsole } from "@/components/bridge/OpenClawSshConsole"
 import { useShipSelection } from "@/lib/shipyard/useShipSelection"
 import { mintRuntimeJwtCookie } from "@/lib/runtime-jwt-client"
 import {
@@ -157,6 +158,7 @@ interface BridgeConnectionOption {
 }
 
 type BridgeDispatchRuntimeId = string
+type OpenClawInteractionMode = "ui" | "ssh"
 
 interface BridgeDispatchRuntimeDescriptor {
   id: BridgeDispatchRuntimeId
@@ -411,6 +413,9 @@ export default function BridgePage() {
   )
   const [showRuntimeIframe, setShowRuntimeIframe] = useState(false)
   const [openClawDirectWsDebug, setOpenClawDirectWsDebug] = useState(false)
+  const [openClawInteractionModeByStation, setOpenClawInteractionModeByStation] = useState<
+    Partial<Record<BridgeStationKey, OpenClawInteractionMode>>
+  >({})
   const [connectionOptions, setConnectionOptions] = useState<BridgeConnectionOption[]>([])
   const [selectedConnectionIds, setSelectedConnectionIds] = useState<string[]>([])
 
@@ -467,6 +472,33 @@ export default function BridgePage() {
     return appendQueryParamToHref(href, "directWs", "1")
   }, [openClawDirectWsDebug, selectedOpenClawRuntimeInstance?.href])
 
+  const defaultOpenClawInteractionMode = useMemo<OpenClawInteractionMode>(() => {
+    const deploymentProfile = availableShips.find((ship) => ship.id === selectedShipDeploymentId)?.deploymentProfile
+    if (deploymentProfile === "local_starship_build" || deploymentProfile === "lightweight_shuttle") {
+      return "ssh"
+    }
+    return "ui"
+  }, [availableShips, selectedShipDeploymentId])
+
+  const selectedOpenClawInteractionMode = useMemo<OpenClawInteractionMode>(() => {
+    if (!selectedStation?.stationKey) {
+      return defaultOpenClawInteractionMode
+    }
+    return openClawInteractionModeByStation[selectedStation.stationKey] || defaultOpenClawInteractionMode
+  }, [defaultOpenClawInteractionMode, openClawInteractionModeByStation, selectedStation?.stationKey])
+
+  const setSelectedOpenClawInteractionMode = useCallback((mode: OpenClawInteractionMode) => {
+    const stationKey = selectedStation?.stationKey
+    if (!stationKey) {
+      return
+    }
+
+    setOpenClawInteractionModeByStation((current) => ({
+      ...current,
+      [stationKey]: mode,
+    }))
+  }, [selectedStation?.stationKey])
+
   const selectedShip = useMemo(() => {
     if (!selectedShipDeploymentId) {
       return null
@@ -474,6 +506,9 @@ export default function BridgePage() {
 
     return availableShips.find((ship) => ship.id === selectedShipDeploymentId) || null
   }, [availableShips, selectedShipDeploymentId])
+  const isSelectedShipLocal =
+    selectedShip?.deploymentProfile === "local_starship_build"
+    || selectedShip?.deploymentProfile === "lightweight_shuttle"
 
   const isBridgeBootstrapping = isBridgeLoading && !hasLoadedBridgeState
   const isBridgeRefreshing = isBridgeLoading && hasLoadedBridgeState
@@ -1380,6 +1415,12 @@ export default function BridgePage() {
     setShowRuntimeIframe(false)
   }, [selectedStation?.stationKey, selectedShipDeploymentId])
 
+  useEffect(() => {
+    if (selectedOpenClawInteractionMode !== "ui") {
+      setShowRuntimeIframe(false)
+    }
+  }, [selectedOpenClawInteractionMode])
+
   useEventStream({
     enabled: Boolean(session),
     types: [
@@ -1952,32 +1993,36 @@ export default function BridgePage() {
                     <div className="rounded-lg border border-slate-300/70 bg-white/80 px-3 py-2 dark:border-white/12 dark:bg-slate-900/70">
                       <div className="flex items-center justify-between gap-2">
                         <p className="text-xs text-slate-600 dark:text-slate-300">
-                          Patch through full OpenClaw UI for the selected station source agent.
+                          OpenClaw interaction mode for the selected station source agent.
                         </p>
-                        <button
-                          type="button"
-                          disabled={!selectedOpenClawRuntimeInstance?.href}
-                          onClick={() => {
-                            void (async () => {
-                              if (!selectedOpenClawRuntimeInstance?.href) return
-                              if (!showRuntimeIframe) {
-                                const ok = await ensureRuntimeEdgeAvailable(
-                                  selectedOpenClawRuntimeInstance.directHref || selectedOpenClawRuntimeInstance.href,
-                                )
-                                if (!ok) return
-                              }
-
-                              setShowRuntimeIframe((current) => !current)
-                            })()
-                          }}
-                          className="inline-flex items-center gap-1 rounded-md border border-cyan-300/45 bg-cyan-500/12 px-2 py-1 text-xs text-cyan-700 transition hover:bg-cyan-500/22 disabled:opacity-50 dark:text-cyan-100"
-                        >
-                          {showRuntimeIframe ? "Hide iframe" : "Open full UI"}
-                        </button>
+                        <div className="inline-flex items-center rounded-md border border-slate-300/70 bg-white/70 p-0.5 dark:border-white/15 dark:bg-slate-900/60">
+                          <button
+                            type="button"
+                            onClick={() => setSelectedOpenClawInteractionMode("ui")}
+                            className={`rounded px-2 py-1 text-xs transition ${
+                              selectedOpenClawInteractionMode === "ui"
+                                ? "border border-cyan-300/45 bg-cyan-500/12 text-cyan-700 dark:text-cyan-100"
+                                : "text-slate-600 hover:bg-white dark:text-slate-300 dark:hover:bg-slate-900/70"
+                            }`}
+                          >
+                            UI
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setSelectedOpenClawInteractionMode("ssh")}
+                            className={`rounded px-2 py-1 text-xs transition ${
+                              selectedOpenClawInteractionMode === "ssh"
+                                ? "border border-emerald-300/45 bg-emerald-500/12 text-emerald-700 dark:text-emerald-100"
+                                : "text-slate-600 hover:bg-white dark:text-slate-300 dark:hover:bg-slate-900/70"
+                            }`}
+                          >
+                            SSH
+                          </button>
+                        </div>
                       </div>
-                      {!selectedOpenClawRuntimeInstance?.href && (
-                        <p className="mt-1 text-xs text-amber-700 dark:text-amber-200">
-                          Runtime UI links are unavailable for this ship. Ensure runtime-edge is deployed and reachable (local: port-forward runtime-edge; cloud: runtime-edge ingress).
+                      {isSelectedShipLocal && (
+                        <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-300">
+                          Local ship selected: SSH mode is recommended (UI mode may be blocked by gateway origin policy).
                         </p>
                       )}
                       {selectedOpenClawRuntimeInstance && (
@@ -1990,22 +2035,62 @@ export default function BridgePage() {
                           Runtime source: {selectedOpenClawRuntimeInstance.source}
                         </p>
                       )}
-                      {selectedOpenClawRuntimeInstance?.href && (
-                        <label className="mt-1 inline-flex items-center gap-2 text-[11px] text-slate-600 dark:text-slate-300">
-                          <input
-                            type="checkbox"
-                            checked={openClawDirectWsDebug}
-                            onChange={(event) => setOpenClawDirectWsDebug(event.target.checked)}
-                          />
-                          Direct terminal passthrough (debug)
-                        </label>
+                      {selectedOpenClawInteractionMode === "ui" && (
+                        <>
+                          <div className="mt-2 flex items-center justify-end gap-2">
+                            <button
+                              type="button"
+                              disabled={!selectedOpenClawRuntimeInstance?.href}
+                              onClick={() => {
+                                void (async () => {
+                                  if (!selectedOpenClawRuntimeInstance?.href) return
+                                  if (!showRuntimeIframe) {
+                                    const ok = await ensureRuntimeEdgeAvailable(
+                                      selectedOpenClawRuntimeInstance.directHref || selectedOpenClawRuntimeInstance.href,
+                                    )
+                                    if (!ok) return
+                                  }
+
+                                  setShowRuntimeIframe((current) => !current)
+                                })()
+                              }}
+                              className="inline-flex items-center gap-1 rounded-md border border-cyan-300/45 bg-cyan-500/12 px-2 py-1 text-xs text-cyan-700 transition hover:bg-cyan-500/22 disabled:opacity-50 dark:text-cyan-100"
+                            >
+                              {showRuntimeIframe ? "Hide iframe" : "Open full UI"}
+                            </button>
+                          </div>
+                          {!selectedOpenClawRuntimeInstance?.href && (
+                            <p className="mt-1 text-xs text-amber-700 dark:text-amber-200">
+                              Runtime UI links are unavailable for this ship. Ensure runtime-edge is deployed and reachable (local: port-forward runtime-edge; cloud: runtime-edge ingress).
+                            </p>
+                          )}
+                          {selectedOpenClawRuntimeInstance?.href && (
+                            <label className="mt-1 inline-flex items-center gap-2 text-[11px] text-slate-600 dark:text-slate-300">
+                              <input
+                                type="checkbox"
+                                checked={openClawDirectWsDebug}
+                                onChange={(event) => setOpenClawDirectWsDebug(event.target.checked)}
+                              />
+                              Direct terminal passthrough (debug)
+                            </label>
+                          )}
+                          {showRuntimeIframe && selectedOpenClawRuntimeIframeHref && (
+                            <div className="mt-2 overflow-hidden rounded-lg border border-slate-300/70 bg-white dark:border-white/12 dark:bg-slate-900/70">
+                              <iframe
+                                src={selectedOpenClawRuntimeIframeHref}
+                                title={selectedOpenClawRuntimeInstance?.label || "OpenClaw Runtime UI"}
+                                className="h-[420px] w-full bg-white"
+                              />
+                            </div>
+                          )}
+                        </>
                       )}
-                      {showRuntimeIframe && selectedOpenClawRuntimeIframeHref && (
-                        <div className="mt-2 overflow-hidden rounded-lg border border-slate-300/70 bg-white dark:border-white/12 dark:bg-slate-900/70">
-                          <iframe
-                            src={selectedOpenClawRuntimeIframeHref}
-                            title={selectedOpenClawRuntimeInstance?.label || "OpenClaw Runtime UI"}
-                            className="h-[420px] w-full bg-white"
+                      {selectedOpenClawInteractionMode === "ssh" && selectedStation && (
+                        <div className="mt-2">
+                          <OpenClawSshConsole
+                            stationKey={selectedStation.stationKey}
+                            stationLabel={selectedStation.callsign}
+                            shipDeploymentId={selectedShipDeploymentId}
                           />
                         </div>
                       )}

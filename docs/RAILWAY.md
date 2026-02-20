@@ -37,6 +37,9 @@ Use monorepo root directories so each service builds from its own folder:
 - `BETTER_AUTH_URL`
 - `NEXT_PUBLIC_APP_URL`
 - `NEXT_PUBLIC_SITE_URL`
+- Optional for Bridge Runtime Rail SSH console mode:
+  - `ORCHWIZ_BRIDGE_SSH_TTY_ENABLED=true` (or keep `ENABLE_LOCAL_COMMAND_EXECUTION=true`)
+  - `ORCHWIZ_BRIDGE_SSH_TTY_MAX_SESSION_MS` (optional; defaults to `1800000`)
 
 ### `orchwiz-data-core`
 
@@ -50,6 +53,15 @@ Use monorepo root directories so each service builds from its own folder:
 
 - Node -> Data Core: `DATA_CORE_BASE_URL`
 - Node -> Provider Proxy: `CODEX_PROVIDER_PROXY_URL`
+
+## 6) Bridge Runtime Rail SSH mode prerequisites (optional)
+
+If you want the OpenClaw `SSH` interaction mode in Bridge Runtime Rail:
+
+- Node runtime image must include `ssh` and `kubectl` on `PATH`.
+- Ship deployment must resolve an SSH target (deployment tunnel metadata, ship metadata tunnel host, or local terraform fallback when command execution is enabled).
+- SSH private key material must be present/decryptable via existing Ship Yard vault flow (`resolveCloudSshPrivateKey`).
+- When preflight fails, Bridge stays in SSH mode and shows structured diagnostics (no automatic UI fallback).
 
 ## Troubleshooting
 

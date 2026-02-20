@@ -73,6 +73,10 @@ kubeview_ingress_annotations = {}
 # When enabled, OrchWiz app uses in-cluster URLs. For local dev with app on host, port-forward monitoring services or set GRAFANA_UPSTREAM_URL / PROMETHEUS_UPSTREAM_URL.
 # enable_grafana   = false
 # enable_prometheus = false
+# prometheus_enable_kube_state_metrics = true
+# prometheus_enable_node_exporter = false
+# metrics_bearer_token = "" # required when enable_prometheus=true; used for app/runtime-edge/provider-proxy /metrics scrape auth
+# prometheus_blackbox_exporter_chart_version = "11.8.0"
 # enable_loki      = false
 # enable_clickhouse = false
 # enable_langfuse  = false

@@ -372,9 +372,31 @@ variable "enable_prometheus" {
   description = "Whether to deploy Prometheus in the monitoring namespace"
   default     = false
 }
+variable "prometheus_enable_kube_state_metrics" {
+  type    = bool
+  default = true
+}
+variable "prometheus_enable_node_exporter" {
+  type    = bool
+  default = false
+}
+variable "orchwiz_metrics_bearer_token" {
+  type      = string
+  sensitive = true
+  default   = ""
+}
+variable "metrics_bearer_token" {
+  type      = string
+  sensitive = true
+  default   = ""
+}
 variable "prometheus_chart_version" {
   type    = string
   default = "28.9.1"
+}
+variable "prometheus_blackbox_exporter_chart_version" {
+  type    = string
+  default = "11.8.0"
 }
 variable "prometheus_ingress_enabled" {
   type    = bool

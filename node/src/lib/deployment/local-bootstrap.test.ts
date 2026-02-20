@@ -686,46 +686,10 @@ test("default local profile keeps terraform station count unset", async () => {
   assert.equal(ansibleCall?.env?.TF_VAR_openclaw_station_count, undefined)
 })
 
-test("default local profile forces lean observability terraform toggles", async () => {
+test("default local profile keeps observability stack enabled", async () => {
   const { runtime, calls } = createRuntime({
     env: {
       ENABLE_LOCAL_COMMAND_EXECUTION: "true",
-    },
-  })
-
-  const result = await runLocalBootstrap(
-    {
-      deploymentProfile: "local_starship_build",
-      infrastructure: baseInfrastructure,
-      provisioningMode: "terraform_ansible",
-      saneBootstrap: false,
-    },
-    runtime,
-  )
-
-  assert.equal(result.ok, true)
-  if (!result.ok) return
-
-  const ansibleCall = calls.find((call) => call.command === "ansible-playbook")
-  assert.ok(ansibleCall)
-  assert.equal(ansibleCall?.env?.TF_VAR_enable_grafana, "false")
-  assert.equal(ansibleCall?.env?.TF_VAR_enable_prometheus, "false")
-  assert.equal(ansibleCall?.env?.TF_VAR_enable_loki, "false")
-  assert.equal(ansibleCall?.env?.TF_VAR_enable_clickhouse, "false")
-  assert.equal(ansibleCall?.env?.TF_VAR_enable_langfuse, "false")
-  const localProvisioning = result.metadata.localProvisioning as {
-    observabilityStackEnabled?: boolean
-    leanObservabilityDefaultsForced?: boolean
-  }
-  assert.equal(localProvisioning.observabilityStackEnabled, false)
-  assert.equal(localProvisioning.leanObservabilityDefaultsForced, true)
-})
-
-test("local profile does not force lean observability when enabled explicitly", async () => {
-  const { runtime, calls } = createRuntime({
-    env: {
-      ENABLE_LOCAL_COMMAND_EXECUTION: "true",
-      LOCAL_SHIPYARD_ENABLE_OBSERVABILITY_STACK: "true",
     },
   })
 
@@ -755,6 +719,42 @@ test("local profile does not force lean observability when enabled explicitly", 
   }
   assert.equal(localProvisioning.observabilityStackEnabled, true)
   assert.equal(localProvisioning.leanObservabilityDefaultsForced, false)
+})
+
+test("local profile forces lean observability when disabled explicitly", async () => {
+  const { runtime, calls } = createRuntime({
+    env: {
+      ENABLE_LOCAL_COMMAND_EXECUTION: "true",
+      LOCAL_SHIPYARD_ENABLE_OBSERVABILITY_STACK: "false",
+    },
+  })
+
+  const result = await runLocalBootstrap(
+    {
+      deploymentProfile: "local_starship_build",
+      infrastructure: baseInfrastructure,
+      provisioningMode: "terraform_ansible",
+      saneBootstrap: false,
+    },
+    runtime,
+  )
+
+  assert.equal(result.ok, true)
+  if (!result.ok) return
+
+  const ansibleCall = calls.find((call) => call.command === "ansible-playbook")
+  assert.ok(ansibleCall)
+  assert.equal(ansibleCall?.env?.TF_VAR_enable_grafana, "false")
+  assert.equal(ansibleCall?.env?.TF_VAR_enable_prometheus, "false")
+  assert.equal(ansibleCall?.env?.TF_VAR_enable_loki, "false")
+  assert.equal(ansibleCall?.env?.TF_VAR_enable_clickhouse, "false")
+  assert.equal(ansibleCall?.env?.TF_VAR_enable_langfuse, "false")
+  const localProvisioning = result.metadata.localProvisioning as {
+    observabilityStackEnabled?: boolean
+    leanObservabilityDefaultsForced?: boolean
+  }
+  assert.equal(localProvisioning.observabilityStackEnabled, false)
+  assert.equal(localProvisioning.leanObservabilityDefaultsForced, true)
 })
 
 test("sane bootstrap builds/loads local app image and passes TF_VAR_app_image", async () => {
@@ -1016,7 +1016,7 @@ test("captures kubeview metadata from terraform outputs", async () => {
           exitCode: 0,
         }
       }
-      if (command === "terraform" && args.join(" ") === "-chdir /repo/infra/terraform/environments/starship-local output -json") {
+      if (command === "terraform" && args.join(" ") === "-chdir=/repo/infra/terraform/environments/starship-local output -json") {
         return {
           ok: true,
           stdout: JSON.stringify({
@@ -1061,6 +1061,88 @@ test("captures kubeview metadata from terraform outputs", async () => {
   assert.equal(kubeview.source, "terraform_output")
 })
 
+test("captures runtime UI metadata from terraform outputs", async () => {
+  const { runtime } = createRuntime({
+    runCommand: async (command, args) => {
+      if (command === "kubectl" && args.join(" ") === "config get-contexts -o name") {
+        return {
+          ok: true,
+          stdout: "kind-orchwiz\n",
+          stderr: "",
+          exitCode: 0,
+        }
+      }
+      if (command === "ansible-playbook") {
+        return {
+          ok: true,
+          stdout: "PLAY RECAP",
+          stderr: "",
+          exitCode: 0,
+        }
+      }
+      if (command === "terraform" && args.join(" ") === "-chdir=/repo/infra/terraform/environments/starship-local output -json") {
+        return {
+          ok: true,
+          stdout: JSON.stringify({
+            runtime_ui_openclaw_urls: {
+              value: {
+                xo: "http://localhost:3100/openclaw/xo",
+                ops: "http://localhost:3100/openclaw/ops",
+              },
+            },
+            runtime_ui_kubeview_url: { value: "http://localhost:3100/kubeview" },
+            runtime_edge_port_forward_command: {
+              value: "kubectl -n orchwiz-starship port-forward svc/runtime-edge 3100:3100",
+            },
+          }),
+          stderr: "",
+          exitCode: 0,
+        }
+      }
+      return {
+        ok: true,
+        stdout: "",
+        stderr: "",
+        exitCode: 0,
+      }
+    },
+  })
+
+  const result = await runLocalBootstrap(
+    {
+      infrastructure: baseInfrastructure,
+      provisioningMode: "terraform_ansible",
+      saneBootstrap: false,
+    },
+    runtime,
+  )
+
+  assert.equal(result.ok, true)
+  if (!result.ok) return
+
+  const runtimeUi = result.metadata.runtimeUi as {
+    openclaw?: {
+      source?: string
+      urls?: Record<string, string>
+    }
+    kubeview?: {
+      source?: string
+      url?: string | null
+    }
+    portForwardCommand?: string | null
+  }
+
+  assert.equal(runtimeUi.openclaw?.source, "terraform_output")
+  assert.equal(runtimeUi.openclaw?.urls?.xo, "http://localhost:3100/openclaw/xo")
+  assert.equal(runtimeUi.openclaw?.urls?.ops, "http://localhost:3100/openclaw/ops")
+  assert.equal(runtimeUi.kubeview?.source, "terraform_output")
+  assert.equal(runtimeUi.kubeview?.url, "http://localhost:3100/kubeview")
+  assert.equal(
+    runtimeUi.portForwardCommand,
+    "kubectl -n orchwiz-starship port-forward svc/runtime-edge 3100:3100",
+  )
+})
+
 test("falls back to local kubeview metadata when terraform outputs are unavailable", async () => {
   const { runtime } = createRuntime({
     runCommand: async (command, args) => {
@@ -1080,7 +1162,7 @@ test("falls back to local kubeview metadata when terraform outputs are unavailab
           exitCode: 0,
         }
       }
-      if (command === "terraform" && args.join(" ") === "-chdir /repo/infra/terraform/environments/starship-local output -json") {
+      if (command === "terraform" && args.join(" ") === "-chdir=/repo/infra/terraform/environments/starship-local output -json") {
         return {
           ok: false,
           stdout: "",
@@ -1140,7 +1222,7 @@ test("captures observability metadata from terraform outputs", async () => {
           exitCode: 0,
         }
       }
-      if (command === "terraform" && args.join(" ") === "-chdir /repo/infra/terraform/environments/starship-local output -json") {
+      if (command === "terraform" && args.join(" ") === "-chdir=/repo/infra/terraform/environments/starship-local output -json") {
         return {
           ok: true,
           stdout: JSON.stringify({

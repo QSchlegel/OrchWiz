@@ -2,6 +2,12 @@ FROM node:20-bookworm-slim AS runtime
 WORKDIR /app
 COPY package*.json ./
 COPY scripts/fix-libsodium-wrappers-sumo.cjs ./scripts/
+# node-pty falls back to node-gyp on linux/arm64 when no prebuild is available.
+# node-gyp requires Python and a C/C++ toolchain to compile native modules.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends python3 make g++ \
+  && rm -rf /var/lib/apt/lists/*
+ENV PYTHON=/usr/bin/python3
 # Make dependency install resilient to transient registry/network failures in Docker builds.
 RUN set -eux; \
   npm config set fetch-retries 5; \

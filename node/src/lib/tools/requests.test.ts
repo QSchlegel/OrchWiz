@@ -3,6 +3,7 @@ import { mkdir, mkdtemp } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
+import { createGovernanceGrantEvent } from "@/lib/governance/events"
 import {
   createShipToolAccessRequestForOwner,
   ensureShipToolGrantForBootstrap,
@@ -654,6 +655,7 @@ test("ensureShipToolGrantForBootstrap creates ship-wide grant and governance eve
   let capturedGrantScope = ""
   let capturedEventType = ""
   let capturedEventMetadata: Record<string, unknown> | null = null
+  let capturedEventData: Record<string, unknown> | null = null
 
   globalAny.prisma = {
     agentDeployment: {
@@ -715,6 +717,7 @@ test("ensureShipToolGrantForBootstrap creates ship-wide grant and governance eve
       governanceGrantEvent: {
         create: async (args: any) => {
           capturedEventType = args.data.eventType
+          capturedEventData = args.data as Record<string, unknown>
           capturedEventMetadata = (args.data.metadata || null) as Record<string, unknown> | null
           return { id: "gev-bootstrap" }
         },
@@ -739,6 +742,62 @@ test("ensureShipToolGrantForBootstrap creates ship-wide grant and governance eve
     assert.equal(capturedEventMetadata?.bootstrap, true)
     assert.equal(capturedEventMetadata?.source, "shipyard_initial_app_bootstrap")
     assert.equal(capturedEventMetadata?.sourceStep, "n8n-tool-import")
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(capturedEventData || {}, "runtimeAdapterCatalogEntryId"),
+      false,
+    )
+  } finally {
+    globalAny.prisma = previousPrisma
+  }
+})
+
+test("createGovernanceGrantEvent retries write without runtime adapter column when local schema drifts", async () => {
+  const globalAny = globalThis as any
+  const previousPrisma = globalAny.prisma
+
+  let governanceCreateCalls = 0
+  const governancePayloads: Array<Record<string, unknown>> = []
+
+  globalAny.prisma = {
+    governanceGrantEvent: {
+      create: async (args: any) => {
+        governanceCreateCalls += 1
+        governancePayloads.push(args.data)
+        if (governanceCreateCalls === 1) {
+          const error: any = new Error(
+            "The column `runtimeAdapterCatalogEntryId` does not exist in the current database.",
+          )
+          error.code = "P2022"
+          error.meta = {
+            modelName: "GovernanceGrantEvent",
+            column: "runtimeAdapterCatalogEntryId",
+          }
+          throw error
+        }
+        return { id: "gev-bootstrap" }
+      },
+    },
+  }
+
+  try {
+    const event = await createGovernanceGrantEvent({
+      ownerUserId: "user-1",
+      createdByUserId: "user-1",
+      eventType: "runtime_activation_approved",
+      runtimeAdapterCatalogEntryId: "runtime-1",
+      rationale: "Runtime activation approved",
+    })
+
+    assert.equal(event.id, "gev-bootstrap")
+    assert.equal(governanceCreateCalls, 2)
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(governancePayloads[0], "runtimeAdapterCatalogEntryId"),
+      true,
+    )
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(governancePayloads[1], "runtimeAdapterCatalogEntryId"),
+      false,
+    )
   } finally {
     globalAny.prisma = previousPrisma
   }

@@ -1,0 +1,25 @@
+{
+  "requestId": "01a1db52-d050-4d33-a367-405500e8c0bc",
+  "ownerUserId": "IOEmsNZH6XR5IkbRBZn7MfzOA5QzcCTq",
+  "deploymentId": "cmltqauuu001dnxzt950g7bpr",
+  "status": "failed",
+  "startedAt": "2026-02-19T17:22:14.815Z",
+  "completedAt": "2026-02-19T17:30:35.899Z",
+  "lineCount": 2894,
+  "levelCounts": {
+    "debug": 2821,
+    "info": 53,
+    "warn": 10,
+    "error": 10
+  },
+  "error": {
+    "code": "LOCAL_PROVISIONING_FAILED",
+    "message": "Local provisioning failed while running ansible playbook."
+  },
+  "paths": {
+    "logPath": "/Users/quirinschlegel/git/orchwiz/OWZ-Vault/00-Inbox/Ship-Yard-Launch-Reports/IOEmsNZH6XR5IkbRBZn7MfzOA5QzcCTq/ship_launch_01a1db52-d050-4d33-a367-405500e8c0bc.log",
+    "jsonlPath": "/Users/quirinschlegel/git/orchwiz/OWZ-Vault/00-Inbox/Ship-Yard-Launch-Reports/IOEmsNZH6XR5IkbRBZn7MfzOA5QzcCTq/ship_launch_01a1db52-d050-4d33-a367-405500e8c0bc.jsonl",
+    "reportPathMd": "/Users/quirinschlegel/git/orchwiz/OWZ-Vault/00-Inbox/Ship-Yard-Launch-Reports/IOEmsNZH6XR5IkbRBZn7MfzOA5QzcCTq/ship_launch_01a1db52-d050-4d33-a367-405500e8c0bc.md",
+    "reportPathJson": "/Users/quirinschlegel/git/orchwiz/OWZ-Vault/00-Inbox/Ship-Yard-Launch-Reports/IOEmsNZH6XR5IkbRBZn7MfzOA5QzcCTq/ship_launch_01a1db52-d050-4d33-a367-405500e8c0bc.json"
+  }
+}

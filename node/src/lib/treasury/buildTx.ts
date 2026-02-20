@@ -58,10 +58,10 @@ export async function buildTreasurySpendTx(args: {
 
     try {
       const initiator = {
-        getChangeAddress: () => scriptAddress,
-        getCollateral: () => [],
+        getChangeAddress: () => Promise.resolve(scriptAddress),
+        getCollateral: () => Promise.resolve([]),
         // Keep selection deterministic: add more inputs only by expanding `selected`.
-        getUtxos: () => selected,
+        getUtxos: () => Promise.resolve(selected),
       }
 
       const tx = new Transaction({ fetcher: koiosProvider, initiator })

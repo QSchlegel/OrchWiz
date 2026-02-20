@@ -26,6 +26,7 @@ export const dynamic = "force-dynamic"
 
 const MONITORING_STALE_WINDOW_MS = 15 * 60 * 1000
 const RUNTIME_UI_HYDRATION_COOLDOWN_MS = 30 * 1000
+const GRAFANA_DEFAULT_DASHBOARD_SUFFIX = "/d/ship-oncall-cc/ship-on-call-command-center?orgId=1"
 
 type BridgeSystemState = "nominal" | "warning" | "critical"
 type MonitoringEventServiceKey = "grafana" | "prometheus"
@@ -797,11 +798,82 @@ function buildFallbackMonitoringCard(args: {
   }
 }
 
+function extractMonitoringProxySuffix(href: string, proxyBaseHref: string): string {
+  if (href === proxyBaseHref) {
+    return ""
+  }
+
+  if (href.startsWith(`${proxyBaseHref}/`) || href.startsWith(`${proxyBaseHref}?`)) {
+    return href.slice(proxyBaseHref.length)
+  }
+
+  return ""
+}
+
+function appendMonitoringProxySuffix(baseHref: string, suffix: string): string {
+  if (!suffix) {
+    return baseHref
+  }
+
+  const applySuffix = (target: URL): URL => {
+    if (suffix.startsWith("?")) {
+      const params = new URLSearchParams(suffix.slice(1))
+      params.forEach((value, key) => {
+        target.searchParams.set(key, value)
+      })
+      return target
+    }
+
+    const suffixUrl = new URL(
+      suffix.startsWith("/") ? suffix : `/${suffix}`,
+      "http://orchwiz.local",
+    )
+    const basePath = target.pathname.replace(/\/+$/u, "")
+    target.pathname = `${basePath}${suffixUrl.pathname}`.replace(/\/{2,}/gu, "/")
+    suffixUrl.searchParams.forEach((value, key) => {
+      target.searchParams.set(key, value)
+    })
+    return target
+  }
+
+  if (baseHref.startsWith("/")) {
+    const relative = new URL(baseHref, "http://orchwiz.local")
+    const next = applySuffix(relative)
+    return `${next.pathname}${next.search}`
+  }
+
+  try {
+    const absolute = new URL(baseHref)
+    const next = applySuffix(absolute)
+    return next.toString()
+  } catch {
+    return `${baseHref}${suffix}`
+  }
+}
+
+function withMonitoringHrefQueryParam(href: string, key: string, value: string): string {
+  if (href.startsWith("/")) {
+    const relative = new URL(href, "http://orchwiz.local")
+    relative.searchParams.set(key, value)
+    return `${relative.pathname}${relative.search}`
+  }
+
+  try {
+    const absolute = new URL(href)
+    absolute.searchParams.set(key, value)
+    return absolute.toString()
+  } catch {
+    const separator = href.includes("?") ? "&" : "?"
+    return `${href}${separator}${encodeURIComponent(key)}=${encodeURIComponent(value)}`
+  }
+}
+
 function resolveMonitoringConfiguredHref(args: {
   configuredHref: string | null
   proxyBaseHref: string
   runtimeUiHref: string | null
   selectedShip: BridgeStateSelectedShipMonitoringRecord | null
+  defaultProxySuffix?: string
 }): string | null {
   const href = args.configuredHref
   const isProxy = (() => {
@@ -817,17 +889,22 @@ function resolveMonitoringConfiguredHref(args: {
     return href
   }
 
-  if (args.runtimeUiHref) {
-    return args.runtimeUiHref
+  const extractedSuffix = href ? extractMonitoringProxySuffix(href, args.proxyBaseHref) : ""
+  const normalizedSuffix = (
+    extractedSuffix.length === 0 || extractedSuffix === "/"
+  ) && args.defaultProxySuffix
+    ? args.defaultProxySuffix
+    : extractedSuffix
+  const proxyTarget = appendMonitoringProxySuffix(
+    args.runtimeUiHref || args.proxyBaseHref,
+    normalizedSuffix,
+  )
+
+  if (args.runtimeUiHref || !args.selectedShip) {
+    return proxyTarget
   }
 
-  if (!args.selectedShip) {
-    return args.proxyBaseHref
-  }
-
-  const query = new URLSearchParams()
-  query.set("shipDeploymentId", args.selectedShip.id)
-  return `${args.proxyBaseHref}?${query.toString()}`
+  return withMonitoringHrefQueryParam(proxyTarget, "shipDeploymentId", args.selectedShip.id)
 }
 
 function buildKubeviewMonitoringCard(args: {
@@ -890,10 +967,10 @@ function buildKubeviewMonitoringCard(args: {
     )
   })()
 
-  const resolvedHref =
-    args.href && !wantsProxy && !isLoopbackOrLocalhostMonitoringUrl(args.href)
-      ? args.href
-      : args.runtimeUiHref || proxyHref
+  const hasDirectConfiguredHref = Boolean(
+    args.href && !wantsProxy && !isLoopbackOrLocalhostMonitoringUrl(args.href),
+  )
+  const resolvedHref = hasDirectConfiguredHref ? args.href : proxyHref
 
   if (args.selectedShip.status === "failed") {
     return {
@@ -913,10 +990,10 @@ function buildKubeviewMonitoringCard(args: {
     state: "nominal",
     detail:
       resolvedHref === proxyHref
-        ? "KubeView available via bridge proxy for selected ship."
-        : args.runtimeUiHref && resolvedHref === args.runtimeUiHref
-          ? "KubeView available via direct ship runtime UI."
-          : "KubeView link configured for selected ship.",
+        ? args.runtimeUiHref
+          ? "KubeView available via bridge proxy for selected ship runtime."
+          : "KubeView available via bridge proxy for selected ship."
+        : "KubeView link configured for selected ship.",
     href: resolvedHref,
     source: "ship-monitoring",
     observedAt: null,
@@ -960,6 +1037,22 @@ function resolveLangfuseUpstreamBaseUrl(): string | null {
     return null
   }
 
+  const normalizeLikelyRuntimeEdgeLangfuseUrl = (url: URL) => {
+    const normalizedPath = url.pathname.replace(/\/+$/u, "") || "/"
+    const hostname = url.hostname.trim().toLowerCase()
+    const isProxyPath = normalizedPath === "/api/bridge/runtime-ui/langfuse"
+    const isRuntimeEdgeHost = hostname.includes("runtime-edge")
+    const isRuntimeEdgeLoopbackRoot =
+      normalizedPath === "/" && isLoopbackHostname(hostname) && url.port === "3100"
+    if (!isProxyPath && !isRuntimeEdgeHost && !isRuntimeEdgeLoopbackRoot) {
+      return
+    }
+
+    url.pathname = "/langfuse"
+    url.search = ""
+    url.hash = ""
+  }
+
   try {
     const parsed = new URL(raw)
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
@@ -980,6 +1073,7 @@ function resolveLangfuseUpstreamBaseUrl(): string | null {
         return null
       }
     }
+    normalizeLikelyRuntimeEdgeLangfuseUrl(parsed)
     return parsed.toString().replace(/\/+$/u, "")
   } catch {
     return null
@@ -1096,6 +1190,7 @@ function resolveMonitoringCards(args: {
       proxyBaseHref,
       runtimeUiHref: args.runtimeUiHrefs[service] || null,
       selectedShip: args.selectedShip,
+      defaultProxySuffix: service === "grafana" ? GRAFANA_DEFAULT_DASHBOARD_SUFFIX : undefined,
     })
     const fallback = buildFallbackMonitoringCard({
       label,

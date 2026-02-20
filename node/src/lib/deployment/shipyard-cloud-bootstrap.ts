@@ -82,6 +82,14 @@ export interface ShipyardCloudBootstrapRuntime {
   ) => Promise<CloudBootstrapCommandResult>
 }
 
+interface ShipyardCloudBootstrapInternals {
+  ensureManagedTunnelImpl: typeof ensureManagedTunnel
+}
+
+const defaultInternals: ShipyardCloudBootstrapInternals = {
+  ensureManagedTunnelImpl: ensureManagedTunnel,
+}
+
 interface ResolvedCloudPaths {
   repoRoot: string
   terraformEnvDirRelative: string
@@ -135,6 +143,11 @@ interface RuntimeUiBootstrapMetadata {
     source: "terraform_output" | "fallback"
   }
   portForwardCommand: string | null
+}
+
+interface CloudTunnelBootstrapMetadata extends ManagedTunnelRuntimeMetadata {
+  controlPlanePublicIp: string
+  controlPlanePrivateIp: string
 }
 
 function asString(value: unknown): string | null {
@@ -456,15 +469,14 @@ async function runProvisioning(args: {
 
   if (args.input.provisioningMode === "terraform_ansible" || args.input.provisioningMode === "terraform_only") {
     const terraformSteps: string[][] = [
-      ["-chdir", args.paths.terraformEnvDirAbsolute, "init", "-backend=false"],
+      [`-chdir=${args.paths.terraformEnvDirAbsolute}`, "init", "-backend=false"],
       [
-        "-chdir",
-        args.paths.terraformEnvDirAbsolute,
+        `-chdir=${args.paths.terraformEnvDirAbsolute}`,
         "plan",
         "-out=tfplan",
         "-var-file=terraform.tfvars",
       ],
-      ["-chdir", args.paths.terraformEnvDirAbsolute, "apply", "-auto-approve", "tfplan"],
+      [`-chdir=${args.paths.terraformEnvDirAbsolute}`, "apply", "-auto-approve", "tfplan"],
     ]
 
     for (const stepArgs of terraformSteps) {
@@ -548,7 +560,7 @@ async function resolveCloudKubeviewMetadata(args: {
 
   const outputResult = await args.runtime.runCommand(
     "terraform",
-    ["-chdir", args.terraformEnvDirAbsolute, "output", "-json"],
+    [`-chdir=${args.terraformEnvDirAbsolute}`, "output", "-json"],
     {
       timeoutMs: timeoutMs(args.runtime.env),
     },
@@ -595,7 +607,7 @@ async function resolveCloudRuntimeUiMetadata(args: {
 
   const outputResult = await args.runtime.runCommand(
     "terraform",
-    ["-chdir", args.terraformEnvDirAbsolute, "output", "-json"],
+    [`-chdir=${args.terraformEnvDirAbsolute}`, "output", "-json"],
     {
       timeoutMs: timeoutMs(args.runtime.env),
     },
@@ -640,7 +652,8 @@ async function ensureKubernetesApiTunnel(args: {
   input: ShipyardCloudBootstrapInput
   paths: ResolvedCloudPaths
   runtime: ShipyardCloudBootstrapRuntime
-}): Promise<ShipyardCloudBootstrapFailure | { ok: true; metadata: ManagedTunnelRuntimeMetadata }> {
+  ensureManagedTunnelImpl: typeof ensureManagedTunnel
+}): Promise<ShipyardCloudBootstrapFailure | { ok: true; metadata: CloudTunnelBootstrapMetadata }> {
   if (!args.input.cloudProvider.tunnelPolicy.manage) {
     return toFailure("CLOUD_TUNNEL_FAILED", "Tunnel policy disabled unexpectedly for managed flow.", {
       expected: false,
@@ -649,7 +662,7 @@ async function ensureKubernetesApiTunnel(args: {
 
   const outputResult = await args.runtime.runCommand(
     "terraform",
-    ["-chdir", args.paths.terraformEnvDirAbsolute, "output", "-json"],
+    [`-chdir=${args.paths.terraformEnvDirAbsolute}`, "output", "-json"],
     {
       timeoutMs: timeoutMs(args.runtime.env),
     },
@@ -689,7 +702,7 @@ async function ensureKubernetesApiTunnel(args: {
     })
   }
 
-  const ensured = await ensureManagedTunnel({
+  const ensured = await args.ensureManagedTunnelImpl({
     definition: {
       tunnelId: `shipyard-${args.input.deploymentId}`,
       localHost: "127.0.0.1",
@@ -719,13 +732,18 @@ async function ensureKubernetesApiTunnel(args: {
 
   return {
     ok: true,
-    metadata: ensured.metadata,
+    metadata: {
+      ...ensured.metadata,
+      controlPlanePublicIp,
+      controlPlanePrivateIp,
+    },
   }
 }
 
 export async function runShipyardCloudBootstrap(
   input: ShipyardCloudBootstrapInput,
   runtime: ShipyardCloudBootstrapRuntime = defaultRuntime(),
+  internals: ShipyardCloudBootstrapInternals = defaultInternals,
 ): Promise<ShipyardCloudBootstrapResult> {
   if (!commandExecutionEnabled(runtime.env)) {
     return toFailure(
@@ -756,13 +774,13 @@ export async function runShipyardCloudBootstrap(
   }
 
   const pathsResult = resolveCloudPaths(input.infrastructure, runtime)
-  if (!pathsResult.ok) {
+  if (pathsResult.ok === false) {
     return pathsResult
   }
 
   const paths = pathsResult.paths
   const fileValidation = validateFiles(paths, runtime)
-  if (!fileValidation.ok) {
+  if (fileValidation.ok === false) {
     return fileValidation
   }
 
@@ -771,19 +789,20 @@ export async function runShipyardCloudBootstrap(
     paths,
     runtime,
   })
-  if (!provisioningResult.ok) {
+  if (provisioningResult.ok === false) {
     return provisioningResult
   }
 
-  let tunnelMetadata: ManagedTunnelRuntimeMetadata | null = null
+  let tunnelMetadata: CloudTunnelBootstrapMetadata | null = null
   if (input.cloudProvider.tunnelPolicy.manage && input.cloudProvider.tunnelPolicy.target === "kubernetes_api") {
     const tunnelResult = await ensureKubernetesApiTunnel({
       input,
       paths,
       runtime,
+      ensureManagedTunnelImpl: internals.ensureManagedTunnelImpl,
     })
 
-    if (!tunnelResult.ok) {
+    if (tunnelResult.ok === false) {
       return tunnelResult
     }
 
@@ -806,6 +825,8 @@ export async function runShipyardCloudBootstrap(
               pidFile: tunnelMetadata.pidFile,
               controlSocket: tunnelMetadata.controlSocket,
               keyFilePath: tunnelMetadata.keyFilePath,
+              controlPlanePublicIp: tunnelMetadata.controlPlanePublicIp,
+              controlPlanePrivateIp: tunnelMetadata.controlPlanePrivateIp,
             },
           }
         : {}),

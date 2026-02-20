@@ -905,6 +905,12 @@ export default function UssK8sPage() {
     })
   }, [visibleEdgeTypes, highlightNodeId, topologyEdgesSource, edgeTypeByLink, commandTierByNode])
 
+  const openServiceEmbed = useCallback((url: string, label: string) => {
+    setEmbedServiceUrl(url)
+    setEmbedServiceLabel(label)
+    restoreDesktopWindow("service-embed")
+  }, [restoreDesktopWindow])
+
   const handleNodeClick = useCallback((_: unknown, node: Node) => {
     setSelectedId(node.id)
     setHighlightNodeId(node.id)
@@ -1067,12 +1073,6 @@ export default function UssK8sPage() {
     selectAndHighlight(id)
     setMobileSection("detail")
   }, [selectAndHighlight])
-
-  const openServiceEmbed = useCallback((url: string, label: string) => {
-    setEmbedServiceUrl(url)
-    setEmbedServiceLabel(label)
-    restoreDesktopWindow("service-embed")
-  }, [restoreDesktopWindow])
 
   const closeServiceEmbed = useCallback(() => {
     dockDesktopWindow("service-embed")
@@ -1510,7 +1510,9 @@ export default function UssK8sPage() {
                         isOpen={focusDrawerId !== null}
                         onClose={() => setFocusDrawerId(null)}
                       >
-                        {focusDrawerId === "hierarchy" && hierarchyPanel}
+                        {focusDrawerId === "hierarchy" && (
+                          <HierarchyPanel commandHierarchy={commandHierarchy} activeHierarchyTier={activeHierarchyTier} onSelectNode={selectAndHighlight} />
+                        )}
                         {focusDrawerId === "operator" && (
                           <OperatorSummary operatorLabel={operatorLabel} stardate={stardate} subsystemCounts={subsystemCounts} subsystemGroupConfig={subsystemGroupConfig} groupIcons={groupIcons} />
                         )}

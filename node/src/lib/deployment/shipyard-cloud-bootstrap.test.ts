@@ -51,7 +51,7 @@ function createRuntime(overrides: Partial<ShipyardCloudBootstrapRuntime> = {}): 
     env: {
       ENABLE_LOCAL_COMMAND_EXECUTION: "true",
       CLOUD_INFRA_COMMAND_TIMEOUT_MS: "120000",
-    } as NodeJS.ProcessEnv,
+    } as unknown as NodeJS.ProcessEnv,
     cwd: "/repo/node",
     commandExists: () => true,
     fileExists: () => true,
@@ -70,7 +70,7 @@ test("cloud bootstrap fails when command execution is disabled", async () => {
   const runtime = createRuntime({
     env: {
       ENABLE_LOCAL_COMMAND_EXECUTION: "false",
-    } as NodeJS.ProcessEnv,
+    } as unknown as NodeJS.ProcessEnv,
   })
 
   const result = await runShipyardCloudBootstrap(
@@ -136,7 +136,7 @@ test("cloud bootstrap fails when required files are missing", async () => {
 test("cloud bootstrap captures kubeview metadata from terraform outputs", async () => {
   const runtime = createRuntime({
     runCommand: async (command, args) => {
-      if (command === "terraform" && args.join(" ") === "-chdir /repo/infra/terraform/environments/shipyard-cloud output -json") {
+      if (command === "terraform" && args.join(" ") === "-chdir=/repo/infra/terraform/environments/shipyard-cloud output -json") {
         return {
           ok: true,
           stdout: JSON.stringify({
@@ -194,7 +194,7 @@ test("cloud bootstrap captures kubeview metadata from terraform outputs", async 
 test("cloud bootstrap falls back when kubeview terraform outputs are unavailable", async () => {
   const runtime = createRuntime({
     runCommand: async (command, args) => {
-      if (command === "terraform" && args.join(" ") === "-chdir /repo/infra/terraform/environments/shipyard-cloud output -json") {
+      if (command === "terraform" && args.join(" ") === "-chdir=/repo/infra/terraform/environments/shipyard-cloud output -json") {
         return {
           ok: false,
           stdout: "",
@@ -243,4 +243,74 @@ test("cloud bootstrap falls back when kubeview terraform outputs are unavailable
   assert.equal(kubeview.ingressEnabled, true)
   assert.equal(kubeview.url, "/kubeview")
   assert.equal(kubeview.source, "fallback")
+})
+
+test("cloud bootstrap persists control-plane tunnel metadata when managed tunnel succeeds", async () => {
+  const runtime = createRuntime({
+    runCommand: async (command, args) => {
+      if (command === "terraform" && args.join(" ") === "-chdir=/repo/infra/terraform/environments/shipyard-cloud output -json") {
+        return {
+          ok: true,
+          stdout: JSON.stringify({
+            control_plane_public_ipv4: { value: ["203.0.113.10"] },
+            control_plane_private_ipv4: { value: ["10.0.0.10"] },
+          }),
+          stderr: "",
+          exitCode: 0,
+        }
+      }
+
+      return {
+        ok: true,
+        stdout: "",
+        stderr: "",
+        exitCode: 0,
+      }
+    },
+  })
+
+  const result = await runShipyardCloudBootstrap(
+    {
+      deploymentId: "deployment-1",
+      provisioningMode: "terraform_ansible",
+      infrastructure,
+      cloudProvider: {
+        ...cloudProvider,
+        tunnelPolicy: {
+          manage: true,
+          target: "kubernetes_api",
+          localPort: 16443,
+        },
+      },
+      sshPrivateKey: "PRIVATE",
+    },
+    runtime,
+    {
+      ensureManagedTunnelImpl: async () => ({
+        restarted: false,
+        metadata: {
+          pid: 1234,
+          pidFile: "/tmp/owz/autossh.pid",
+          controlSocket: "/tmp/owz/control.sock",
+          keyFilePath: "/tmp/owz/id_ed25519",
+          tunnelDir: "/tmp/owz",
+        },
+        health: {
+          healthy: true,
+          processAlive: true,
+          portReachable: true,
+        },
+      }),
+    },
+  )
+
+  assert.equal(result.ok, true)
+  if (!result.ok) return
+
+  const tunnel = result.metadata.tunnel as {
+    controlPlanePublicIp?: string
+    controlPlanePrivateIp?: string
+  }
+  assert.equal(tunnel.controlPlanePublicIp, "203.0.113.10")
+  assert.equal(tunnel.controlPlanePrivateIp, "10.0.0.10")
 })

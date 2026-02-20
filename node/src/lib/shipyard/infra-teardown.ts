@@ -442,7 +442,7 @@ async function destroyTerraformBestEffort(args: {
 
     const initResult = await runCommand(
       "terraform",
-      ["-chdir", terraformEnvDirAbsolute, "init", "-backend=false"],
+      [`-chdir=${terraformEnvDirAbsolute}`, "init", "-backend=false"],
       { timeoutMs: DEFAULT_TERRAFORM_TIMEOUT_MS },
     )
     if (!initResult.ok) {
@@ -455,7 +455,7 @@ async function destroyTerraformBestEffort(args: {
       // Continue to destroy anyway; init failures can be non-fatal if already initialized.
     }
 
-    const destroyArgs = ["-chdir", terraformEnvDirAbsolute, "destroy", "-auto-approve"]
+    const destroyArgs = [`-chdir=${terraformEnvDirAbsolute}`, "destroy", "-auto-approve"]
     if (existsSync(terraformTfvarsAbsolute)) {
       destroyArgs.push("-var-file=terraform.tfvars")
     }

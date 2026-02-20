@@ -27,6 +27,7 @@ export interface ShipLaunchLogPayload {
   level: ShipLaunchLogLevel
   source: ShipLaunchLogSource
   stream?: ShipLaunchLogStream
+  capturedAt?: string
   lines: string[]
 }
 
@@ -62,6 +63,10 @@ const RESOURCE_SAMPLING_INTERVAL_MS = 45_000
 const RESOURCE_SAMPLING_MIN_TIMEOUT_MS = 60_000
 const POD_OVERVIEW_SAMPLING_TIMEOUT_MS = 12_000
 const POD_OVERVIEW_MAX_NAMESPACES = 8
+const POD_OVERVIEW_MAX_REASONS = 5
+const POD_STALL_STREAK_THRESHOLD = 3
+const POD_STALL_MAX_NAMESPACES = 3
+const POD_STALL_MAX_REASONS = 3
 const POD_OVERVIEW_LOG_PREFIX = "[pods-overview]"
 const HIGH_SIGNAL_FAILURE_PATTERNS: RegExp[] = [
   /\bfatal:/iu,
@@ -147,6 +152,10 @@ interface PodOverviewPayload {
     unknown: number
   }
   namespaces: PodNamespaceOverview[]
+  topWaitingReasons: Array<{
+    reason: string
+    count: number
+  }>
 }
 
 function stripAnsi(value: string): string {
@@ -212,13 +221,18 @@ function phaseKeyForPod(phaseRaw: string | undefined): keyof PodOverviewPayload[
   return "unknown"
 }
 
-function waitingSignal(status: PodStatusLike | undefined): { waiting: boolean; crashing: boolean } {
+function waitingSignal(status: PodStatusLike | undefined): {
+  waiting: boolean
+  crashing: boolean
+  reasons: string[]
+} {
   if (!status) {
-    return { waiting: false, crashing: false }
+    return { waiting: false, crashing: false, reasons: [] }
   }
 
   let waiting = false
   let crashing = false
+  const reasons = new Set<string>()
   const collections = [
     status.initContainerStatuses,
     status.containerStatuses,
@@ -234,13 +248,14 @@ function waitingSignal(status: PodStatusLike | undefined): { waiting: boolean; c
         continue
       }
       waiting = true
+      reasons.add(reason)
       if (reason === "CrashLoopBackOff" || reason === "ImagePullBackOff" || reason === "ErrImagePull") {
         crashing = true
       }
     }
   }
 
-  return { waiting, crashing }
+  return { waiting, crashing, reasons: Array.from(reasons) }
 }
 
 async function captureCommandOutput(args: {
@@ -355,6 +370,7 @@ async function capturePodOverview(args: {
     unknown: 0,
   }
   const namespaceMap = new Map<string, PodNamespaceOverview>()
+  const waitingReasonCounts = new Map<string, number>()
 
   for (const pod of pods) {
     const namespace =
@@ -385,12 +401,19 @@ async function capturePodOverview(args: {
     if (waitState.crashing) {
       current.crashing += 1
     }
+    for (const reason of waitState.reasons) {
+      waitingReasonCounts.set(reason, (waitingReasonCounts.get(reason) || 0) + 1)
+    }
     namespaceMap.set(namespace, current)
   }
 
   const namespaces = Array.from(namespaceMap.values())
     .sort((a, b) => (b.total - a.total) || a.name.localeCompare(b.name))
     .slice(0, POD_OVERVIEW_MAX_NAMESPACES)
+  const topWaitingReasons = Array.from(waitingReasonCounts.entries())
+    .map(([reason, count]) => ({ reason, count }))
+    .sort((a, b) => (b.count - a.count) || a.reason.localeCompare(b.reason))
+    .slice(0, POD_OVERVIEW_MAX_REASONS)
 
   return {
     capturedAt: new Date().toISOString(),
@@ -398,6 +421,7 @@ async function capturePodOverview(args: {
     total: pods.length,
     phases,
     namespaces,
+    topWaitingReasons,
   }
 }
 
@@ -414,6 +438,13 @@ function commandLineString(command: string, args: string[]): string {
     return part
   })
   return parts.join(" ")
+}
+
+function kubectlInspectSuggestion(env: NodeJS.ProcessEnv): string {
+  const kubeContext = resolveKubeContext(env)
+  const namespace = (env.ORCHWIZ_NAMESPACE?.trim() || "orchwiz-starship").trim() || "orchwiz-starship"
+  const contextArg = kubeContext ? `--context ${kubeContext} ` : ""
+  return `kubectl ${contextArg}-n ${namespace} get pods && kubectl ${contextArg}-n ${namespace} describe pods`
 }
 
 function asLaunchLogSource(value: string, fallback: ShipLaunchLogSource): ShipLaunchLogSource {
@@ -452,6 +483,85 @@ export function createStreamingRunCommand(args: {
     const sampleLongRunningCommand = (timeoutMs ?? 0) >= RESOURCE_SAMPLING_MIN_TIMEOUT_MS
     const enableResourceSampling = isVerboseOrResourceUsageEnabled(env) && sampleLongRunningCommand
     const enablePodOverviewSampling = args.source === "local-bootstrap" && sampleLongRunningCommand
+    const terraformApplyTaskPattern = /TASK \[Terraform apply\]/u
+    const ansibleTaskPattern = /^TASK \[/u
+    let terraformApplyTaskActive = false
+    let lastPendingFingerprint = ""
+    let pendingStreak = 0
+    const emittedPodStallDiagnostics = new Set<string>()
+
+    const updateAnsibleTaskState = (lines: string[]) => {
+      if (!lines.length) {
+        return
+      }
+      for (const line of lines) {
+        if (terraformApplyTaskPattern.test(line)) {
+          terraformApplyTaskActive = true
+          continue
+        }
+        if (terraformApplyTaskActive && ansibleTaskPattern.test(line)) {
+          terraformApplyTaskActive = false
+          continue
+        }
+        if (line.startsWith("PLAY RECAP")) {
+          terraformApplyTaskActive = false
+        }
+      }
+    }
+
+    const maybeEmitPodStallDiagnostic = (podOverview: PodOverviewPayload) => {
+      const pending = podOverview.phases.pending
+      const waiting = podOverview.namespaces.reduce((sum, namespace) => sum + namespace.waiting, 0)
+      const crashing = podOverview.namespaces.reduce((sum, namespace) => sum + namespace.crashing, 0)
+      const blockedNamespaces = podOverview.namespaces
+        .filter((namespace) => namespace.pending > 0 || namespace.waiting > 0 || namespace.crashing > 0)
+        .slice(0, POD_STALL_MAX_NAMESPACES)
+      const blockedNamespaceSummary = blockedNamespaces
+        .map((namespace) => `${namespace.name}(P${namespace.pending}/W${namespace.waiting}/C${namespace.crashing})`)
+        .join(", ")
+      const reasonSummary = podOverview.topWaitingReasons
+        .slice(0, POD_STALL_MAX_REASONS)
+        .map((reason) => `${reason.reason}(${reason.count})`)
+        .join(", ")
+      const fingerprint = `${pending}|${waiting}|${crashing}|${blockedNamespaceSummary}|${reasonSummary}`
+
+      if (pending <= 0 && waiting <= 0 && crashing <= 0) {
+        lastPendingFingerprint = ""
+        pendingStreak = 0
+        return
+      }
+
+      if (fingerprint === lastPendingFingerprint) {
+        pendingStreak += 1
+      } else {
+        lastPendingFingerprint = fingerprint
+        pendingStreak = 1
+      }
+
+      if (pendingStreak < POD_STALL_STREAK_THRESHOLD) {
+        return
+      }
+
+      const phaseLabel = terraformApplyTaskActive ? "Terraform apply" : "Provisioning"
+      const diagnosticKey = `${phaseLabel}|${fingerprint}`
+      if (emittedPodStallDiagnostics.has(diagnosticKey)) {
+        return
+      }
+      emittedPodStallDiagnostics.add(diagnosticKey)
+
+      args.emitLaunchLog({
+        level: "warn",
+        source: args.source,
+        lines: [
+          `[diagnostic] ${phaseLabel} is still waiting on pods: pending=${pending}, waiting=${waiting}, crashing=${crashing}${blockedNamespaceSummary ? `; namespaces=${blockedNamespaceSummary}` : ""}${reasonSummary ? `; reasons=${reasonSummary}` : ""}`,
+        ],
+      })
+      args.emitLaunchLog({
+        level: "warn",
+        source: args.source,
+        lines: [`[diagnostic] Inspect with: ${kubectlInspectSuggestion(env)}`],
+      })
+    }
 
     let resourceIntervalId: ReturnType<typeof setInterval> | null = null
     let snapshotSamplingInFlight = false
@@ -486,6 +596,7 @@ export function createStreamingRunCommand(args: {
                 source: args.source,
                 lines: [formatPodOverviewLine(podOverview)],
               })
+              maybeEmitPodStallDiagnostic(podOverview)
             }
           } catch {
             // ignore pod overview errors
@@ -541,6 +652,7 @@ export function createStreamingRunCommand(args: {
       if (stdoutRemainder.trim().length > 0) {
         const lines = normalizeLines([stdoutRemainder])
         if (lines.length > 0) {
+          updateAnsibleTaskState(lines)
           args.emitLaunchLog({
             level: "debug",
             source: args.source,
@@ -553,6 +665,7 @@ export function createStreamingRunCommand(args: {
       if (stderrRemainder.trim().length > 0) {
         const lines = normalizeLines([stderrRemainder])
         if (lines.length > 0) {
+          updateAnsibleTaskState(lines)
           args.emitLaunchLog({
             level: stderrLevel(lines),
             source: args.source,
@@ -572,6 +685,7 @@ export function createStreamingRunCommand(args: {
       stdoutRemainder = parts.pop() || ""
       const lines = normalizeLines(parts)
       if (lines.length > 0) {
+        updateAnsibleTaskState(lines)
         args.emitLaunchLog({
           level: "debug",
           source: args.source,
@@ -590,6 +704,7 @@ export function createStreamingRunCommand(args: {
       stderrRemainder = parts.pop() || ""
       const lines = normalizeLines(parts)
       if (lines.length > 0) {
+        updateAnsibleTaskState(lines)
         args.emitLaunchLog({
           level: stderrLevel(lines),
           source: args.source,

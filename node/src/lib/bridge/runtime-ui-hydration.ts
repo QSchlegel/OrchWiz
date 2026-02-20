@@ -41,6 +41,8 @@ export interface RuntimeEdgeTerraformMetadata {
   serviceName: string | null
   port: number | null
   portForwardCommand: string | null
+  controlPlanePublicIp: string | null
+  controlPlanePrivateIp: string | null
 }
 
 export interface RuntimeUiTerraformResolution {
@@ -91,6 +93,16 @@ function asBoolean(value: unknown): boolean | null {
     return null
   }
   return value
+}
+
+function asStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return []
+  }
+
+  return value
+    .map((entry) => asString(entry))
+    .filter((entry): entry is string => Boolean(entry))
 }
 
 function isStationKey(value: string): value is BridgeStationKey {
@@ -212,7 +224,7 @@ async function loadTerraformOutputs(args: {
   try {
     const result = await execFileAsync(
       "terraform",
-      ["-chdir", args.terraformEnvDirAbsolute, "output", "-json"],
+      [`-chdir=${args.terraformEnvDirAbsolute}`, "output", "-json"],
       {
         timeout: 90_000,
         maxBuffer: 2 * 1024 * 1024,
@@ -292,6 +304,8 @@ function resolveRuntimeEdgeMetadataFromOutputs(outputs: TerraformOutputShape): R
     serviceName: getTerraformString(outputs, "runtime_edge_service_name"),
     port: getTerraformNumber(outputs, "runtime_edge_port"),
     portForwardCommand: getTerraformString(outputs, "runtime_edge_port_forward_command"),
+    controlPlanePublicIp: asStringArray(outputs.control_plane_public_ipv4?.value)[0] || null,
+    controlPlanePrivateIp: asStringArray(outputs.control_plane_private_ipv4?.value)[0] || null,
   }
 }
 

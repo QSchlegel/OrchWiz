@@ -195,7 +195,7 @@ Create flows for both agent and application deployments support profile-aware fi
   - Controls: `LOCAL_SHIPYARD_AUTO_BUILD_APP_IMAGE`, `LOCAL_SHIPYARD_AUTO_CREATE_KIND_CLUSTER`, `LOCAL_SHIPYARD_ENABLE_OBSERVABILITY_STACK`, `LOCAL_SHIPYARD_FORCE_REBUILD_APP_IMAGE`, `LOCAL_SHIPYARD_APP_IMAGE`, `LOCAL_SHIPYARD_DOCKERFILE`, `LOCAL_SHIPYARD_DOCKER_CONTEXT`, `LOCAL_SHIPYARD_KIND_CLUSTER_NAME`
 - Local launch requests are rejected when `CLOUD_DEPLOY_ONLY=true`
 - Local flow validates kube context presence; by default, Ship Yard auto-heals missing `kind` contexts by attempting `kind export kubeconfig` and creating/recreating the target cluster when needed. Set `LOCAL_SHIPYARD_AUTO_CREATE_KIND_CLUSTER=false` to disable this behavior.
-- Local flow defaults to lean observability for resource control (`TF_VAR_enable_grafana/prometheus/loki/clickhouse/langfuse=false`). Set `LOCAL_SHIPYARD_ENABLE_OBSERVABILITY_STACK=true` to opt in to full local observability provisioning.
+- Local flow defaults to full observability provisioning. Set `LOCAL_SHIPYARD_ENABLE_OBSERVABILITY_STACK=false` to force lean observability (`TF_VAR_enable_grafana/prometheus/loki/clickhouse/langfuse=false`).
 - Recommended Docker Desktop workstation budget for local Ship Yard loops: `4 CPU / 8 GiB`.
 - Failures return structured non-2xx responses with `error`, `code`, and optional `details.suggestedCommands`
 - Local flow does not delete/reset clusters automatically; use the debug loop or `/api/ship-yard/local/cluster/reset` when you need a fresh cluster.

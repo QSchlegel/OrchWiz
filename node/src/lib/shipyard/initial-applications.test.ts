@@ -334,6 +334,7 @@ test("bootstrapInitialApplicationsForShip deploys n8n and grants tool when every
   assert.equal(result.n8n.toolGrantId, "grant-n8n")
   assert.equal(result.n8n.attempts, 1)
   assert.equal(published.length, 1)
+  assert.ok(!result.n8n.warnings.includes("n8n tool imported, but ship grant failed."))
 })
 
 test("bootstrapInitialApplicationsForShip proceeds with defaults when template has only postgres_password", async () => {

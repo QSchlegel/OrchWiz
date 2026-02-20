@@ -8,6 +8,7 @@ import {
   USS_K8S_EDGES,
   SUBSYSTEM_GROUP_CONFIG,
   GROUP_ORDER,
+  type TopologyComponent,
 } from "@/lib/uss-k8s/topology"
 import { readShipMonitoringConfig, SHIP_MONITORING_DEFAULTS } from "@/lib/shipyard/monitoring"
 
@@ -227,14 +228,14 @@ export async function GET(request: NextRequest) {
       serviceUrlOverrides.kubeview = kubeview.url
     }
 
-    const components = USS_K8S_COMPONENTS.map((c) => {
+    const components = USS_K8S_COMPONENTS.map((c): TopologyComponent => {
       const agent = agentLookup.get(c.id)
       const overrideUrl = serviceUrlOverrides[c.id]
-      const enriched = { ...c }
+      const enriched: TopologyComponent = { ...c }
       if (agent) {
         enriched.subagentId = agent.id
         enriched.subagentName = agent.callsign || agent.name
-        enriched.subagentDescription = agent.description
+        enriched.subagentDescription = agent.description ?? undefined
       }
       if (overrideUrl) {
         enriched.serviceUrl = overrideUrl

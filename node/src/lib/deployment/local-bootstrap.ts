@@ -462,7 +462,7 @@ async function resolveLocalKubeviewMetadata(args: {
   const fallback = fallbackLocalKubeviewMetadata()
   const outputResult = await args.runtime.runCommand(
     "terraform",
-    ["-chdir", args.terraformEnvDirAbsolute, "output", "-json"],
+    [`-chdir=${args.terraformEnvDirAbsolute}`, "output", "-json"],
     {
       timeoutMs: args.timeoutMs,
     },
@@ -510,7 +510,7 @@ async function resolveLocalRuntimeUiMetadata(args: {
 
   const outputResult = await args.runtime.runCommand(
     "terraform",
-    ["-chdir", args.terraformEnvDirAbsolute, "output", "-json"],
+    [`-chdir=${args.terraformEnvDirAbsolute}`, "output", "-json"],
     {
       timeoutMs: args.timeoutMs,
     },
@@ -562,7 +562,7 @@ async function resolveLocalObservabilityMetadata(args: {
 
   const outputResult = await args.runtime.runCommand(
     "terraform",
-    ["-chdir", args.terraformEnvDirAbsolute, "output", "-json"],
+    [`-chdir=${args.terraformEnvDirAbsolute}`, "output", "-json"],
     {
       timeoutMs: args.timeoutMs,
     },
@@ -1348,7 +1348,7 @@ function localShipyardObservabilityStackEnabled(
     return true
   }
 
-  return parseBooleanEnv(runtime.env.LOCAL_SHIPYARD_ENABLE_OBSERVABILITY_STACK, false)
+  return parseBooleanEnv(runtime.env.LOCAL_SHIPYARD_ENABLE_OBSERVABILITY_STACK, true)
 }
 
 function localShipyardForceRebuildEnabled(runtime: LocalBootstrapRuntime): boolean {

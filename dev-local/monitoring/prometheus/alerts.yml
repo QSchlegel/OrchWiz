@@ -1,0 +1,56 @@
+groups:
+  - name: ship-situational-awareness
+    rules:
+      - alert: ShipServiceProbeFailing
+        expr: probe_success{job="ship-service-probes"} == 0
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: Ship service probe is failing
+          description: '{{ $labels.service }} probe target {{ $labels.instance }} is failing.'
+
+      - alert: ShipServiceMetricsScrapeDown
+        expr: up{job="ship-service-metrics"} == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: Ship service metrics scrape is down
+          description: 'Prometheus cannot scrape /metrics for {{ $labels.service }} at {{ $labels.instance }}.'
+
+      - alert: ShipServiceElevated5xxRate
+        expr: |
+          (
+            sum by (service) (rate(orchwiz_http_requests_total{status_class="5xx"}[5m]))
+            /
+            clamp_min(sum by (service) (rate(orchwiz_http_requests_total[5m])), 0.001)
+          ) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Elevated 5xx rate
+          description: '{{ $labels.service }} has sustained 5xx ratio above 5% over 10 minutes.'
+
+      - alert: ShipServiceHighP95Latency
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le, service) (rate(orchwiz_http_request_duration_seconds_bucket[5m]))
+          ) > 1.5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Elevated p95 latency
+          description: '{{ $labels.service }} p95 request latency is above 1.5s.'
+
+      - alert: ShipPodRestartSpike
+        expr: sum by (namespace, pod) (increase(kube_pod_container_status_restarts_total[15m])) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Pod restart spike detected
+          description: 'Pod {{ $labels.namespace }}/{{ $labels.pod }} restarted more than twice in 15 minutes.'

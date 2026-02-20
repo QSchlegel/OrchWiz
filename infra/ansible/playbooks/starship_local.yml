@@ -10,8 +10,62 @@
     app_name: "{{ lookup('env', 'ORCHWIZ_APP_NAME') | default('orchwiz', true) }}"
     tf_var_openclaw_station_count: "{{ lookup('env', 'TF_VAR_openclaw_station_count') | default('', true) }}"
     tf_var_app_image: "{{ lookup('env', 'TF_VAR_app_image') | default('', true) }}"
+    tf_var_provider_proxy_image: "{{ lookup('env', 'TF_VAR_provider_proxy_image') | default('', true) }}"
     tf_var_app_env: "{{ lookup('env', 'TF_VAR_app_env') | default('', true) }}"
     tf_var_runtime_jwt_secret: "{{ lookup('env', 'TF_VAR_runtime_jwt_secret') | default('', true) }}"
+    tf_var_enable_grafana: "{{ lookup('env', 'TF_VAR_enable_grafana') | default('', true) }}"
+    tf_var_enable_prometheus: "{{ lookup('env', 'TF_VAR_enable_prometheus') | default('', true) }}"
+    tf_var_enable_loki: "{{ lookup('env', 'TF_VAR_enable_loki') | default('', true) }}"
+    tf_var_enable_clickhouse: "{{ lookup('env', 'TF_VAR_enable_clickhouse') | default('', true) }}"
+    tf_var_enable_langfuse: "{{ lookup('env', 'TF_VAR_enable_langfuse') | default('', true) }}"
+    terraform_cli_var_overrides: >-
+      {{
+        ['-var', 'infrastructure_kind=' ~ infrastructure_kind]
+        + (
+            (kube_context_override | length > 0)
+            | ternary(['-var', 'kube_context=' ~ kube_context_override], [])
+          )
+        + (
+            (tf_var_openclaw_station_count | length > 0)
+            | ternary(['-var', 'openclaw_station_count=' ~ tf_var_openclaw_station_count], [])
+          )
+        + (
+            (tf_var_app_image | length > 0)
+            | ternary(['-var', 'app_image=' ~ tf_var_app_image], [])
+          )
+        + (
+            (tf_var_provider_proxy_image | length > 0)
+            | ternary(['-var', 'provider_proxy_image=' ~ tf_var_provider_proxy_image], [])
+          )
+        + (
+            (tf_var_app_env | length > 0)
+            | ternary(['-var', 'app_env=' ~ tf_var_app_env], [])
+          )
+        + (
+            (tf_var_runtime_jwt_secret | length > 0)
+            | ternary(['-var', 'runtime_jwt_secret=' ~ tf_var_runtime_jwt_secret], [])
+          )
+        + (
+            (tf_var_enable_grafana | length > 0)
+            | ternary(['-var', 'enable_grafana=' ~ tf_var_enable_grafana], [])
+          )
+        + (
+            (tf_var_enable_prometheus | length > 0)
+            | ternary(['-var', 'enable_prometheus=' ~ tf_var_enable_prometheus], [])
+          )
+        + (
+            (tf_var_enable_loki | length > 0)
+            | ternary(['-var', 'enable_loki=' ~ tf_var_enable_loki], [])
+          )
+        + (
+            (tf_var_enable_clickhouse | length > 0)
+            | ternary(['-var', 'enable_clickhouse=' ~ tf_var_enable_clickhouse], [])
+          )
+        + (
+            (tf_var_enable_langfuse | length > 0)
+            | ternary(['-var', 'enable_langfuse=' ~ tf_var_enable_langfuse], [])
+          )
+      }}
     terraform_env: >-
       {{
         {
@@ -27,12 +81,36 @@
             | ternary({'TF_VAR_app_image': tf_var_app_image}, {})
           )
         | combine(
+            (tf_var_provider_proxy_image | length > 0)
+            | ternary({'TF_VAR_provider_proxy_image': tf_var_provider_proxy_image}, {})
+          )
+        | combine(
             (tf_var_app_env | length > 0)
             | ternary({'TF_VAR_app_env': tf_var_app_env}, {})
           )
         | combine(
             (tf_var_runtime_jwt_secret | length > 0)
             | ternary({'TF_VAR_runtime_jwt_secret': tf_var_runtime_jwt_secret}, {})
+          )
+        | combine(
+            (tf_var_enable_grafana | length > 0)
+            | ternary({'TF_VAR_enable_grafana': tf_var_enable_grafana}, {})
+          )
+        | combine(
+            (tf_var_enable_prometheus | length > 0)
+            | ternary({'TF_VAR_enable_prometheus': tf_var_enable_prometheus}, {})
+          )
+        | combine(
+            (tf_var_enable_loki | length > 0)
+            | ternary({'TF_VAR_enable_loki': tf_var_enable_loki}, {})
+          )
+        | combine(
+            (tf_var_enable_clickhouse | length > 0)
+            | ternary({'TF_VAR_enable_clickhouse': tf_var_enable_clickhouse}, {})
+          )
+        | combine(
+            (tf_var_enable_langfuse | length > 0)
+            | ternary({'TF_VAR_enable_langfuse': tf_var_enable_langfuse}, {})
           )
       }}
 
@@ -61,7 +139,8 @@
       environment: "{{ terraform_env }}"
 
     - name: Terraform plan
-      ansible.builtin.command: terraform -chdir={{ terraform_dir }} plan -out=tfplan
+      ansible.builtin.command:
+        argv: "{{ ['terraform', '-chdir=' ~ terraform_dir, 'plan'] + terraform_cli_var_overrides + ['-out=tfplan'] }}"
       changed_when: false
       environment: "{{ terraform_env }}"
 

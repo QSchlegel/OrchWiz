@@ -1,5 +1,6 @@
 import { Prisma, type GovernanceEventType } from "@prisma/client"
 import { prisma } from "@/lib/prisma"
+import { isPrismaMissingColumnError } from "@/lib/prisma-errors"
 
 function asInputJson(value: Record<string, unknown> | null | undefined): Prisma.InputJsonValue | undefined {
   if (!value) {
@@ -57,28 +58,52 @@ export async function createGovernanceGrantEvent(args: {
   tx?: Prisma.TransactionClient
 }) {
   const client = resolveClient(args.tx)
+  const data: Prisma.GovernanceGrantEventUncheckedCreateInput = {
+    ownerUserId: args.ownerUserId,
+    createdByUserId: args.createdByUserId,
+    eventType: args.eventType,
+    toolCatalogEntryId: args.toolCatalogEntryId || null,
+    skillCatalogEntryId: args.skillCatalogEntryId || null,
+    shipDeploymentId: args.shipDeploymentId || null,
+    bridgeCrewId: args.bridgeCrewId || null,
+    subagentId: args.subagentId || null,
+    actorBridgeCrewId: args.actorBridgeCrewId || null,
+    securityReportId: args.securityReportId || null,
+    rationale: args.rationale?.trim() || null,
+    ...(args.runtimeAdapterCatalogEntryId !== undefined
+      ? {
+          runtimeAdapterCatalogEntryId: args.runtimeAdapterCatalogEntryId || null,
+        }
+      : {}),
+    ...(args.metadata
+      ? {
+          metadata: asInputJson(args.metadata),
+        }
+      : {}),
+  }
 
-  return client.governanceGrantEvent.create({
-    data: {
-      ownerUserId: args.ownerUserId,
-      createdByUserId: args.createdByUserId,
-      eventType: args.eventType,
-      toolCatalogEntryId: args.toolCatalogEntryId || null,
-      runtimeAdapterCatalogEntryId: args.runtimeAdapterCatalogEntryId || null,
-      skillCatalogEntryId: args.skillCatalogEntryId || null,
-      shipDeploymentId: args.shipDeploymentId || null,
-      bridgeCrewId: args.bridgeCrewId || null,
-      subagentId: args.subagentId || null,
-      actorBridgeCrewId: args.actorBridgeCrewId || null,
-      securityReportId: args.securityReportId || null,
-      rationale: args.rationale?.trim() || null,
-      ...(args.metadata
-        ? {
-            metadata: asInputJson(args.metadata),
-          }
-        : {}),
-    },
-  })
+  try {
+    return await client.governanceGrantEvent.create({
+      data,
+    })
+  } catch (error) {
+    if (!isPrismaMissingColumnError(error, "runtimeAdapterCatalogEntryId")) {
+      throw error
+    }
+
+    const { runtimeAdapterCatalogEntryId: _ignored, ...fallbackData } = data
+    try {
+      return await client.governanceGrantEvent.create({
+        data: fallbackData as Prisma.GovernanceGrantEventUncheckedCreateInput,
+      })
+    } catch (retryError) {
+      const message =
+        retryError instanceof Error ? retryError.message : "Unknown governance event write failure."
+      throw new Error(
+        `Governance grant event write failed after schema-drift retry. ${message}. Run \`npm run db:migrate\` to sync local schema.`,
+      )
+    }
+  }
 }
 
 export async function listRecentGovernanceGrantEvents(args: {

@@ -12,6 +12,18 @@ locals {
     { for station in local.openclaw_station_keys : station => "${var.openclaw_gateway_token}-${station}" },
     { for station, token in var.openclaw_gateway_tokens : station => token if contains(local.openclaw_station_keys, station) },
   )
+  next_public_app_origin = can(regex("^https?://[^/]+", trimspace(var.next_public_app_url))) ? regex("^https?://[^/]+", trimspace(var.next_public_app_url)) : ""
+  openclaw_control_ui_allowed_origins = distinct(compact(concat(
+    [local.next_public_app_origin],
+    local.next_public_app_origin == "http://localhost" ? ["http://127.0.0.1"] : [],
+    startswith(local.next_public_app_origin, "http://localhost:") ? [replace(local.next_public_app_origin, "http://localhost:", "http://127.0.0.1:")] : [],
+    local.next_public_app_origin == "https://localhost" ? ["https://127.0.0.1"] : [],
+    startswith(local.next_public_app_origin, "https://localhost:") ? [replace(local.next_public_app_origin, "https://localhost:", "https://127.0.0.1:")] : [],
+    local.next_public_app_origin == "http://127.0.0.1" ? ["http://localhost"] : [],
+    startswith(local.next_public_app_origin, "http://127.0.0.1:") ? [replace(local.next_public_app_origin, "http://127.0.0.1:", "http://localhost:")] : [],
+    local.next_public_app_origin == "https://127.0.0.1" ? ["https://localhost"] : [],
+    startswith(local.next_public_app_origin, "https://127.0.0.1:") ? [replace(local.next_public_app_origin, "https://127.0.0.1:", "https://localhost:")] : [],
+  )))
   spacebot_name           = "${var.app_name}-spacebot"
   provider_proxy_name     = "${var.app_name}-provider-proxy"
   provider_proxy_base_url = "http://${local.provider_proxy_name}:${var.provider_proxy_port}"
@@ -22,9 +34,172 @@ locals {
     },
     var.kubeview_ingress_annotations,
   )
-  enable_monitoring_namespace = var.enable_grafana || var.enable_prometheus || var.enable_loki || var.enable_clickhouse || var.enable_langfuse
-  grafana_ingress_host        = trimspace(var.grafana_ingress_host) != "" ? trimspace(var.grafana_ingress_host) : "grafana.${var.namespace}.localhost"
-  prometheus_ingress_host     = trimspace(var.prometheus_ingress_host) != "" ? trimspace(var.prometheus_ingress_host) : "prometheus.${var.namespace}.localhost"
+  enable_monitoring_namespace       = var.enable_grafana || var.enable_prometheus || var.enable_loki || var.enable_clickhouse || var.enable_langfuse
+  grafana_ingress_host              = trimspace(var.grafana_ingress_host) != "" ? trimspace(var.grafana_ingress_host) : "grafana.${var.namespace}.localhost"
+  prometheus_ingress_host           = trimspace(var.prometheus_ingress_host) != "" ? trimspace(var.prometheus_ingress_host) : "prometheus.${var.namespace}.localhost"
+  monitoring_dashboards_dir         = "${path.module}/../../../../dev-local/monitoring/grafana/dashboards"
+  grafana_dashboards_configmap_name = "${var.app_name}-grafana-dashboards"
+  grafana_dashboard_files = {
+    "ship-oncall-command-center.json" = "${local.monitoring_dashboards_dir}/ship-oncall-command-center.json"
+    "ship-diagnostics-deep-dive.json" = "${local.monitoring_dashboards_dir}/ship-diagnostics-deep-dive.json"
+  }
+  prometheus_metrics_scrape_secret_name = "${var.app_name}-metrics-scrape-auth"
+  prometheus_metrics_token_mount_path   = "/etc/prometheus/secrets/orchwiz-app-metrics"
+  resolved_metrics_bearer_token         = trimspace(var.orchwiz_metrics_bearer_token) != "" ? var.orchwiz_metrics_bearer_token : var.metrics_bearer_token
+  prometheus_service_metrics_targets = [
+    {
+      targets = ["${var.app_name}.${var.namespace}.svc.cluster.local:${var.app_port}"]
+      labels  = { service = "app" }
+    },
+    {
+      targets = ["${local.runtime_edge_name}.${var.namespace}.svc.cluster.local:${var.runtime_edge_port}"]
+      labels  = { service = "runtime-edge" }
+    },
+    {
+      targets = ["${local.provider_proxy_name}.${var.namespace}.svc.cluster.local:${var.provider_proxy_port}"]
+      labels  = { service = "provider-proxy" }
+    },
+  ]
+  prometheus_probe_targets = concat(
+    [
+      {
+        targets = ["http://${var.app_name}.${var.namespace}.svc.cluster.local:${var.app_port}/api/health"]
+        labels  = { service = "app" }
+      },
+      {
+        targets = ["http://${local.runtime_edge_name}.${var.namespace}.svc.cluster.local:${var.runtime_edge_port}/health"]
+        labels  = { service = "runtime-edge" }
+      },
+      {
+        targets = ["http://${local.provider_proxy_name}.${var.namespace}.svc.cluster.local:${var.provider_proxy_port}/health"]
+        labels  = { service = "provider-proxy" }
+      },
+    ],
+    [
+      for station in local.openclaw_station_keys : {
+        targets = ["http://openclaw-${station}.${var.namespace}.svc.cluster.local:18789/health"]
+        labels  = { service = "openclaw-${station}" }
+      }
+    ],
+    var.enable_spacebot ? [
+      {
+        targets = ["http://${local.spacebot_name}.${var.namespace}.svc.cluster.local:${var.spacebot_api_port}/api/health"]
+        labels  = { service = "spacebot" }
+      }
+    ] : [],
+  )
+  prometheus_extra_scrape_configs = [
+    {
+      job_name          = "ship-service-metrics"
+      metrics_path      = "/metrics"
+      scheme            = "http"
+      bearer_token_file = "${local.prometheus_metrics_token_mount_path}/bearer-token"
+      static_configs    = local.prometheus_service_metrics_targets
+    },
+    {
+      job_name = "blackbox-exporter"
+      static_configs = [
+        {
+          targets = ["prometheus-blackbox-exporter.${var.monitoring_namespace}.svc.cluster.local:9115"]
+        }
+      ]
+    },
+    {
+      job_name     = "ship-service-probes"
+      metrics_path = "/probe"
+      params = {
+        module = ["http_2xx"]
+      }
+      static_configs = local.prometheus_probe_targets
+      relabel_configs = [
+        {
+          source_labels = ["__address__"]
+          target_label  = "__param_target"
+        },
+        {
+          source_labels = ["service"]
+          target_label  = "service"
+        },
+        {
+          source_labels = ["__param_target"]
+          target_label  = "instance"
+        },
+        {
+          target_label = "__address__"
+          replacement  = "prometheus-blackbox-exporter.${var.monitoring_namespace}.svc.cluster.local:9115"
+        },
+      ]
+    },
+  ]
+  prometheus_alerting_rules = {
+    groups = [
+      {
+        name = "ship-situational-awareness"
+        rules = [
+          {
+            alert = "ShipServiceProbeFailing"
+            expr  = "probe_success{job=\"ship-service-probes\"} == 0"
+            for   = "2m"
+            labels = {
+              severity = "page"
+            }
+            annotations = {
+              summary     = "Ship service probe is failing"
+              description = "{{ $labels.service }} probe target {{ $labels.instance }} is failing."
+            }
+          },
+          {
+            alert = "ShipServiceMetricsScrapeDown"
+            expr  = "up{job=\"ship-service-metrics\"} == 0"
+            for   = "2m"
+            labels = {
+              severity = "warning"
+            }
+            annotations = {
+              summary     = "Ship service metrics scrape is down"
+              description = "Prometheus cannot scrape /metrics for {{ $labels.service }} at {{ $labels.instance }}."
+            }
+          },
+          {
+            alert = "ShipServiceElevated5xxRate"
+            expr  = "(sum by (service) (rate(orchwiz_http_requests_total{status_class=\"5xx\"}[5m])) / clamp_min(sum by (service) (rate(orchwiz_http_requests_total[5m])), 0.001)) > 0.05"
+            for   = "10m"
+            labels = {
+              severity = "warning"
+            }
+            annotations = {
+              summary     = "Elevated 5xx rate"
+              description = "{{ $labels.service }} has sustained 5xx ratio above 5% over 10 minutes."
+            }
+          },
+          {
+            alert = "ShipServiceHighP95Latency"
+            expr  = "histogram_quantile(0.95, sum by (le, service) (rate(orchwiz_http_request_duration_seconds_bucket[5m]))) > 1.5"
+            for   = "10m"
+            labels = {
+              severity = "warning"
+            }
+            annotations = {
+              summary     = "Elevated p95 latency"
+              description = "{{ $labels.service }} p95 request latency is above 1.5s."
+            }
+          },
+          {
+            alert = "ShipPodRestartSpike"
+            expr  = "sum by (namespace, pod) (increase(kube_pod_container_status_restarts_total{namespace=\"${var.namespace}\"}[15m])) > 2"
+            for   = "5m"
+            labels = {
+              severity = "warning"
+            }
+            annotations = {
+              summary     = "Pod restart spike detected"
+              description = "Pod {{ $labels.namespace }}/{{ $labels.pod }} restarted more than twice in 15 minutes."
+            }
+          },
+        ]
+      }
+    ]
+  }
 
   app_env = merge(
     {
@@ -58,6 +233,10 @@ locals {
     },
     trimspace(var.security_audit_cron_token) != "" ? {
       SECURITY_AUDIT_CRON_TOKEN = var.security_audit_cron_token
+    } : {},
+    trimspace(local.resolved_metrics_bearer_token) != "" ? {
+      ORCHWIZ_METRICS_BEARER_TOKEN    = local.resolved_metrics_bearer_token
+      PROMETHEUS_METRICS_BEARER_TOKEN = local.resolved_metrics_bearer_token
     } : {},
     var.enable_langfuse ? {
       LANGFUSE_BASE_URL   = "http://langfuse.${var.monitoring_namespace}.svc.cluster.local:3000"
@@ -101,6 +280,7 @@ resource "helm_release" "postgres" {
   chart      = "postgresql"
   version    = var.postgres_chart_version
   namespace  = kubernetes_namespace_v1.starship.metadata[0].name
+  timeout    = 900
 
   set {
     name  = "auth.username"
@@ -144,7 +324,8 @@ resource "kubernetes_secret_v1" "openclaw_env" {
   type = "Opaque"
   data = merge(
     {
-      OPENCLAW_GATEWAY_TOKENS = jsonencode(local.openclaw_gateway_tokens)
+      OPENCLAW_GATEWAY_TOKENS             = jsonencode(local.openclaw_gateway_tokens)
+      OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS = jsonencode(local.openclaw_control_ui_allowed_origins)
     },
     {
       for station, token in local.openclaw_gateway_tokens :
@@ -166,13 +347,15 @@ resource "kubernetes_secret_v1" "provider_proxy_env" {
 
   type = "Opaque"
   data = {
-    PROVIDER_PROXY_API_KEY   = var.provider_proxy_api_key
-    PROVIDER_PROXY_HOST      = "0.0.0.0"
-    PROVIDER_PROXY_PORT      = tostring(var.provider_proxy_port)
-    CODEX_HOME               = "/data/codex-home"
-    CODEX_RUNTIME_WORKDIR    = "/workspace"
-    CODEX_RUNTIME_TIMEOUT_MS = "120000"
-    CODEX_RUNTIME_MODEL      = var.provider_proxy_default_model
+    PROVIDER_PROXY_API_KEY          = var.provider_proxy_api_key
+    PROVIDER_PROXY_HOST             = "0.0.0.0"
+    PROVIDER_PROXY_PORT             = tostring(var.provider_proxy_port)
+    ORCHWIZ_METRICS_BEARER_TOKEN    = local.resolved_metrics_bearer_token
+    PROMETHEUS_METRICS_BEARER_TOKEN = local.resolved_metrics_bearer_token
+    CODEX_HOME                      = "/data/codex-home"
+    CODEX_RUNTIME_WORKDIR           = "/workspace"
+    CODEX_RUNTIME_TIMEOUT_MS        = "120000"
+    CODEX_RUNTIME_MODEL             = var.provider_proxy_default_model
   }
 }
 
@@ -506,6 +689,10 @@ resource "kubernetes_service_v1" "spacebot" {
 resource "kubernetes_deployment_v1" "openclaw" {
   for_each = toset(local.openclaw_station_keys)
 
+  # OpenClaw startup behavior may vary by image/runtime profile; keep Terraform from
+  # blocking local bootstrap when a station probe is temporarily unhealthy.
+  wait_for_rollout = false
+
   metadata {
     name      = "openclaw-${each.key}"
     namespace = kubernetes_namespace_v1.starship.metadata[0].name
@@ -543,8 +730,16 @@ resource "kubernetes_deployment_v1" "openclaw" {
           # `:latest` defaults to Always and breaks local clusters when the registry is unreachable.
           image_pull_policy = "IfNotPresent"
 
-          command = ["node", "openclaw.mjs"]
-          args    = ["gateway", "--allow-unconfigured", "--bind", "lan", "--port", "18789"]
+          command = ["/bin/sh", "-lc"]
+          args = [<<-EOT
+            set -eu
+            if [ -n "$${OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS:-}" ] && [ "$${OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS}" != "[]" ]; then
+              node openclaw.mjs config set gateway.controlUi.allowedOrigins "$${OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS}" --json >/dev/null 2>&1 || true
+            fi
+            node openclaw.mjs config set gateway.mode local >/dev/null 2>&1 || true
+            exec node openclaw.mjs gateway run --allow-unconfigured --bind lan --port 18789
+          EOT
+          ]
 
           port {
             container_port = 18789
@@ -556,6 +751,21 @@ resource "kubernetes_deployment_v1" "openclaw" {
               secret_key_ref {
                 name = kubernetes_secret_v1.openclaw_env.metadata[0].name
                 key  = "OPENCLAW_GATEWAY_TOKEN_${upper(each.key)}"
+              }
+            }
+          }
+
+          env {
+            name  = "OPENCLAW_GATEWAY_URL"
+            value = "ws://openclaw-${each.key}:18789"
+          }
+
+          env {
+            name = "OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS"
+            value_from {
+              secret_key_ref {
+                name = kubernetes_secret_v1.openclaw_env.metadata[0].name
+                key  = "OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS"
               }
             }
           }
@@ -1025,6 +1235,25 @@ resource "kubernetes_ingress_v1" "kubeview" {
 # -----------------------------------------------------------------------------
 # Grafana (monitoring namespace)
 # -----------------------------------------------------------------------------
+resource "kubernetes_config_map_v1" "grafana_dashboards" {
+  count = var.enable_grafana ? 1 : 0
+
+  metadata {
+    name      = local.grafana_dashboards_configmap_name
+    namespace = kubernetes_namespace_v1.monitoring[0].metadata[0].name
+    labels = {
+      "app.kubernetes.io/name"    = "grafana"
+      "app.kubernetes.io/part-of" = "orchwiz"
+      "orchwiz/component"         = "monitoring"
+    }
+  }
+
+  data = {
+    for file_name, source_path in local.grafana_dashboard_files :
+    file_name => file(source_path)
+  }
+}
+
 resource "helm_release" "grafana" {
   count = var.enable_grafana ? 1 : 0
 
@@ -1047,6 +1276,74 @@ resource "helm_release" "grafana" {
     name  = "persistence.enabled"
     value = "true"
   }
+
+  values = [
+    yamlencode({
+      "grafana.ini" = {
+        auth = {
+          disable_login_form   = true
+          disable_signout_menu = true
+        }
+        "auth.anonymous" = {
+          enabled  = true
+          org_role = "Viewer"
+        }
+        security = {
+          allow_embedding = true
+        }
+        dashboards = {
+          default_home_dashboard_path = "/var/lib/grafana/dashboards/orchwiz/ship-oncall-command-center.json"
+        }
+      }
+      dashboardProviders = {
+        "dashboardproviders.yaml" = {
+          apiVersion = 1
+          providers = [
+            {
+              name                  = "orchwiz-monitoring"
+              orgId                 = 1
+              folder                = "OrchWiz Ship Ops"
+              type                  = "file"
+              disableDeletion       = false
+              updateIntervalSeconds = 30
+              allowUiUpdates        = false
+              options = {
+                path                      = "/var/lib/grafana/dashboards/orchwiz"
+                foldersFromFilesStructure = false
+              }
+            }
+          ]
+        }
+      }
+      dashboardsConfigMaps = {
+        orchwiz = kubernetes_config_map_v1.grafana_dashboards[0].metadata[0].name
+      }
+      datasources = {
+        "datasources.yaml" = {
+          apiVersion = 1
+          datasources = [
+            {
+              name      = "Prometheus"
+              uid       = "prometheus"
+              type      = "prometheus"
+              access    = "proxy"
+              url       = "http://prometheus-server.${var.monitoring_namespace}.svc.cluster.local:9090"
+              isDefault = true
+              editable  = false
+              jsonData = {
+                httpMethod     = "POST"
+                manageAlerts   = false
+                prometheusType = "Prometheus"
+                timeInterval   = "5s"
+              }
+            }
+          ]
+        }
+      }
+    }),
+  ]
+
+  depends_on = [kubernetes_config_map_v1.grafana_dashboards]
 }
 
 resource "kubernetes_ingress_v1" "grafana" {
@@ -1082,6 +1379,65 @@ resource "kubernetes_ingress_v1" "grafana" {
 # -----------------------------------------------------------------------------
 # Prometheus (monitoring namespace)
 # -----------------------------------------------------------------------------
+resource "kubernetes_secret_v1" "prometheus_metrics_scrape_auth" {
+  count = var.enable_prometheus ? 1 : 0
+
+  metadata {
+    name      = local.prometheus_metrics_scrape_secret_name
+    namespace = kubernetes_namespace_v1.monitoring[0].metadata[0].name
+    labels = {
+      "app.kubernetes.io/name"    = "prometheus"
+      "app.kubernetes.io/part-of" = "orchwiz"
+      "orchwiz/component"         = "monitoring"
+    }
+  }
+
+  type = "Opaque"
+  data = {
+    "bearer-token" = local.resolved_metrics_bearer_token
+  }
+
+  lifecycle {
+    precondition {
+      condition     = trimspace(local.resolved_metrics_bearer_token) != ""
+      error_message = "metrics_bearer_token must be set when enable_prometheus is true."
+    }
+  }
+}
+
+resource "helm_release" "prometheus_blackbox_exporter" {
+  count = var.enable_prometheus ? 1 : 0
+
+  name       = "prometheus-blackbox-exporter"
+  repository = "https://prometheus-community.github.io/helm-charts"
+  chart      = "prometheus-blackbox-exporter"
+  version    = var.prometheus_blackbox_exporter_chart_version
+  namespace  = kubernetes_namespace_v1.monitoring[0].metadata[0].name
+  timeout    = 900
+
+  set {
+    name  = "fullnameOverride"
+    value = "prometheus-blackbox-exporter"
+  }
+
+  values = [
+    yamlencode({
+      config = {
+        modules = {
+          http_2xx = {
+            prober  = "http"
+            timeout = "5s"
+            http = {
+              method                = "GET"
+              preferred_ip_protocol = "ip4"
+            }
+          }
+        }
+      }
+    }),
+  ]
+}
+
 resource "helm_release" "prometheus" {
   count = var.enable_prometheus ? 1 : 0
 
@@ -1106,16 +1462,40 @@ resource "helm_release" "prometheus" {
   }
   set {
     name  = "kube-state-metrics.enabled"
-    value = "false"
+    value = var.prometheus_enable_kube_state_metrics ? "true" : "false"
   }
   set {
     name  = "prometheus-node-exporter.enabled"
-    value = "false"
+    value = var.prometheus_enable_node_exporter ? "true" : "false"
   }
   set {
     name  = "prometheus-pushgateway.enabled"
     value = "false"
   }
+
+  values = [
+    yamlencode({
+      server = {
+        extraSecretMounts = [
+          {
+            name       = "orchwiz-app-metrics-token"
+            secretName = kubernetes_secret_v1.prometheus_metrics_scrape_auth[0].metadata[0].name
+            mountPath  = local.prometheus_metrics_token_mount_path
+            readOnly   = true
+          }
+        ]
+        extraScrapeConfigs = yamlencode(local.prometheus_extra_scrape_configs)
+      }
+      serverFiles = {
+        "alerting_rules.yml" = local.prometheus_alerting_rules
+      }
+    }),
+  ]
+
+  depends_on = [
+    kubernetes_secret_v1.prometheus_metrics_scrape_auth,
+    helm_release.prometheus_blackbox_exporter,
+  ]
 }
 
 resource "kubernetes_ingress_v1" "prometheus" {

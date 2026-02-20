@@ -4,6 +4,14 @@ import { Readable } from "node:stream"
 import crypto from "node:crypto"
 import { WebSocket, WebSocketServer, type RawData } from "ws"
 import { verifyRuntimeJwt, ORCHWIZ_RUNTIME_JWT_COOKIE_NAME } from "../lib/runtime-jwt"
+import {
+  isMetricsRequestAuthorized,
+  observeHttpRequest,
+  recordNodeRuntimeSignals,
+  renderPrometheusMetrics,
+  resolveConfiguredMetricsToken,
+  shouldRequireMetricsAuth,
+} from "../lib/observability/prometheus"
 
 function asString(value: unknown): string | null {
   if (typeof value !== "string") return null
@@ -42,6 +50,16 @@ function parseBooleanFlag(value: string | null): boolean {
 
   const normalized = value.trim().toLowerCase()
   return normalized === "true" || normalized === "1" || normalized === "yes" || normalized === "on"
+}
+
+function firstHeaderValue(value: string | string[] | undefined): string | null {
+  if (typeof value === "string") {
+    return value
+  }
+  if (Array.isArray(value) && value.length > 0 && typeof value[0] === "string") {
+    return value[0]
+  }
+  return null
 }
 
 function resolveWsDirectTerminalPassthrough(url: URL): boolean {
@@ -595,6 +613,51 @@ async function handleHttpRequest(req: http.IncomingMessage, res: http.ServerResp
     return
   }
 
+  if (requestUrl.pathname === "/metrics") {
+    const method = (req.method || "GET").toUpperCase()
+    if (method !== "GET" && method !== "HEAD") {
+      res.writeHead(405, {
+        "content-type": "text/plain; charset=utf-8",
+        "cache-control": "no-store",
+        allow: "GET, HEAD",
+      })
+      res.end("Method Not Allowed\n")
+      return
+    }
+
+    const configuredMetricsToken = resolveConfiguredMetricsToken(
+      process.env.PROMETHEUS_METRICS_BEARER_TOKEN || process.env.ORCHWIZ_METRICS_BEARER_TOKEN,
+    )
+    const requireMetricsAuth = shouldRequireMetricsAuth({
+      nodeEnv: process.env.NODE_ENV,
+      configuredToken: configuredMetricsToken,
+    })
+    const authorized = isMetricsRequestAuthorized({
+      authorizationHeader: firstHeaderValue(req.headers.authorization),
+      configuredToken: configuredMetricsToken,
+      authRequired: requireMetricsAuth,
+    })
+
+    if (!authorized) {
+      res.writeHead(401, {
+        "content-type": "text/plain; charset=utf-8",
+        "cache-control": "no-store",
+        "www-authenticate": "Bearer",
+      })
+      res.end("Unauthorized\n")
+      return
+    }
+
+    recordNodeRuntimeSignals({ service: "runtime-edge" })
+    const metrics = await renderPrometheusMetrics()
+    res.writeHead(200, {
+      "content-type": metrics.contentType,
+      "cache-control": "no-store",
+    })
+    res.end(method === "HEAD" ? "" : metrics.body)
+    return
+  }
+
   const authn = authenticateRequest(req)
   if (!authn.ok) {
     res.writeHead(401, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" })
@@ -874,17 +937,36 @@ async function handleWsProxyConnection(downstream: WebSocket, req: http.Incoming
   }
 }
 
-async function main() {
-  const cli = parseCliArgs(process.argv.slice(2))
-  const port = parseNumber(cli.port) ?? parseNumber(process.env.PORT) ?? 3100
-  const hostname = asString(cli.hostname) || asString(process.env.HOSTNAME) || "0.0.0.0"
-
+export function createRuntimeEdgeServer() {
   const wss = new WebSocketServer({ noServer: true })
   wss.on("connection", (downstream, req) => {
     void handleWsProxyConnection(downstream, req)
   })
 
   const server = http.createServer((req, res) => {
+    const requestUrl = new URL(req.url || "/", "http://localhost")
+    const finishMetricsRequest = observeHttpRequest({
+      service: "runtime-edge",
+      method: req.method || "GET",
+      pathname: requestUrl.pathname || "/",
+    })
+
+    let metricsFinished = false
+    const completeMetricsRequest = (statusCode: number) => {
+      if (metricsFinished) {
+        return
+      }
+      metricsFinished = true
+      finishMetricsRequest(statusCode)
+    }
+
+    res.once("finish", () => {
+      completeMetricsRequest(res.statusCode)
+    })
+    res.once("close", () => {
+      completeMetricsRequest(res.writableEnded ? res.statusCode : 499)
+    })
+
     void handleHttpRequest(req, res).catch((error) => {
       console.error("Runtime-edge request failed:", error)
       res.writeHead(500, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" })
@@ -910,11 +992,28 @@ async function main() {
     }
   })
 
+  return server
+}
+
+async function main() {
+  const cli = parseCliArgs(process.argv.slice(2))
+  const port = parseNumber(cli.port) ?? parseNumber(process.env.PORT) ?? 3100
+  const hostname = asString(cli.hostname) || asString(process.env.HOSTNAME) || "0.0.0.0"
+  const server = createRuntimeEdgeServer()
+
   server.listen(port, hostname, () => {
     console.log(`OrchWiz runtime-edge listening on http://${hostname}:${port}`)
   })
 }
 
-main().catch((error) => {
-  console.error("Failed to start runtime-edge:", error)
-})
+if (process.argv[1] && process.argv[1].endsWith("server.ts")) {
+  void main().catch((error) => {
+    console.error("Failed to start runtime-edge:", error)
+  })
+}
+
+if (process.argv[1] && process.argv[1].endsWith("server.js")) {
+  void main().catch((error) => {
+    console.error("Failed to start runtime-edge:", error)
+  })
+}

@@ -15,6 +15,14 @@ import {
   resolveStreamLimitConfig,
   takeStreamRateLimitToken,
 } from "./rate-limit.js"
+import {
+  isMetricsRequestAuthorized,
+  observeHttpRequest,
+  recordRuntimeSignals,
+  renderPrometheusMetrics,
+  resolveConfiguredMetricsToken,
+  shouldRequireMetricsAuth,
+} from "./observability/prometheus.js"
 
 function asNonEmptyString(value: unknown): string | null {
   if (typeof value !== "string") {
@@ -42,8 +50,40 @@ export function createApp(deps: {
   runCodex?: typeof runCodexExec
 } = {}) {
   const app = express()
+  const configuredMetricsToken = resolveConfiguredMetricsToken(
+    process.env.PROMETHEUS_METRICS_BEARER_TOKEN || process.env.ORCHWIZ_METRICS_BEARER_TOKEN,
+  )
+  const requireMetricsAuth = shouldRequireMetricsAuth({
+    nodeEnv: process.env.NODE_ENV,
+    configuredToken: configuredMetricsToken,
+  })
+
   app.disable("x-powered-by")
   app.use(express.json({ limit: "4mb" }))
+
+  app.use((req, res, next) => {
+    const finish = observeHttpRequest({
+      service: "provider-proxy",
+      method: req.method,
+      pathname: req.path || req.originalUrl || "/",
+    })
+    let completed = false
+    const complete = (statusCode: number) => {
+      if (completed) {
+        return
+      }
+      completed = true
+      finish(statusCode)
+    }
+
+    res.once("finish", () => {
+      complete(res.statusCode)
+    })
+    res.once("close", () => {
+      complete(res.writableEnded ? res.statusCode : 499)
+    })
+    next()
+  })
 
   app.get("/health", (_req, res) => {
     res.json({
@@ -52,6 +92,37 @@ export function createApp(deps: {
       version: process.env.npm_package_version || "0.0.0",
       ts: new Date().toISOString(),
     })
+  })
+
+  app.get("/metrics", async (req, res) => {
+    const method = req.method.toUpperCase()
+    if (method !== "GET" && method !== "HEAD") {
+      return res
+        .status(405)
+        .set("Allow", "GET, HEAD")
+        .type("text/plain; charset=utf-8")
+        .send("Method Not Allowed\n")
+    }
+
+    const authorized = isMetricsRequestAuthorized({
+      authorizationHeader: req.header("authorization"),
+      configuredToken: configuredMetricsToken,
+      authRequired: requireMetricsAuth,
+    })
+    if (!authorized) {
+      return res
+        .status(401)
+        .set("WWW-Authenticate", "Bearer")
+        .type("text/plain; charset=utf-8")
+        .send("Unauthorized\n")
+    }
+
+    recordRuntimeSignals({ service: "provider-proxy" })
+    const metrics = await renderPrometheusMetrics()
+    res.status(200)
+    res.set("Cache-Control", "no-store")
+    res.set("Content-Type", metrics.contentType)
+    res.send(method === "HEAD" ? "" : metrics.body)
   })
 
   app.use("/v1", (req, res, next) => {

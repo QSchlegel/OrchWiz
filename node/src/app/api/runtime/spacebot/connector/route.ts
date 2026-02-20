@@ -110,7 +110,14 @@ const defaultDeps: SpacebotConnectorDeps = {
       }
     }
   },
-  probeHealth: (baseUrl) => probeSpacebotWebhookHealth(baseUrl),
+  probeHealth: async (baseUrl) => {
+    const result = await probeSpacebotWebhookHealth(baseUrl)
+    return {
+      ok: result.ok,
+      status: result.status,
+      error: result.error ?? null,
+    }
+  },
 }
 
 function asString(value: unknown): string | null {

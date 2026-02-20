@@ -44,6 +44,22 @@ function isLoopbackOrLocalhostHost(hostname: string): boolean {
   )
 }
 
+function normalizeLikelyRuntimeEdgeLangfuseUrl(url: URL): void {
+  const normalizedPath = url.pathname.replace(/\/+$/u, "") || "/"
+  const hostname = url.hostname.trim().toLowerCase()
+  const isProxyPath = normalizedPath === "/api/bridge/runtime-ui/langfuse"
+  const isRuntimeEdgeHost = hostname.includes("runtime-edge")
+  const isRuntimeEdgeLoopbackRoot =
+    normalizedPath === "/" && isLoopbackOrLocalhostHost(hostname) && url.port === "3100"
+  if (!isProxyPath && !isRuntimeEdgeHost && !isRuntimeEdgeLoopbackRoot) {
+    return
+  }
+
+  url.pathname = "/langfuse"
+  url.search = ""
+  url.hash = ""
+}
+
 function proxyBasePath(): string {
   return "/api/bridge/runtime-ui/langfuse"
 }
@@ -364,6 +380,7 @@ function resolveLangfuseUpstreamBaseUrl(args: { namespace: string | null }): str
             }
           }
         }
+        normalizeLikelyRuntimeEdgeLangfuseUrl(parsed)
         return parsed.toString().replace(/\/+$/u, "")
       }
     } catch {

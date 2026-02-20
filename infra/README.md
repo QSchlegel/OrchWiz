@@ -105,30 +105,65 @@ Debug loop helper:
 
 ## Monitoring stack (Grafana, Prometheus, Loki, ClickHouse, Langfuse)
 
-When enabled via Terraform variables, the following observability components are provisioned in a **monitoring** namespace:
+When enabled via Terraform variables, observability components are provisioned in the `monitoring` namespace:
 
-- **Grafana** (port 3000), **Prometheus** (port 9090), **Loki** (port 3100), **ClickHouse** (backend), **Langfuse** (port 3000).
+- Grafana (port 3000)
+- Prometheus (port 9090)
+- Prometheus blackbox exporter (probe endpoint)
+- Loki (port 3100)
+- ClickHouse (backend)
+- Langfuse (port 3000)
 
-The OrchWiz app uses **in-cluster** service URLs when running inside the cluster (e.g. `grafana.monitoring.svc.cluster.local:3000`, `prometheus-server.monitoring.svc.cluster.local:9090`, `loki.monitoring.svc.cluster.local:3100`, `langfuse.monitoring.svc.cluster.local:3000`). No change is required for in-cluster app deployments.
+### Dashboards and provisioning
+
+- Dashboard JSON source of truth: `dev-local/monitoring/grafana/dashboards`
+- Terraform provisions Grafana with Prometheus datasource `uid=prometheus`.
+- Provisioned dashboards (replacement set, exactly 2):
+  - `Ship On-Call Command Center` (`uid=ship-oncall-cc`) as default home
+  - `Ship Diagnostics Deep Dive` (`uid=ship-diagnostics-dd`)
+
+### Metrics auth and scrape coverage
+
+- OrchWiz app, runtime-edge, and provider-proxy expose token-protected `GET /metrics`.
+- Set Terraform variable `metrics_bearer_token` when `enable_prometheus=true`.
+- Terraform wires this token to:
+  - app env (`PROMETHEUS_METRICS_BEARER_TOKEN`)
+  - provider-proxy env (`PROMETHEUS_METRICS_BEARER_TOKEN`)
+  - Prometheus scrape secret mounted as `bearer_token_file`
+- Prometheus scrape jobs:
+  - `ship-service-metrics`: direct metrics scrape for app/runtime-edge/provider-proxy
+  - `ship-service-probes`: blackbox health probes for app/runtime-edge/provider-proxy plus OpenClaw stations and optional Spacebot
+
+### kube-state-metrics and alerts
+
+- `kube-state-metrics` is enabled for pod readiness/restart visibility.
+- `prometheus-node-exporter` remains disabled by default unless explicitly enabled.
+- Basic alert rules are provisioned in Prometheus for:
+  - service probe failure
+  - service metrics scrape down
+  - elevated 5xx rate
+  - elevated p95 latency
+  - pod restart spike
+- Alertmanager remains disabled by default, so alerts are visible in Prometheus/Grafana only until separate notification plumbing is enabled.
 
 ### Persistence and storage
 
-- Loki and ClickHouse support optional persistent volumes; enable via `loki_persistence_enabled` / `clickhouse_persistence_enabled` and set `loki_storage_size` / `clickhouse_storage_size` (e.g. `10Gi`).
-- If the cluster has no default StorageClass, PVCs will stay Pending. Set `monitoring_storage_class` to an existing StorageClass name when needed.
+- Loki and ClickHouse support optional persistent volumes; enable via `loki_persistence_enabled` / `clickhouse_persistence_enabled` and set `loki_storage_size` / `clickhouse_storage_size` (for example `10Gi`).
+- If the cluster has no default StorageClass, PVCs remain Pending. Set `monitoring_storage_class` to an existing StorageClass when needed.
 
 ### Local dev with app on host
 
-When the OrchWiz app runs **outside** the cluster (e.g. local Next.js on your machine pointing at a minikube/kind cluster), it cannot reach in-cluster URLs. Either:
+When the OrchWiz app runs outside the cluster (for example local Next.js on your machine), it cannot reach in-cluster URLs directly. Either:
 
-- **Port-forward** the monitoring services and set env overrides: `GRAFANA_UPSTREAM_URL`, `PROMETHEUS_UPSTREAM_URL`, `LOKI_UPSTREAM_URL` (e.g. `http://127.0.0.1:3000` after `kubectl port-forward -n monitoring svc/grafana 3000:3000`), or
-- Use the app’s API proxy routes (`/api/bridge/runtime-ui/grafana`, `/api/bridge/runtime-ui/prometheus`, `/api/bridge/runtime-ui/loki`) with the same port-forwards; the proxy will use the upstream URLs when set.
+- Port-forward monitoring services and set env overrides (`GRAFANA_UPSTREAM_URL`, `PROMETHEUS_UPSTREAM_URL`, `LOKI_UPSTREAM_URL`), or
+- Use app proxy routes (`/api/bridge/runtime-ui/grafana`, `/api/bridge/runtime-ui/prometheus`, `/api/bridge/runtime-ui/loki`) with those same upstreams.
 
 ### Langfuse keys (bootstrap)
 
-- **LANGFUSE_BASE_URL** is always set by Terraform to the **in-cluster** service URL (e.g. `http://langfuse.monitoring.svc.cluster.local:3000`). The app and Langfuse client use this for server-to-Langfuse traffic; optional ingress is only for direct browser access.
-- **LANGFUSE_PUBLIC_KEY** and **LANGFUSE_SECRET_KEY** are created in the Langfuse UI after first deploy. One-time bootstrap: deploy Langfuse (e.g. `enable_langfuse = true`), open the Langfuse UI (via ingress or port-forward), create a project, then copy the project keys into Terraform (sensitive variables `langfuse_public_key` / `langfuse_secret_key`) or into the app env so tracing and the proxy work.
+- `LANGFUSE_BASE_URL` is set by Terraform to in-cluster service URL (`http://langfuse.monitoring.svc.cluster.local:3000`).
+- `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` are created in Langfuse UI after first deploy. Deploy Langfuse, create a project, then copy keys into Terraform (`langfuse_public_key` / `langfuse_secret_key`) or app env.
 
-Variables and commented examples live in `terraform.tfvars.example` for both **starship-local** and **shipyard-cloud**.
+Variables and commented examples are documented in both environment `terraform.tfvars.example` files.
 
 ## Helm Add-ons
 

@@ -44,7 +44,7 @@ export interface CommandHierarchyTier {
   nodeIds: string[]
 }
 
-export const USS_K8S_COMPONENTS: SubsystemComponent[] = [
+export const USS_K8S_COMPONENTS: TopologyComponent[] = [
   // ── USERS ──────────────────────────────────────────
   { id: "qs", label: "CAP-QS (sir)", sublabel: "Telegram / Operator", group: "users", componentType: "operator" },
   { id: "ui", label: "Cora UI", sublabel: "Next.js state reader", group: "users", componentType: "ui" },
